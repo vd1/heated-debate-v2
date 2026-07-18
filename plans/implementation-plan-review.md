@@ -1,87 +1,85 @@
 # Review of the implementation plan
 
-Reviewed: [`plans/implementation-plan.md`](implementation-plan.md), 2026-07-18.
-Read alongside [`docs/ADR-0001-agent-boundary.md`](../docs/ADR-0001-agent-boundary.md), `AGENTS.md`,
-`README.md`, and the v1 repository (`../heated-debate/`).
+Reviews [`plans/implementation-plan.md`](implementation-plan.md), read alongside
+[`docs/ADR-0001-agent-boundary.md`](../docs/ADR-0001-agent-boundary.md), `AGENTS.md`, `README.md`,
+and the v1 repository (`../heated-debate/`).
 
-**Verdict:** sound to execute as written, with four real gaps and a few smaller nits worth fixing
-before Task 00.
+Task numbers below refer to the revised plan (34 tasks, 00–33).
 
-## Strengths
+## Round 2 — 2026-07-18, after revision
 
-- The ports-and-adapters boundary (`AgentPort`, `EvaluatorPort`, `WebSearchPort`) matches ADR-0001,
-  and the domain stays free of Pi types.
-- Canonical events as the source of truth, with Markdown as a projection (Task 13), is the right
-  call for reproducibility.
-- Working rule 8 ("do not optimize a parameter until it is represented in the canonical run
-  record") and Task 26 (evaluator reliability before optimization) are the kind of rigor most
-  plans skip.
-- The deferred list has a real entry criterion: each feature arrives as a separately tested policy
-  or adapter, not branching logic in the scheduler.
-- Separating prompt dials from provider sampling controls (Task 19) fixes a v1 coupling, where the
-  dial and temperature were bound together in `dials.py`.
+All round-1 findings were addressed; see the log at the bottom. The revised plan is stronger.
+These are second-order findings against the new version.
 
-## Gaps
+### Gaps
 
-### 1. No experiment runner between Task 21 and Task 30
+#### 1. Nothing builds the real engine executable that Task 31 assumes
 
-Task 21 *generates* deterministic run specifications; Task 30 *runs* a real study. Nothing in
-between owns executing a matrix: iterating N runs, surviving a failure mid-matrix, resuming a
-partially completed matrix, skipping already-completed run IDs, and mapping run IDs to an artifact
-directory layout. Task 28 covers persistence and resume for the *optimizer's trials*, which is a
-different loop.
+Task 31 defines the JSON-over-stdio interchange (run spec on stdin, reward vector on stdout) and
+tests the Optuna side against a *fake* engine executable. Task 32 then runs a real study — which
+requires the *real* engine binary implementing that interchange, and no task creates it. Task 23's
+matrix executor runs in-process through the domain runner, not as a CLI.
 
-**Suggestion:** insert a "matrix executor" task between Tasks 21 and 22 (or fold it into Task 21
-with explicit acceptance criteria), tested with scripted agents for resume and duplicate-skip
-behavior.
+**Suggestion:** add a task between 29 and 31 that wires the existing pieces into the real engine
+entry point: read a run spec, execute, evaluate, emit the reward vector or structured failure.
+This same binary doubles as the minimal human-facing CLI (v1's `shelley.ts` role), which the plan
+otherwise defers entirely under "Web/TUI interface."
 
-### 2. First live end-to-end debate happens about 28 tasks in
+#### 2. "Maximum estimated cost" has no pricing source
 
-Task 04 proves one live turn; the next live exercise is Task 30's real study. Everything between
-uses scripted agents. That is a long time for integration assumptions to drift from the fakes:
-Pi conversation retention across rounds, effective-controls reporting, and streaming behavior
-under real latency.
+Task 19 adds a max-estimated-cost guardrail and Task 29's reward subtracts weighted cost, but the
+system only records token usage. Converting usage to money needs a per-model price table, which
+must itself be versioned (prices change; local Gemma runs are free). No task provides one.
 
-**Suggestion:** add an opt-in live smoke test — one two-round debate through `PiAgent` — at the
-end of Milestone B or C, symmetrical with Task 04.
+**Suggestion:** either define budgets and reward-cost terms in tokens (objective, self-contained)
+and treat dollars as derived reporting, or add a small versioned price-table fixture recorded in
+the run artifacts so cost claims are reproducible.
 
-### 3. Replay is defined before tools exist
+#### 3. Task 28 (evaluator reliability) is a live, paid study but is not marked opt-in
 
-Task 12 defines deterministic replay; Task 16 later records tool events but does not say replay
-must handle them. Without an explicit criterion, replay quietly stays correct only for tool-free
-runs — exactly the drift Task 12 exists to catch.
+Repeated and permuted evaluations only measure variance, ordering bias, and self-preference
+meaningfully against a *real* judge model — scripted judges have zero variance by construction.
+Every other live activity in the plan (Tasks 04, 10, 18, 24, 32) is explicitly opt-in and outside
+the unit suite; Task 28 is not labeled, has no budget bound, and does not say where the
+reliability report lives.
 
-**Suggestion:** add to Task 16's acceptance criteria: replay reconstructs tool-using runs,
-including tool results as inputs to subsequent turn requests.
+**Suggestion:** mark Task 28 opt-in, bound it with the Task 19 study guardrails, and version the
+reliability report as a canonical artifact — it later justifies enabling optimization, so it needs
+provenance.
 
-### 4. Toolchain is unspecified, and Task 00 depends on it
+### Smaller points
 
-Task 00 says "minimum Node/TypeScript test setup" but never names the runner or linter. The house
-preference is bun, and v1 is a bun project.
+- **Task 10's live smoke never exercises persistence.** It ends at "a complete in-memory result,"
+  and the next live full run is Task 32 — so "the live path emits well-formed canonical events"
+  goes unverified for the whole of Milestones C–E. After Tasks 11–13 land, extend the Task 10
+  smoke to write and validate a JSONL run record.
+- **Renumbering churn.** Inserting tasks shifted every number from 10 onward, silently staling
+  cross-references (including round 1 of this review). Consider stable task IDs (slugs or gapped
+  numbering) so future insertions don't invalidate ADRs, commits, and reviews that cite tasks.
+- **Retries inside Pi can distort cost accounting.** ADR-0001 assigns retries to Pi; a retried
+  turn consumes real tokens the canonical usage may not show. Require attempt counts and
+  per-attempt usage in the adapter trace (fits Task 03 or Task 11) so budgets bind actual spend.
+- **Task 32's "preregistered" needs a home.** Preregistration only means something if the study
+  spec is committed before execution. Define a versioned study-spec file that run IDs reference,
+  so the report in Task 33 can prove the hypotheses preceded the data.
+- **Controls 5–7 (risk tolerance, deference, verbosity) have no consumer.** No benchmark case or
+  rubric dimension exercises them, and each dial multiplies the Task 22 matrix. The deferred-list
+  bar ("enters when evidence justifies") could apply to individual controls too; 1–4 and 8 all
+  have concrete consumers already.
 
-**Suggestion:** pin the toolchain in the plan — `bun test` (or vitest under bun) plus concrete
-typecheck and lint commands — so "`test`, `typecheck`, and `lint` each run independently" is
-verifiable. Related: Task 04 references "CI's required unit suite," but no task sets up CI;
-either add CI to Task 00 or drop the CI wording.
+## Round 1 — 2026-07-18, initial plan (all resolved)
 
-## Smaller nits
+1. **No experiment runner between matrix generation and the real study** → resolved by Task 23
+   (resumable matrix executor with artifact mapping, concurrency, budgets, resume, dedup).
+2. **First live end-to-end debate ~28 tasks in** → resolved by Task 10 (opt-in live two-round
+   debate at the end of Milestone B).
+3. **Replay defined before tools exist** → resolved in Task 17 (replay reconstructs tool-using
+   runs and detects tool-trace drift).
+4. **Toolchain unspecified; CI referenced but never created** → resolved in Task 00 (Bun 1.2+,
+   strict TypeScript, `bun test`, ESLint, GitHub Actions running the same three commands).
+5. Nits: Optuna interchange format → versioned JSON-over-stdio schema in Task 31; secrets
+   redaction → general invariant in Task 11; cost guardrails → Task 19; the ritual red step in
+   Task 00 → replaced with a meaningful smoke assertion.
 
-- **Task 29 (Optuna bridge)** crosses a language boundary: Optuna is Python (v1's `optimize.py`,
-  run via uv), the engine is TypeScript. The plan tests process boundaries, which is right, but
-  the interchange format — how config goes in and the reward vector comes back (JSON over stdio
-  versus files) — should be named and versioned like everything else, since it is effectively
-  another canonical schema.
-- **Secrets redaction** appears only in Task 17 (web search). Since Task 10 defines the event
-  schema, a general "no credentials or secrets in canonical events" invariant belongs there,
-  tested once, rather than per adapter.
-- **Cost guardrails:** per-turn usage is recorded, but nothing enforces a study-level budget
-  before Task 30 spends real money. A max-cost or max-turns cutoff in `ExperimentConfig`
-  (Task 18) would be cheap insurance.
-- **Task 00's red step** ("add a test that cannot run because no harness exists") is ritual
-  rather than signal — harmless, but do not let it force awkward gymnastics.
-
-## Explicitly not recommended to change
-
-The ordering of Task 09 (creativity dial) before the control-vector formalization in Task 19 is
-fine, because the plan already keeps prompt dials and provider sampling controls as separate
-dimensions.
+Round 1 also explicitly endorsed keeping the creativity dial (Task 09) separate from provider
+sampling controls (Task 20), fixing v1's coupling of dial and temperature in `dials.py`.

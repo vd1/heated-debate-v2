@@ -38,11 +38,13 @@ Unless a run overrides them explicitly, the production defaults are model `opena
 
 ### Task 00 — repository test harness
 
-**Red:** Add a trivial test that cannot run because no harness exists.
+Pin the initial toolchain to Bun 1.2+, TypeScript in strict mode, `bun test`, and ESLint. Add scripts named `test`, `typecheck`, and `lint`, plus a minimal GitHub Actions workflow that runs all three.
 
-**Green:** Add the minimum Node/TypeScript test, typecheck, and lint setup; make one smoke test pass.
+**Red:** Write the first meaningful smoke assertion before its minimal implementation.
 
-**Done when:** `test`, `typecheck`, and `lint` each run independently with no provider credentials.
+**Green:** Add only enough configuration and implementation to make the smoke test and checks pass.
+
+**Done when:** `bun run test`, `bun run typecheck`, and `bun run lint` each run independently with no provider credentials, and CI invokes the same commands.
 
 ### Task 01 — Pi capability spike
 
@@ -112,39 +114,45 @@ Introduce a `ContextPolicy` boundary. First implementation: `last-exchange`. Tes
 
 Port the 5→1 dial as a pure function. Use table-driven tests for 1, 2, 3, and 5 rounds and boundary validation. Inject the resulting instruction explicitly into each `TurnRequest`.
 
+### Task 10 — opt-in live two-round debate
+
+Run one skipped-by-default two-round debate through `PiAgent` using the default model or explicit environment overrides. Verify real conversation retention, streaming completion, effective-controls reporting, and clean disposal under real latency.
+
+**Done when:** The smoke test produces a complete in-memory result or a clear skip/authentication failure and remains outside the required unit suite.
+
 ---
 
 ## Milestone C — transparent run artifacts
 
-### Task 10 — canonical event schema
+### Task 11 — canonical event schema
 
-Define versioned events for run start/end, turn request/completion/failure, and effective controls. Test JSON round trips and schema-version rejection.
+Define versioned events for run start/end, turn request/completion/failure, and effective controls. Test JSON round trips, schema-version rejection, and a general invariant that canonical events never serialize credentials, authorization headers, or configured secret fields.
 
-### Task 11 — append-only JSONL writer
+### Task 12 — append-only JSONL writer
 
 Test ordered append, flush, and interrupted-run readability using temporary files. No Markdown yet.
 
-### Task 12 — deterministic replay
+### Task 13 — deterministic replay
 
 Given a recorded run and scripted replies, reconstruct the sequence of turn requests. Test that replay detects prompt/config drift.
 
-### Task 13 — Markdown projection
+### Task 14 — Markdown projection
 
 Render a human-readable transcript solely from canonical events. Snapshot-test a tiny run. Markdown is a projection, never the source of truth.
 
-### Task 14 — failure semantics
+### Task 15 — failure semantics
 
 Table-test timeout, cancellation, empty output, provider failure, and partial-run closure. Do not call `process.exit` from domain code.
 
-### Task 15 — tool capability policy
+### Task 16 — tool capability policy
 
 Define a per-role/per-phase capability policy containing an explicit tool allowlist, call budget, timeout, and result-size limit. Default to no tools, but do not hard-code tool-free agents. Test denial of undeclared tools and exhaustion of budgets.
 
-### Task 16 — deterministic tool loop
+### Task 17 — deterministic tool loop
 
-Give a scripted agent one fake search tool. Test tool request → execution → result → final response, including malformed arguments, tool failure, and cancellation. Record tool schemas, calls, results, durations, and errors as canonical events.
+Give a scripted agent one fake search tool. Test tool request → execution → result → final response, including malformed arguments, tool failure, and cancellation. Record tool schemas, calls, results, durations, and errors as canonical events. Extend deterministic replay so a tool-using run reconstructs tool results as inputs to subsequent model turns and detects tool-trace drift.
 
-### Task 17 — opt-in web search adapter
+### Task 18 — opt-in web search adapter
 
 Add one provider-independent `WebSearchPort` implementation behind a Pi tool. Contract-test it with a fake HTTP/search backend; keep the live test opt-in. Capture query, result provenance, timestamps, and truncation. Never place secrets in run artifacts.
 
@@ -152,11 +160,11 @@ Add one provider-independent `WebSearchPort` implementation behind a Pi tool. Co
 
 ## Milestone D — parameterized experiments
 
-### Task 18 — versioned `ExperimentConfig`
+### Task 19 — versioned `ExperimentConfig`
 
-Add validated configuration for topic, roles, models, rounds, context policy, and per-turn controls. Test defaults (`openai-codex/gpt-5.6-sol`, thinking `high`), invalid values, explicit overrides, and canonical serialization.
+Add validated configuration for topic, roles, models, rounds, context policy, per-turn controls, and hard run/study guardrails such as maximum turns and maximum estimated cost. Test defaults (`openai-codex/gpt-5.6-sol`, thinking `high`), invalid values, explicit overrides, budget exhaustion, and canonical serialization.
 
-### Task 19 — richer control vectors
+### Task 20 — richer control vectors
 
 One control at a time, with tests and provider capability reporting:
 
@@ -171,15 +179,19 @@ One control at a time, with tests and provider capability reporting:
 
 Requested and effective values must both be recorded. Prompt dials, provider sampling controls, and tool capabilities remain separate dimensions.
 
-### Task 20 — benchmark case format
+### Task 21 — benchmark case format
 
 Define a versioned case containing topic, optional source context, evaluation rubric, and provenance. Add three tiny fixture cases; no production corpus yet.
 
-### Task 21 — experiment matrix
+### Task 22 — experiment matrix
 
 Generate deterministic run specifications from cases × parameter configurations × repetitions. Test stable run IDs and duplicate prevention.
 
-### Task 22 — local-model route
+### Task 23 — resumable matrix executor
+
+Execute a matrix through the domain runner using scripted agents. Test deterministic artifact-directory mapping, bounded concurrency, study-budget enforcement, continuation after an individual run failure, resume after interruption, and skipping already-completed run IDs.
+
+### Task 24 — local-model route
 
 Add an opt-in Pi model configuration smoke test for an OpenAI-compatible local endpoint (Gemma target). Keep endpoint/model selection external to domain code.
 
@@ -187,23 +199,23 @@ Add an opt-in Pi model configuration smoke test for an OpenAI-compatible local e
 
 ## Milestone E — evaluation before optimization
 
-### Task 23 — deterministic evaluators
+### Task 25 — deterministic evaluators
 
 Implement non-LLM checks first: completion, contract adherence markers, repetition, output shape, token usage, and latency. Unit-test every score.
 
-### Task 24 — judge rubric and structured result
+### Task 26 — judge rubric and structured result
 
 Define a versioned multidimensional rubric. Contract-test judge parsing with scripted valid, malformed, and partial outputs. Preserve individual dimensions; do not collapse immediately to one score.
 
-### Task 25 — judge agent
+### Task 27 — judge agent
 
 Implement a Pi-backed judge behind an `EvaluatorPort`. The judge sees only declared artifacts. Record judge model, prompt, controls, and raw response.
 
-### Task 26 — evaluator reliability
+### Task 28 — evaluator reliability
 
 Run repeated and permuted evaluations to measure variance, ordering bias, model self-preference, and judge disagreement. Produce a reliability report before optimization is enabled.
 
-### Task 27 — reward function
+### Task 29 — reward function
 
 Define a pure, versioned reward function such as quality minus weighted cost, latency, failure, and variance penalties. Table-test every term and retain the underlying reward vector.
 
@@ -211,19 +223,19 @@ Define a pure, versioned reward function such as quality minus weighted cost, la
 
 ## Milestone F — optimization
 
-### Task 28 — local deterministic optimizer fixture
+### Task 30 — local deterministic optimizer fixture
 
 Use a toy objective to prove trial generation, persistence, resume, and best-trial selection without models.
 
-### Task 29 — Optuna bridge
+### Task 31 — Optuna bridge
 
-Connect the versioned experiment config and reward output to Optuna. Test process boundaries and malformed/missing run artifacts with a fake engine executable.
+Define and version a JSON-over-stdio interchange schema: one run specification enters on stdin and one reward vector or structured failure exits on stdout. Connect it to Optuna. Test schema-version mismatch, process boundaries, and malformed/missing output with a fake engine executable.
 
-### Task 30 — bounded real study
+### Task 32 — bounded real study
 
 Run a small preregistered study over one or two parameters, multiple benchmark cases, and repeated trials. Hold out at least one case from selection.
 
-### Task 31 — comparison report
+### Task 33 — comparison report
 
 Report baseline vs selected protocol on quality dimensions, cost, latency, failure rate, and variance. Do not call a protocol “better” based only on its training topics or the selecting judge.
 
