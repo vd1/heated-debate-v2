@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed; validate in Task 01.
+Proposed; validate in Task A-PI-SPIKE.
 
 ## Decision
 
@@ -41,4 +41,6 @@ Live agents default to `openai-codex/gpt-5.6-sol` with thinking level `high`. Ex
 
 ## Sampling controls
 
-Pi's underlying `pi-ai` stream options include `temperature` and `maxTokens`, and Pi exposes thinking level. Provider support varies. Task 01 must establish which controls are available through the chosen integration level and record the effective—not merely requested—controls. Unsupported controls must fail validation or be explicitly marked unsupported; they must never be silently ignored by the experiment layer.
+Pi's underlying `pi-ai` stream options include `temperature` and `maxTokens`, and Pi exposes thinking level. Provider support varies. Task A-PI-SPIKE must establish which controls are available through the chosen integration level and record the effective—not merely requested—controls. Unsupported controls must fail validation or be explicitly marked unsupported; they must never be silently ignored by the experiment layer.
+
+Pi may perform retries, but the adapter trace must expose attempt count, outcome, and per-attempt usage. Canonical budgets and cost calculations include every observable attempt rather than only the final successful response.

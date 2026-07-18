@@ -2,7 +2,7 @@
 
 - This is a greenfield v2 of `../heated-debate/`.
 - Follow `plans/implementation-plan.md` in order unless the user explicitly reprioritizes it.
-- Work on only one numbered task at a time.
+- Work on only one task ID at a time.
 - Use strict TDD: add a failing test, make the smallest implementation pass, then refactor while green.
 - Keep the domain independent of Pi. Pi belongs behind the `AgentPort` adapter.
 - Do not use live models in unit tests. Live-provider tests must be opt-in integration tests.

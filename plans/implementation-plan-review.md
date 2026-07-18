@@ -2,84 +2,85 @@
 
 Reviews [`plans/implementation-plan.md`](implementation-plan.md), read alongside
 [`docs/ADR-0001-agent-boundary.md`](../docs/ADR-0001-agent-boundary.md), `AGENTS.md`, `README.md`,
-and the v1 repository (`../heated-debate/`).
+and the v1 repository (`../heated-debate/`). Task IDs are the plan's stable slugs.
 
-Task numbers below refer to the revised plan (34 tasks, 00–33).
+## Round 3 — 2026-07-18, after second revision
 
-## Round 2 — 2026-07-18, after revision
+All round-2 findings were addressed (log at bottom). The plan is converging: nothing structural
+remains. Round 3 is consistency-level.
 
-All round-1 findings were addressed; see the log at the bottom. The revised plan is stronger.
-These are second-order findings against the new version.
+### Inconsistencies worth fixing
 
-### Gaps
+#### 1. The interchange schema is implemented before it is defined
 
-#### 1. Nothing builds the real engine executable that Task 31 assumes
+F-ENGINE-CLI builds the real executable that reads a run spec on stdin and emits a reward vector
+on stdout — but the task that "defines and versions" that JSON-over-stdio schema is F-OPTUNA, one
+task *later*. As written, the CLI implements a contract that does not exist yet.
 
-Task 31 defines the JSON-over-stdio interchange (run spec on stdin, reward vector on stdout) and
-tests the Optuna side against a *fake* engine executable. Task 32 then runs a real study — which
-requires the *real* engine binary implementing that interchange, and no task creates it. Task 23's
-matrix executor runs in-process through the domain runner, not as a CLI.
+**Suggestion:** move schema definition into F-ENGINE-CLI (or a small preceding task); F-OPTUNA
+then only *consumes* the schema and tests the bridge against it.
 
-**Suggestion:** add a task between 29 and 31 that wires the existing pieces into the real engine
-entry point: read a run spec, execute, evaluate, emit the reward vector or structured failure.
-This same binary doubles as the minimal human-facing CLI (v1's `shelley.ts` role), which the plan
-otherwise defers entirely under "Web/TUI interface."
+#### 2. Usage granularity is never specified, but pricing depends on it
 
-#### 2. "Maximum estimated cost" has no pricing source
+D-PRICING carries input/output/cache rates, so the usage-to-cost calculation needs a per-attempt
+token breakdown by kind (input, output, cache read/write). Yet "usage" in A-AGENT-PORT and
+C-EVENTS is left as an opaque word. If the normalized usage shape lacks the breakdown, D-PRICING's
+math has no inputs and the whole cost chain silently degrades to guesswork.
 
-Task 19 adds a max-estimated-cost guardrail and Task 29's reward subtracts weighted cost, but the
-system only records token usage. Converting usage to money needs a per-model price table, which
-must itself be versioned (prices change; local Gemma runs are free). No task provides one.
+**Suggestion:** name the usage fields in A-AGENT-PORT's `AgentReply` and freeze them in the
+C-EVENTS schema, with unavailable kinds explicitly marked absent rather than zero.
 
-**Suggestion:** either define budgets and reward-cost terms in tokens (objective, self-contained)
-and treat dollars as derived reporting, or add a small versioned price-table fixture recorded in
-the run artifacts so cost claims are reproducible.
+#### 3. "Accepted reliability artifact" has no acceptance mechanism
 
-#### 3. Task 28 (evaluator reliability) is a live, paid study but is not marked opt-in
+E-RELIABILITY says optimization cannot be enabled without an *accepted* reliability artifact, but
+never defines who accepts it or against what. Without criteria, "accepted" is a vibe, and the gate
+it guards is unenforceable.
 
-Repeated and permuted evaluations only measure variance, ordering bias, and self-preference
-meaningfully against a *real* judge model — scripted judges have zero variance by construction.
-Every other live activity in the plan (Tasks 04, 10, 18, 24, 32) is explicitly opt-in and outside
-the unit suite; Task 28 is not labeled, has no budget bound, and does not say where the
-reliability report lives.
-
-**Suggestion:** mark Task 28 opt-in, bound it with the Task 19 study guardrails, and version the
-reliability report as a canonical artifact — it later justifies enabling optimization, so it needs
-provenance.
+**Suggestion:** give the artifact a status field (like an ADR) plus preregistered acceptance
+thresholds — maximum judge variance, maximum ordering-bias effect — declared in the study spec
+before the reliability runs execute.
 
 ### Smaller points
 
-- **Task 10's live smoke never exercises persistence.** It ends at "a complete in-memory result,"
-  and the next live full run is Task 32 — so "the live path emits well-formed canonical events"
-  goes unverified for the whole of Milestones C–E. After Tasks 11–13 land, extend the Task 10
-  smoke to write and validate a JSONL run record.
-- **Renumbering churn.** Inserting tasks shifted every number from 10 onward, silently staling
-  cross-references (including round 1 of this review). Consider stable task IDs (slugs or gapped
-  numbering) so future insertions don't invalidate ADRs, commits, and reviews that cite tasks.
-- **Retries inside Pi can distort cost accounting.** ADR-0001 assigns retries to Pi; a retried
-  turn consumes real tokens the canonical usage may not show. Require attempt counts and
-  per-attempt usage in the adapter trace (fits Task 03 or Task 11) so budgets bind actual spend.
-- **Task 32's "preregistered" needs a home.** Preregistration only means something if the study
-  spec is committed before execution. Define a versioned study-spec file that run IDs reference,
-  so the report in Task 33 can prove the hypotheses preceded the data.
-- **Controls 5–7 (risk tolerance, deference, verbosity) have no consumer.** No benchmark case or
-  rubric dimension exercises them, and each dial multiplies the Task 22 matrix. The deferred-list
-  bar ("enters when evidence justifies") could apply to individual controls too; 1–4 and 8 all
-  have concrete consumers already.
+- **D-STUDY-SPEC forward-references Milestone E.** The spec includes evaluator versions and rubric
+  IDs before any evaluator exists. Fine if the spec treats them as opaque versioned references
+  validated later (E-RELIABILITY, F-STUDY) — worth one sentence saying so, so D-STUDY-SPEC's
+  tests don't try to validate what can't exist yet.
+- **Per-run budget enforcement has no stated owner.** D-CONFIG defines retry-inclusive budgets and
+  D-EXECUTOR enforces the *study* budget, but nothing says which component halts a single
+  in-flight run when its token budget trips mid-debate. That check belongs in the domain loop and
+  is naturally table-tested alongside C-FAILURES ("budget exhausted" as one more failure row).
+- **Keep git introspection out of the domain.** D-STUDY-SPEC's committed/clean-worktree check and
+  F-STUDY's commit-hash stamping require git; that belongs in the CLI/executor layer, mirroring
+  the existing "no `process.exit` in domain code" rule.
+- **Milestone letters in slugs are historical, not locational.** F-ENGINE-CLI would not become
+  "D-" if it ever moved earlier. Extending rule 9 with "letters record where a task was born and
+  are never corrected" preempts a future renaming debate.
+- **Two live debate smokes now overlap.** C-LIVE-ARTIFACT re-runs the B-LIVE-DEBATE scenario
+  through the writer. Once C-LIVE-ARTIFACT exists, consider retiring B-LIVE-DEBATE's separate
+  path so only one live-debate harness needs maintaining.
+
+## Round 2 — 2026-07-18, first revision (all resolved)
+
+1. **No real engine executable** (Optuna bridge tested only against a fake) → F-ENGINE-CLI.
+2. **"Maximum estimated cost" had no pricing source** → D-PRICING (versioned snapshot, zero-cost
+   local entry, snapshot hash recorded in artifacts).
+3. **Evaluator reliability was live/paid but not opt-in** → E-RELIABILITY (skipped by default,
+   guardrails enforced, versioned reliability artifact).
+4. Smaller: live smoke never exercised persistence → C-LIVE-ARTIFACT; renumbering churn → stable
+   slugs and working rule 9; Pi retries vs budgets → per-attempt accounting in ADR-0001 and
+   A-PI-ADAPTER; "preregistered" needed a home → D-STUDY-SPEC; unconsumed dials (risk tolerance,
+   deference, verbosity) → moved to the deferred list.
 
 ## Round 1 — 2026-07-18, initial plan (all resolved)
 
-1. **No experiment runner between matrix generation and the real study** → resolved by Task 23
-   (resumable matrix executor with artifact mapping, concurrency, budgets, resume, dedup).
-2. **First live end-to-end debate ~28 tasks in** → resolved by Task 10 (opt-in live two-round
-   debate at the end of Milestone B).
-3. **Replay defined before tools exist** → resolved in Task 17 (replay reconstructs tool-using
-   runs and detects tool-trace drift).
-4. **Toolchain unspecified; CI referenced but never created** → resolved in Task 00 (Bun 1.2+,
-   strict TypeScript, `bun test`, ESLint, GitHub Actions running the same three commands).
-5. Nits: Optuna interchange format → versioned JSON-over-stdio schema in Task 31; secrets
-   redaction → general invariant in Task 11; cost guardrails → Task 19; the ritual red step in
-   Task 00 → replaced with a meaningful smoke assertion.
+1. **No experiment runner between matrix generation and the real study** → D-EXECUTOR.
+2. **First live debate ~28 tasks in** → B-LIVE-DEBATE at the end of Milestone B.
+3. **Replay defined before tools existed** → C-TOOL-LOOP extends replay to tool-using runs.
+4. **Toolchain unspecified; CI referenced but never created** → Task A-HARNESS (Bun 1.2+, strict
+   TypeScript, `bun test`, ESLint, GitHub Actions).
+5. Nits: Optuna interchange → versioned schema; secrets redaction → C-EVENTS invariant; cost
+   guardrails → D-CONFIG; ritual red step → meaningful smoke assertion.
 
-Round 1 also explicitly endorsed keeping the creativity dial (Task 09) separate from provider
-sampling controls (Task 20), fixing v1's coupling of dial and temperature in `dials.py`.
+Round 1 also endorsed keeping the creativity dial (B-DIAL) separate from provider sampling
+controls (D-CONTROLS), fixing v1's coupling of dial and temperature in `dials.py`.
