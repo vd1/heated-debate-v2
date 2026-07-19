@@ -69,7 +69,7 @@ export async function runExchange(input: RunExchangeInput): Promise<ExchangeResu
   const proposalRequest: TurnRequest = {
     turnId: turnId(exchangeId, "proposer"),
     role: proposer.role,
-    creativity,
+    creativity: structuredClone(creativity),
     context: selectLastExchangeContext({
       role: "proposer",
       topic,
@@ -90,7 +90,7 @@ export async function runExchange(input: RunExchangeInput): Promise<ExchangeResu
   const reviewRequest: TurnRequest = {
     turnId: turnId(exchangeId, "reviewer"),
     role: reviewer.role,
-    creativity,
+    creativity: structuredClone(creativity),
     context: selectLastExchangeContext({
       role: "reviewer",
       topic,

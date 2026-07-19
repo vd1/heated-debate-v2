@@ -11,8 +11,8 @@ const INSTRUCTIONS: Readonly<Record<CreativityLevel, string>> = Object.freeze({
   5: "Explore radical alternatives. Question the premise. Propose unconventional approaches even if risky.",
   4: "Suggest improvements and alternatives. Challenge assumptions. Consider non-obvious solutions.",
   3: "Mix new ideas with refinement. Address open questions. Weigh tradeoffs.",
-  2: "Refine the current approach. Fix issues. Tighten the specification. Avoid introducing new directions.",
-  1: "Converge and finalize the architectural decisions into a clear bulleted plan.",
+  2: "Refine the current approach. Fix issues. Tighten the spec. Avoid introducing new directions.",
+  1: "Converge and finalize the architectural decisions into a clear bulleted plan. DO NOT write code diffs or attempt to apply changes.",
 });
 
 export function selectCreativity(roundIndex: number, totalRounds: number): CreativitySelection {

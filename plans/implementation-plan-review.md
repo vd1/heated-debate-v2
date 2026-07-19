@@ -720,6 +720,39 @@ suite passes 29 tests with one intentional live skip; type checking and linting 
 the [B-ROUNDS GitHub Actions run](https://github.com/vd1/heated-debate-v2/actions/runs/29693263516).
 No corrective carry-forward is needed. B-DIAL is unblocked.
 
+### B-DIAL (`9fe2d26`) — changes requested
+
+The pure schedule calculation is correct and remains independent of provider sampling controls.
+Its tests lock `[5]`, `[5, 1]`, `[5, 3, 1]`, and `[5, 4, 3, 2, 1]`, all five instruction
+strings, schedule identity/version, frozen selections, and invalid count/index boundaries.
+`runDebate` selects once per round, both turns record creativity separately from their context
+messages, and the debate regression proves temperature does not cool with the prompt dial.
+
+Two corrections are required:
+
+1. `runExchange` clones `input.creativity` once, exposes that object in the proposer request, and
+   reuses it to construct the reviewer request after awaiting the proposer. A direct mutating-agent
+   probe changed the exposed proposer selection from level 5 / `"original"` to level 1 /
+   `"mutated"`; the stored proposer snapshot retained the original selection, but the reviewer
+   received level 1 and its prompt began `[Creativity: 1/5] mutated`. This violates the established
+   async snapshot boundary and lets one agent alter a later turn. Keep an unexposed master snapshot
+   and give each request/context an independent clone, then add a deferred or mutating-agent
+   regression that proves both turns retain the selected round value.
+2. The exact prompt provenance is unresolved. The two v1 sources already disagree:
+   `../heated-debate/shelley.ts` adds a no-code-diffs sentence at level 1, while
+   `../heated-debate/later/dials.py` uses a different convergence instruction; both say
+   `"Tighten the spec."` at level 2. B-DIAL instead records a third set under
+   `scheduleVersion: "1"` (`"Tighten the specification."` and a shortened Shelley-derived level
+   1). Choose and document the authoritative v1 source and port its exact strings, or explicitly
+   define this as a new v2 prompt schedule with an appropriate identity/version. Keep exact-text
+   tests for the resulting choice.
+
+The current required suite passes 41 tests with one intentional live skip; type checking, linting,
+commit whitespace validation, and the
+[B-DIAL GitHub Actions run](https://github.com/vd1/heated-debate-v2/actions/runs/29693879112)
+are green. Those checks do not exercise the cross-turn mutation above. Keep B-DIAL active and do
+not start B-LIVE-DEBATE until both findings are resolved and re-reviewed.
+
 ## Round 2 — 2026-07-18, first revision (all resolved)
 
 1. **No real engine executable** (Optuna bridge tested only against a fake) → F-ENGINE-CLI.

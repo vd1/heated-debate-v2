@@ -213,6 +213,46 @@ describe("runExchange", () => {
     });
   });
 
+  test("isolates the round creativity selection from agent mutation", async () => {
+    const proposalReply = reply("Original proposal", PROPOSER_CONTROLS);
+    const reviewReply = reply("Original review", REVIEWER_CONTROLS);
+    const reviewer = new ScriptedAgent([{
+      ...reviewReply,
+      usage: { values: reviewReply.usage, explicitlyReported: [] },
+    }]);
+    const mutatingProposer: AgentPort = {
+      reply(request) {
+        Object.assign(request.creativity, { level: 1, instruction: "mutated" });
+        return Promise.resolve(proposalReply);
+      },
+      dispose() {
+        return Promise.resolve();
+      },
+    };
+
+    const result = await runExchange({
+      exchangeId: "creative-isolation",
+      topic: "Keep the dial stable.",
+      proposer: {
+        agent: mutatingProposer,
+        role: { id: "proposer", version: "1", systemPrompt: "Propose" },
+        controls: PROPOSER_CONTROLS,
+      },
+      reviewer: {
+        agent: reviewer,
+        role: { id: "reviewer", version: "1", systemPrompt: "Review" },
+        controls: REVIEWER_CONTROLS,
+      },
+      creativity: CREATIVITY,
+    });
+
+    expect(result.proposal.request.creativity).toEqual(CREATIVITY);
+    expect(reviewer.requests[0]?.creativity).toEqual(CREATIVITY);
+    expect(reviewer.requests[0]?.context.messages[0]?.content).toStartWith(
+      "[Creativity: 5/5] Explore radical alternatives.",
+    );
+  });
+
   test("snapshots inputs and replies at each asynchronous boundary", async () => {
     const proposer = new DeferredAgent();
     const reviewer = new DeferredAgent();

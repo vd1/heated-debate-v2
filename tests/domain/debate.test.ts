@@ -117,14 +117,14 @@ describe("runDebate", () => {
     expect(proposer.agent.requests[1]?.context.messages).toEqual([
       {
         role: "user",
-        content: "[Creativity: 1/5] Converge and finalize the architectural decisions into a clear bulleted plan.\n\nTopic:\nDesign a scheduler.\n\nPrevious proposal:\nP1\n\nReview:\nR1",
+        content: "[Creativity: 1/5] Converge and finalize the architectural decisions into a clear bulleted plan. DO NOT write code diffs or attempt to apply changes.\n\nTopic:\nDesign a scheduler.\n\nPrevious proposal:\nP1\n\nReview:\nR1",
       },
     ]);
     expect(reviewer.agent.requests[1]?.context.messages).toEqual([
       {
         role: "user",
         content: [
-          "[Creativity: 1/5] Converge and finalize the architectural decisions into a clear bulleted plan.",
+          "[Creativity: 1/5] Converge and finalize the architectural decisions into a clear bulleted plan. DO NOT write code diffs or attempt to apply changes.",
           "",
           "Topic:",
           "Design a scheduler.",
