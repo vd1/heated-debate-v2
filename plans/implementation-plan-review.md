@@ -720,7 +720,7 @@ suite passes 29 tests with one intentional live skip; type checking and linting 
 the [B-ROUNDS GitHub Actions run](https://github.com/vd1/heated-debate-v2/actions/runs/29693263516).
 No corrective carry-forward is needed. B-DIAL is unblocked.
 
-### B-DIAL (`9fe2d26`) — changes requested
+### B-DIAL (`9fe2d26`, corrected by `9d9c943`) — pass
 
 The pure schedule calculation is correct and remains independent of provider sampling controls.
 Its tests lock `[5]`, `[5, 1]`, `[5, 3, 1]`, and `[5, 4, 3, 2, 1]`, all five instruction
@@ -747,11 +747,23 @@ Two corrections are required:
    define this as a new v2 prompt schedule with an appropriate identity/version. Keep exact-text
    tests for the resulting choice.
 
-The current required suite passes 41 tests with one intentional live skip; type checking, linting,
+The initial required suite passed 41 tests with one intentional live skip; type checking, linting,
 commit whitespace validation, and the
 [B-DIAL GitHub Actions run](https://github.com/vd1/heated-debate-v2/actions/runs/29693879112)
-are green. Those checks do not exercise the cross-turn mutation above. Keep B-DIAL active and do
-not start B-LIVE-DEBATE until both findings are resolved and re-reviewed.
+were green, but those checks did not exercise the cross-turn mutation above.
+
+Resolved in `9d9c943`: `runExchange` retains an unexposed creativity snapshot and gives each
+`TurnRequest` an independent clone. The new mutating-agent regression changes the proposer copy
+and proves the stored proposal selection, reviewer selection, and reviewer prompt all retain the
+original round value. ADR-0002 now names Shelley's active TypeScript `DIAL_PROMPTS` as the v1
+authority, explains why `later/dials.py` is excluded, and requires a new version for future
+wording changes. Levels 2 and 1 now exactly match Shelley, and the existing exact-text tests lock
+that choice.
+
+The corrected required suite passes 42 tests with one intentional live skip; the targeted
+mutation regression, type checking, linting, commit whitespace validation, and the
+[corrected GitHub Actions run](https://github.com/vd1/heated-debate-v2/actions/runs/29694117580)
+are green. Both findings are closed. B-DIAL passes and B-LIVE-DEBATE is unblocked.
 
 ## Round 2 — 2026-07-18, first revision (all resolved)
 
