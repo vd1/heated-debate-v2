@@ -39,34 +39,49 @@ export interface ExchangeResult {
 }
 
 export async function runExchange(input: RunExchangeInput): Promise<ExchangeResult> {
-  const proposalRequest: TurnRequest = {
-    turnId: turnId(input.exchangeId, "proposer"),
+  const exchangeId = input.exchangeId;
+  const topic = input.topic;
+  const proposer = {
+    agent: input.proposer.agent,
     systemPrompt: input.proposer.systemPrompt,
-    prompt: proposalPrompt(input.topic),
     controls: structuredClone(input.proposer.controls),
+  };
+  const reviewer = {
+    agent: input.reviewer.agent,
+    systemPrompt: input.reviewer.systemPrompt,
+    controls: structuredClone(input.reviewer.controls),
+  };
+
+  const proposalRequest: TurnRequest = {
+    turnId: turnId(exchangeId, "proposer"),
+    systemPrompt: proposer.systemPrompt,
+    prompt: proposalPrompt(topic),
+    controls: proposer.controls,
     capabilities: { toolNames: [] },
   };
-  const proposalReply = await input.proposer.agent.reply(proposalRequest);
+  const proposalRequestSnapshot = structuredClone(proposalRequest);
+  const proposalReply = structuredClone(await proposer.agent.reply(proposalRequest));
 
   const reviewRequest: TurnRequest = {
-    turnId: turnId(input.exchangeId, "reviewer"),
-    systemPrompt: input.reviewer.systemPrompt,
-    prompt: reviewPrompt(input.topic, proposalReply.text),
-    controls: structuredClone(input.reviewer.controls),
+    turnId: turnId(exchangeId, "reviewer"),
+    systemPrompt: reviewer.systemPrompt,
+    prompt: reviewPrompt(topic, proposalReply.text),
+    controls: reviewer.controls,
     capabilities: { toolNames: [] },
   };
-  const reviewReply = await input.reviewer.agent.reply(reviewRequest);
+  const reviewRequestSnapshot = structuredClone(reviewRequest);
+  const reviewReply = structuredClone(await reviewer.agent.reply(reviewRequest));
 
   return deepFreeze({
-    exchangeId: input.exchangeId,
-    topic: input.topic,
+    exchangeId,
+    topic,
     proposal: {
-      request: structuredClone(proposalRequest),
-      reply: structuredClone(proposalReply),
+      request: proposalRequestSnapshot,
+      reply: proposalReply,
     },
     review: {
-      request: structuredClone(reviewRequest),
-      reply: structuredClone(reviewReply),
+      request: reviewRequestSnapshot,
+      reply: reviewReply,
     },
   });
 }

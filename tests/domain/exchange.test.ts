@@ -84,6 +84,38 @@ function scriptedParticipant(
   };
 }
 
+class DeferredAgent implements AgentPort {
+  readonly requests: TurnRequest[] = [];
+  readonly started: Promise<void>;
+
+  private markStarted: (() => void) | undefined;
+  private resolveReply: ((reply: AgentReply) => void) | undefined;
+  private readonly pendingReply: Promise<AgentReply>;
+
+  constructor() {
+    this.started = new Promise<void>((resolve) => {
+      this.markStarted = resolve;
+    });
+    this.pendingReply = new Promise<AgentReply>((resolve) => {
+      this.resolveReply = resolve;
+    });
+  }
+
+  reply(request: TurnRequest): Promise<AgentReply> {
+    this.requests.push(structuredClone(request));
+    this.markStarted?.();
+    return this.pendingReply;
+  }
+
+  resolve(reply: AgentReply): void {
+    this.resolveReply?.(reply);
+  }
+
+  dispose(): Promise<void> {
+    return Promise.resolve();
+  }
+}
+
 describe("runExchange", () => {
   test("runs exactly one proposer turn followed by one reviewer turn", async () => {
     const order: string[] = [];
@@ -141,6 +173,56 @@ describe("runExchange", () => {
       proposal: { request: expectedProposalRequest, reply: proposalReply },
       review: { request: expectedReviewRequest, reply: reviewReply },
     });
+  });
+
+  test("snapshots inputs and replies at each asynchronous boundary", async () => {
+    const proposer = new DeferredAgent();
+    const reviewer = new DeferredAgent();
+    const input = {
+      exchangeId: "deferred",
+      topic: "Original topic",
+      proposer: {
+        agent: proposer,
+        systemPrompt: "Original proposer system",
+        controls: structuredClone(PROPOSER_CONTROLS),
+      },
+      reviewer: {
+        agent: reviewer,
+        systemPrompt: "Original reviewer system",
+        controls: structuredClone(REVIEWER_CONTROLS),
+      },
+    };
+
+    const pending = runExchange(input);
+    await proposer.started;
+    input.exchangeId = "mutated-id";
+    input.topic = "Mutated topic";
+    input.reviewer.systemPrompt = "Mutated reviewer system";
+    input.reviewer.controls.thinkingLevel = "off";
+
+    const mutableProposal = reply("Original proposal", PROPOSER_CONTROLS);
+    proposer.resolve(mutableProposal);
+    await reviewer.started;
+    expect(reviewer.requests[0]).toEqual({
+      turnId: "deferred:reviewer",
+      systemPrompt: "Original reviewer system",
+      prompt: "Topic:\nOriginal topic\n\nProposal:\nOriginal proposal",
+      controls: REVIEWER_CONTROLS,
+      capabilities: { toolNames: [] },
+    });
+
+    mutableProposal.text = "Mutated proposal";
+    mutableProposal.usage.inputTokens = 999;
+    const mutableReview = reply("Original review", REVIEWER_CONTROLS);
+    reviewer.resolve(mutableReview);
+    const result = await pending;
+    mutableReview.text = "Mutated review";
+
+    expect(result.exchangeId).toBe("deferred");
+    expect(result.topic).toBe("Original topic");
+    expect(result.proposal.reply.text).toBe("Original proposal");
+    expect(result.proposal.reply.usage.inputTokens).toBe(10);
+    expect(result.review.reply.text).toBe("Original review");
   });
 
   test("returns deeply frozen snapshots independent of mutable inputs", async () => {
