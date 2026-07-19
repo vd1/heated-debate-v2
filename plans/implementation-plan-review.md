@@ -676,6 +676,29 @@ green, as is the
 No corrective carry-forward is needed. B-CONTEXT is next and must make the exact ordered
 model-input messages explicit before B-ROUNDS.
 
+### B-CONTEXT (`675df68`) — pass
+
+The new domain-owned `ContextDecision` records policy ID/version and the exact ordered normalized
+messages. `selectLastExchangeContext` is a pure policy with separate proposer/reviewer inputs;
+tests lock first-turn behavior and the stable inclusion order of topic, own prior response,
+counterparty response, and current proposal. Version 1 deliberately materializes those selected
+sections into one user message, and the decision, message array, and message are frozen.
+
+`TurnRequest` now carries that complete decision instead of an unstructured prompt. `runExchange`
+uses the policy for both turns and retains the decision in its immutable request snapshots.
+`PiAgent` always replaces its internal transcript with the selected prefix, converts normalized
+assistant/user messages at the adapter boundary, and sends the selected final user message. The
+two-turn adapter regression asserts the exact second-turn message contents, proving the first
+Pi turn cannot leak through retained history. Empty selections and selections not ending in a
+user message fail clearly at synchronization, and ADR-0001 now documents reset/replay as the
+current mechanism rather than implicit persistence.
+
+The domain context module has no Pi dependency. The required suite passes 26 tests with one
+intentional live skip; type checking and linting are green, as is the
+[B-CONTEXT GitHub Actions run](https://github.com/vd1/heated-debate-v2/actions/runs/29692124192).
+No corrective carry-forward is needed. B-ROUNDS is unblocked, but it must obtain every later-turn
+input through this policy rather than assembling additional prompt text itself.
+
 ## Round 2 — 2026-07-18, first revision (all resolved)
 
 1. **No real engine executable** (Optuna bridge tested only against a fake) → F-ENGINE-CLI.
