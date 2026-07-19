@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { appendFile, mkdtemp, readFile, rm } from "node:fs/promises";
+import { appendFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -166,6 +166,41 @@ describe("JsonlEventWriter", () => {
     expect(await rejectionMessage(readCanonicalJsonl(path))).toContain(
       "invalid JSONL record at line 2",
     );
+  });
+
+  test("rejects invalid UTF-8 in a committed record with its line number", async () => {
+    const path = await temporaryPath();
+    const first = runEvents()[0];
+    if (!first) throw new Error("bad fixture");
+    const valid = Buffer.from(`${serializeCanonicalEvent(first, { secrets: [] })}\n`);
+    const marker = Buffer.from("Test JSONL");
+    const markerIndex = valid.indexOf(marker);
+    if (markerIndex < 0) throw new Error("bad fixture");
+    valid[markerIndex] = 0xc3;
+    await writeFile(path, valid);
+
+    expect(await rejectionMessage(readCanonicalJsonl(path))).toContain(
+      "invalid UTF-8 at JSONL line 1",
+    );
+  });
+
+  test("reports a tail truncated inside a UTF-8 code point using its byte length", async () => {
+    const path = await temporaryPath();
+    const writer = await JsonlEventWriter.create(path, { secrets: [] });
+    const first = runEvents()[0];
+    if (!first) throw new Error("bad fixture");
+    await writer.append(first);
+    await writer.close();
+    await appendFile(path, Buffer.from([0xe2, 0x82]));
+
+    expect(await readCanonicalJsonl(path)).toEqual({
+      events: [first],
+      tail: {
+        status: "interrupted",
+        classification: "invalid-utf8",
+        byteLength: 2,
+      },
+    });
   });
 
   test("flush drains a pending append before sync and close is idempotent", async () => {

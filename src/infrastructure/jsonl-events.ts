@@ -25,7 +25,11 @@ export type JsonlTailStatus =
   | { status: "clean" }
   | {
       status: "interrupted";
-      classification: "valid-uncommitted-event" | "invalid-event" | "invalid-json";
+      classification:
+        | "valid-uncommitted-event"
+        | "invalid-event"
+        | "invalid-json"
+        | "invalid-utf8";
       byteLength: number;
     };
 
@@ -146,24 +150,32 @@ export class JsonlEventWriter {
 }
 
 export async function readCanonicalJsonl(path: string): Promise<CanonicalJsonlReadResult> {
-  const text = await readFile(path, "utf8");
-  const lines = text.split("\n");
-  let tail: JsonlTailStatus = { status: "clean" };
-
-  if (text.length === 0 || text.endsWith("\n")) {
-    lines.pop();
-  } else {
-    const uncommitted = lines.pop() ?? "";
-    tail = classifyTail(uncommitted);
+  const bytes = await readFile(path);
+  const committed: Uint8Array[] = [];
+  let recordStart = 0;
+  for (let index = 0; index < bytes.length; index += 1) {
+    if (bytes[index] !== 0x0a) continue;
+    committed.push(bytes.subarray(recordStart, index));
+    recordStart = index + 1;
   }
+  const tail = recordStart === bytes.length
+    ? { status: "clean" as const }
+    : classifyTail(bytes.subarray(recordStart));
 
-  const events = lines.map((line, index) => {
-    if (line.length === 0) throw new Error(`empty JSONL record at line ${String(index + 1)}`);
+  const events = committed.map((record, index) => {
+    const lineNumber = index + 1;
+    let line: string;
+    try {
+      line = decodeUtf8(record);
+    } catch {
+      throw new Error(`invalid UTF-8 at JSONL line ${String(lineNumber)}`);
+    }
+    if (line.length === 0) throw new Error(`empty JSONL record at line ${String(lineNumber)}`);
     try {
       return parseCanonicalEvent(line);
     } catch (error) {
       throw new Error(
-        `invalid JSONL record at line ${String(index + 1)}: ${toError(error).message}`,
+        `invalid JSONL record at line ${String(lineNumber)}: ${toError(error).message}`,
       );
     }
   });
@@ -171,22 +183,32 @@ export async function readCanonicalJsonl(path: string): Promise<CanonicalJsonlRe
   return { events, tail };
 }
 
-function classifyTail(value: string): JsonlTailStatus {
+function classifyTail(value: Uint8Array): JsonlTailStatus {
   const base = {
     status: "interrupted" as const,
-    byteLength: Buffer.byteLength(value),
+    byteLength: value.byteLength,
   };
+  let decoded: string;
   try {
-    JSON.parse(value) as unknown;
+    decoded = decodeUtf8(value);
+  } catch {
+    return { ...base, classification: "invalid-utf8" };
+  }
+  try {
+    JSON.parse(decoded) as unknown;
   } catch {
     return { ...base, classification: "invalid-json" };
   }
   try {
-    parseCanonicalEvent(value);
+    parseCanonicalEvent(decoded);
   } catch {
     return { ...base, classification: "invalid-event" };
   }
   return { ...base, classification: "valid-uncommitted-event" };
+}
+
+function decodeUtf8(value: Uint8Array): string {
+  return new TextDecoder("utf-8", { fatal: true }).decode(value);
 }
 
 function toError(error: unknown): Error {

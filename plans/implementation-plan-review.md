@@ -901,7 +901,7 @@ type checking, linting, commit whitespace validation, and the
 [corrected GitHub Actions run](https://github.com/vd1/heated-debate-v2/actions/runs/29704248259)
 are green. All three findings are closed. C-EVENTS passes and C-JSONL is unblocked.
 
-### C-JSONL (`04e4f13`) — changes requested
+### C-JSONL (`04e4f13`, corrected by `9638254`) — changes requested
 
 The basic writer path is well structured. It opens a new file in exclusive append mode, copies
 the secret configuration, validates and snapshots each event before queueing, and serializes
@@ -939,6 +939,30 @@ type checking, linting, commit whitespace validation, and the
 [C-JSONL GitHub Actions run](https://github.com/vd1/heated-debate-v2/actions/runs/29704457309)
 are green. Those checks do not cover the reproduced failure modes above. Keep C-JSONL active and
 C-REPLAY blocked until all three findings are resolved and re-reviewed.
+
+Re-review of `9638254`: the three original findings are closed. The reader now returns committed
+events plus explicit clean/interrupted tail status and distinguishes valid-uncommitted,
+invalid-event, and invalid-JSON tails; committed middle corruption remains a line-located error.
+The injected I/O boundary proves pending flush order and idempotent close. Append failure now
+poisons the writer before any queued/later append can write, while `close` still syncs and
+releases the handle; the partial-write regression retains a readable committed prefix and an
+explicit interrupted tail.
+
+One reader-integrity correction remains. `readFile(path, "utf8")` performs replacement decoding
+before records are validated. A direct probe inserted byte `0xC3` inside a newline-committed
+topic string; the reader accepted the event and silently changed the canonical topic to Unicode
+replacement character `U+FFFD` instead of reporting corruption. Replacement decoding can also
+make interrupted-tail `byteLength` differ from the bytes actually present when a write ends
+mid-codepoint. Read raw bytes, split on the newline byte, and decode each committed record with
+fatal UTF-8 validation; report invalid UTF-8 with its line number. Classify an invalid/truncated
+UTF-8 tail explicitly and calculate its length from the original bytes. Add regressions for both
+a committed invalid UTF-8 record and a tail ending inside a multibyte sequence.
+
+The corrected suite passes 63 tests with two intentional live skips; the focused JSONL suite,
+type checking, linting, commit whitespace validation, and the
+[correction GitHub Actions run](https://github.com/vd1/heated-debate-v2/actions/runs/29704844194)
+are green. Keep C-JSONL active and C-REPLAY blocked until this final byte-level corruption gap is
+resolved and re-reviewed.
 
 ## Round 2 — 2026-07-18, first revision (all resolved)
 
