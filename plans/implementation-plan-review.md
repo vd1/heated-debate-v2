@@ -4,6 +4,489 @@ Reviews [`plans/implementation-plan.md`](implementation-plan.md), read alongside
 [`docs/ADR-0001-agent-boundary.md`](../docs/ADR-0001-agent-boundary.md), `AGENTS.md`, `README.md`,
 and the v1 repository (`../heated-debate/`). Task IDs are the plan's stable slugs.
 
+## Forward implementation review — 2026-07-19, after A-PI-ADAPTER
+
+Repository baseline before this review: `main` was clean at `48c65b2`; `bun run test` passed all
+13 tests, and type checking and linting were green. The implemented surface is intentionally
+small: the domain-owned agent contract, `ScriptedAgent`, and the one-turn `PiAgent`. Every task
+from A-LIVE-TURN onward was reviewed against that code, ADR-0001, and relevant v1 behavior.
+
+**Overall verdict:** the milestone progression remains good, but the future plan is not safe to
+execute unchanged. A-LIVE-TURN, B-EXCHANGE, and B-ROLES can proceed in order. B-CONTEXT must then
+move ahead of B-ROUNDS, and three cross-cutting contracts need to be settled at their named task
+boundaries.
+
+### Required corrections to the execution path
+
+1. **Move B-CONTEXT before B-ROUNDS.** `PiAgent` currently retains its entire provider
+   conversation. `TurnRequest` declares only the new system prompt and prompt, so retained
+   messages are neither selected by policy nor visible in run data. Building multiple rounds
+   before fixing that would violate the repository rule against silently added context.
+2. **Record the exact effective model input.** By B-CONTEXT, each turn needs a normalized,
+   ordered message list selected by a named/versioned context policy. The Pi adapter must either
+   rebuild its state from that list or expose and validate the exact retained list; merely
+   recording `TurnRequest.prompt` is insufficient. This exact list later belongs in C-EVENTS.
+3. **Make failed and in-progress attempts observable before C-FAILURES.** `PiAgent.runReply`
+   currently discards `activeResponses` when `agent.prompt` throws, and the domain receives
+   attempt data only after a successful reply. A typed failure carrying its partial trace, or an
+   adapter-attempt observer, is required for failure events and retry-inclusive budgets.
+4. **Choose tool-loop ownership before C-TOOL-LOOP.** The project should own a normalized tool
+   dispatcher that enforces policy and emits traces; Pi-specific `AgentTool` wrappers and a
+   scripted model driver can both use it. Leaving the loop solely inside Pi would make scripted
+   tests, budget enforcement, failure traces, and replay provider-shaped.
+5. **Recast D-CONTROLS as end-to-end consolidation.** Thinking, output limit, and temperature
+   already exist; creativity arrives in B-DIAL and tools in Milestone C. D-CONTROLS should prove
+   config → request → adapter report → canonical event propagation for those existing controls,
+   not add them a second time.
+6. **Add canonical evaluation records before live judging.** C-EVENTS covers debate-run events,
+   but E-JUDGE must also preserve every judge input, prompt, control, response, and artifact
+   reference. E-RUBRIC or E-JUDGE must version that linked evaluation record before any live
+   reliability run.
+
+### Milestone A
+
+#### A-LIVE-TURN — ready, with a tighter live-test contract
+
+Use one unmistakable opt-in variable such as `HEATED_DEBATE_LIVE=1`; the ordinary `test` command
+must discover the test but skip it without constructing a runtime that can contact a provider.
+When opted in, resolve the provider/model through `ModelRuntime`, use stored Pi authentication,
+and fail clearly if either model or credential is unavailable. Bound the fixed prompt with a
+short timeout and small `maxOutputTokens`, dispose in `finally`, and report only normalized
+provider/model/control/usage data—never credential metadata or raw request headers. This is also
+the right place to add the smallest production factory that turns runtime + model identity into a
+`PiAgent`; do not make later live tests repeat model/auth wiring.
+
+The live assertion must accept genuinely unavailable usage kinds and provider verification. It
+should not require nonzero tokens in every field or claim that forwarding proves provider
+honoring.
+
+### Milestone B
+
+#### B-EXCHANGE — ready
+
+Define an exchange as exactly two ordered turns: proposer, then reviewer. The test should assert
+the complete reviewer `TurnRequest`, not just use substring matching. Return immutable snapshots
+of both requests and replies so later event emission does not have to reconstruct what happened
+from final text. Keep controls and the empty capability policy explicit, even though this task
+adds no dials or tools.
+
+Use a deterministic turn-ID rule from the first test. The result should distinguish the original
+topic, proposal, and review rather than flattening them into one transcript string.
+
+#### B-ROLES — ready
+
+Give each role a stable, versioned ID and exact prompt text. TypeScript `readonly` or `as const`
+alone does not make an exported object immutable at runtime, so expose frozen values or defensive
+copies. Record the role ID and the exact prompt snapshot used by each turn; a later edit to the
+role registry must not rewrite the meaning of an old run.
+
+Keep role definition separate from agent/model assignment. “Proposer” is protocol behavior,
+whereas a particular Pi model is experiment configuration.
+
+#### B-ROUNDS — reorder after B-CONTEXT
+
+Do not implement this immediately after B-ROLES. First land B-CONTEXT and make effective input
+messages explicit. Then specify that one round contains two turns and that `roundCount` therefore
+implies `2 * roundCount` successful turn requests unless a failure stops the run. Round one must
+define the absence of a prior review; later proposer turns consume the selected prior review, and
+reviewer turns consume the current proposal.
+
+Tests should cover exact ordered inputs and chronological results for two rounds. They should
+also prove that no earlier proposal/review leaks through the adapter beyond what the selected
+context policy declares.
+
+#### B-CONTEXT — required before B-ROUNDS
+
+Make `ContextPolicy` a pure domain selector whose output is an ordered list of normalized
+messages plus a policy ID/version. Define `last-exchange` separately for each role: which topic,
+own prior response, counterparty response, and current proposal are included must be explicit in
+tests. “Pi retained the conversation” is an adapter mechanism, not a context policy.
+
+The safest current fit is for `TurnRequest` to carry the exact selected input messages and for
+`PiAgent` to synchronize its internal state to them before prompting. If persistent Pi state is
+kept as an optimization, compare it with the selected list and reset/replay on any mismatch.
+Canonical data must eventually contain both the policy decision and every effective message.
+
+#### B-DIAL — ready after explicit context
+
+Port only the prompt dial from v1, not v1's coupled temperature schedule. Freeze the expected
+tables: one round `[5]`, two `[5, 1]`, three `[5, 3, 1]`, and five `[5, 4, 3, 2, 1]`; reject a
+non-positive round count and an index outside `[0, totalRounds)`. Record the selected level,
+schedule version, and exact injected instruction separately from the assembled prompt so the
+dial can later be varied and audited.
+
+The one-round choice of 5 is inherited behavior, but it is a policy decision rather than a
+mathematical necessity. Keep it locked by the test so an optimizer cannot silently change its
+meaning.
+
+#### B-LIVE-DEBATE — ready only after the context correction
+
+Reuse the A-LIVE-TURN factory and opt-in gate. Instantiate one agent per role, enforce the exact
+`last-exchange` selections, and dispose both agents in `finally`. Assert structure, turn count,
+effective message trace, response identity, and the control states applicable to the selected
+provider; do not assert deterministic prose.
+
+One live provider cannot naturally exercise every branch of the control taxonomy. Unsupported
+and adjusted branches belong in offline adapter contract tests; the live smoke should confirm
+that all requested controls are reported and that no state is mislabeled as provider-verified.
+Use a test-level timeout/output cap here; domain-owned run budgets do not exist until C-FAILURES.
+
+### Milestone C
+
+#### C-EVENTS — ready after effective context is explicit
+
+Start with a closed, discriminated event union and a common envelope containing schema version,
+run ID, monotonic sequence, event type, and event-specific data. Turn-request events must include
+role/round/turn IDs, the context-policy result, every effective message, controls, and
+capabilities. Completion/failure events link to the request; adapter-attempt events preserve
+attempt number, status, observable HTTP status, usage, and usage evidence.
+
+Validate `ControlTrace` before serialization. `unsupported` is exclusive with `forwarded`,
+`adjusted`, and `providerVerified`; `adjusted` requires a forwarded value equal to its adjusted
+value; provider verification must not be inferred from forwarding. Test unknown fields and
+unknown event/schema versions according to an explicit compatibility rule.
+
+The secret invariant needs a real boundary, not a key-name assertion alone. Canonical event
+types must have no credential/header fields, serialized failures must use sanitized domain error
+data rather than arbitrary objects or stacks, and a test should inject known sentinel secrets
+through configured secret inputs and prove none appears in serialized output. Free-form user or
+model text cannot be guaranteed secret-free unless an explicit redaction policy is added.
+
+#### C-JSONL — ready after C-EVENTS
+
+Serialize one validated event per newline through a single ordered append queue so concurrent
+callers cannot reorder or interleave bytes. Define `flush` as waiting for queued writes and
+flushing the file handle; make `close` flush and be idempotent. Reject appends after close and
+sequence/run-ID mismatches before touching the file.
+
+For interrupted files, the reader should return all complete valid lines and distinguish an
+incomplete final line from corruption in the middle. Do not silently repair or discard either.
+Use temporary directories and injected failure points in tests; no production-path cleanup or
+Markdown belongs here.
+
+#### C-REPLAY — tighten the replay definition
+
+Replay should feed recorded normalized replies into the pure debate scheduler and compare each
+newly produced `TurnRequest` with the recorded request. It must not call an `AgentPort` or trust a
+stored prompt hash without checking the structured values that produced it. Exclude inherently
+observational fields such as timestamps and latency from semantic drift comparison.
+
+Detect drift in role prompts, context-policy output, message order/content, controls,
+capabilities, and protocol configuration, with an error locating the first mismatched event.
+Replay should reject incomplete or failed runs unless a named partial-replay mode is requested.
+
+#### C-LIVE-ARTIFACT — ready after replay and writer integration
+
+Extend the existing B-LIVE-DEBATE harness rather than clone it. Write to a caller-selected
+temporary/output directory, close in `finally`, parse the file back, validate event ordering,
+replay it, and scan for configured sentinel secrets. Assert per-attempt accounting using only
+what the provider exposes; do not manufacture usage for unobservable retries.
+
+At this point “budget-bounded” can mean two rounds, per-turn output caps, and a harness timeout.
+The test must not pretend to exercise domain token/cost stopping rules that arrive later.
+
+#### C-MARKDOWN — ready
+
+Render only validated canonical events and make output deterministic for a fixed event fixture.
+Include run status, exact roles/prompts, turns, controls, usage/attempt summaries, and failures
+needed for human audit, while keeping raw JSONL authoritative. Safely delimit untrusted model
+text so headings or code fences in a reply cannot corrupt the projection's structure.
+
+Snapshot a fixed-clock fixture and test an incomplete run as well as a successful tiny run. Do
+not read the Markdown back into replay or evaluation code.
+
+#### C-FAILURES — requires an agent failure/cancellation contract first
+
+Extend `AgentPort` with standard-signal cancellation and a normalized failure carrying any
+partial attempt trace. `dispose()` is lifecycle cleanup, not the only turn-cancellation API.
+Specify whether whitespace-only output is empty, ensure every started run has exactly one
+terminal event, and dispose all agents/writers in `finally` on every table row.
+
+Define counters precisely: a turn is a dispatched `TurnRequest`; attempts are not extra turns;
+retry usage is summed once from attempt events; reasoning tokens are not added again when they
+are a subset of output; and absent usage remains unknown rather than zero. Checks before a turn
+can prevent new work. Checks during provider-managed retries require an adapter observer capable
+of aborting; if Pi exposes no usable per-attempt usage until completion, record that limitation
+and stop immediately after the first observable over-budget result rather than claiming
+mid-retry enforcement.
+
+This is likely larger than one comfortable red/green cycle. Keep the single stable task ID, but
+land one failure behavior at a time with the full suite green rather than implementing the table
+in one batch. Monetary rows correctly remain deferred to D-PRICING.
+
+#### C-TOOL-POLICY — ready as a pure policy task
+
+Replace `CapabilityPolicy.toolNames` with a versioned policy that states role, protocol phase,
+allowed tool IDs/schema versions, aggregate and per-tool call limits, `timeoutMs`, and a
+byte-defined result limit. Validate uniqueness and positive/zero semantics. Record the resolved
+policy in every request; environment availability is a separate adapter concern.
+
+Test authorization and accounting as pure domain operations with no Pi imports. A call is charged
+when accepted for execution, including calls that time out or fail; denied calls should be
+recordable but should not consume an allowed-call budget unless the policy explicitly says so.
+
+#### C-TOOL-LOOP — blocked on the ownership decision
+
+Introduce a project-owned tool request/result/error vocabulary and dispatcher. Pi wrappers
+translate `AgentTool` calls into that dispatcher; a scripted model driver emits the same
+normalized calls. Both paths must enforce the identical C-TOOL-POLICY counters and produce the
+same canonical tool events. Tool call IDs, schema/version, validated arguments, start/end
+ordering, duration, truncated result metadata, and sanitized errors all need stable shapes.
+
+Test malformed arguments before execution, undeclared tools, timeout, thrown error, cancellation,
+oversized output, and a successful call followed by a final model response. Extend replay by
+feeding recorded tool results back at the exact message position and comparing the entire tool
+trace. Do not let Pi's internal transcript become the only copy of tool-result context.
+
+#### C-WEB-SEARCH — ready after the normalized tool loop
+
+Choose one concrete search backend at task start and keep its credentials/HTTP types behind a
+`WebSearchPort`. Define provider-independent inputs and outputs: query, bounded result count,
+title, URL/provenance, snippet, retrieval timestamp, and explicit truncation. Contract tests
+should use a fake backend for success, empty results, rate limiting, malformed payload, timeout,
+and cancellation.
+
+The live test needs a separate opt-in variable and a strict query/result/time budget. Canonical
+events may contain the search query and normalized results, but never auth headers, backend
+tokens, or arbitrary raw error bodies. Use the dispatcher from C-TOOL-LOOP so web search does not
+invent a second policy or trace path.
+
+### Milestone D
+
+#### D-PRICING — ready, with exact arithmetic
+
+Represent rates as decimal strings or integer minor units per fixed token quantum; do not hash or
+budget against binary floating-point calculations. The snapshot identity covers schema version,
+currency, effective date, provenance, every rate, and the reasoning-billing rule. Match prices
+against the provider/model actually reported by the attempt, not only the requested model.
+
+Compute cost from canonical attempt usage, never by adding `AgentReply.usage` again. An absent
+token kind is relevant only when its applicable rate is nonzero; a truly zero-priced kind need
+not make cost unknown. For `included-in-output`, require output usage and do not add reasoning;
+for `unbilled`, retain reasoning evidence but charge zero; for `separate-rate`, require and price
+the separate count. Test mixed-model attempts, exact boundary equality, unknown cost, and the
+explicit token-only override supplied as policy data until D-STUDY-SPEC owns it.
+
+#### D-CONFIG — separate run configuration from study policy
+
+`ExperimentConfig` should own one run's topic/case reference, role definitions and agent
+assignments, protocol/round/context settings, per-turn controls, capabilities, and `RunBudget`.
+Do not put aggregate study concurrency or total-study budgets in it; those belong in
+D-STUDY-SPEC and D-EXECUTOR. Parse untrusted JSON into validated domain values rather than using
+TypeScript casts.
+
+Canonical serialization must distinguish omitted optional controls from explicit values and
+must reference the immutable pricing snapshot when a monetary limit exists. Test defaults,
+unknown fields/version, cross-field constraints, per-role overrides, retry-inclusive usage, and
+round-trip stability. Environment variables can select an external config but must not mutate
+domain defaults.
+
+#### D-CONTROLS — revise to an end-to-end propagation audit
+
+By this point all five listed controls already exist. For each one, prove the value travels from
+validated config through the schedule/request, adapter or policy enforcement, control report,
+and canonical events. Add a matrix-eligibility descriptor only after that path is complete.
+
+Apply the five-state provider taxonomy only where meaningful. Thinking, maximum output, and
+temperature can be forwarded/adjusted/unsupported/provider-verified. A creativity instruction
+is materialized into an exact prompt and a tool allowlist is enforced by the project dispatcher;
+neither should receive a fictitious provider-verification state. Test these dimensions
+separately so v1's dial/temperature coupling cannot return.
+
+#### D-CASES — ready
+
+Give each case a schema version, stable case ID, exact topic/source content or immutable content
+hashes, rubric reference, and provenance. Treat source context as evidence, not instructions,
+and preserve its ordering and media/type metadata if more than plain text is allowed. Fixture
+cases should be tiny, timeless, redistributable, and capable of producing deterministic tests.
+
+Validate duplicate IDs, missing referenced content, unsupported versions, and canonical hash
+stability. A case may reference a future rubric by opaque ID, as the plan states; loading and
+resolving that rubric remains outside this task.
+
+#### D-STUDY-SPEC — ready after run config and cases
+
+Separate fixed run configuration, parameter search space, run budgets, aggregate study budgets,
+and stopping rules in the schema. Add the randomization/sampler seed, case-order policy,
+baseline definition, holdout-use rule, failure handling, unknown-cost policy, and reward
+scalarization reference so later execution cannot choose them after seeing results.
+
+Define canonical hashing over the semantic spec without a self-hash, filesystem path, generated
+timestamp, or Git stamp. Evaluator/rubric/pricing references are part of that hash. Git commit and
+cleanliness are execution attestations linked later, not inputs that make the same spec hash
+differ between machines.
+
+#### D-MATRIX — ready
+
+Generate a stable, sorted Cartesian product from benchmark cases, validated parameter points,
+and zero-based repetition IDs. Derive each run ID from the study-spec hash plus semantic case,
+configuration, and repetition identities—not input-array positions or execution order. Preserve
+the full preimage in the run specification so a hash is never the only explanation of a run.
+
+Test reordered inputs, duplicate values, invalid parameter combinations, hash collisions via an
+injected hash fake, and stable output ordering. Holdout cases should be excluded from the
+selection matrix unless the preregistered spec explicitly defines a separate final-evaluation
+matrix.
+
+#### D-EXECUTOR — ready, but budget concurrency needs a reservation rule
+
+Each run must own fresh agent instances, writer, and artifact directory. Resume only a validated
+terminal artifact whose run/spec hashes match; file existence alone is not completion. Use an
+atomic claim/temporary-directory strategy so two workers cannot execute the same run ID, and
+publish the final location only after closure.
+
+Bounded concurrency can overspend an aggregate study budget if workers are dispatched against
+stale totals. Either reserve each run's maximum declared budget before launch or define and test
+a permitted overshoot bound. Continue after individual failures while preserving deterministic
+result ordering, always release reservations/resources, and distinguish retryable interruption
+from terminal run failure.
+
+#### D-LOCAL-MODEL — ready as an opt-in route
+
+Keep endpoint, provider ID, model ID, and any compatibility metadata in adapter/runtime
+configuration. The test should skip clearly when the local endpoint or model is absent, use a
+short timeout/output cap, and verify requested/response identities and control reporting without
+assuming a particular Gemma build is installed.
+
+Link the run to the explicit zero-cost local pricing entry, while making clear that zero API
+price is not a claim about hardware/electricity cost. No localhost URL or local model name belongs
+in domain defaults.
+
+### Milestone E
+
+#### E-DETERMINISTIC — ready
+
+Define `EvaluatorPort` and a versioned evaluator result here so deterministic and judge-backed
+evaluators share one domain boundary. Inputs are declared canonical events/artifacts, never
+provider state or rendered Markdown. Each result records evaluator ID/version, score or
+unavailable status, range/direction, and evidence event IDs.
+
+Specify deterministic algorithms and missing-data behavior for every check. Missing token usage
+must yield unavailable, not zero; completion comes from terminal events; latency comes from
+recorded durations; repetition and contract-marker scores need locked normalization/tokenization
+rules. Unit-test boundaries and empty/partial/failed runs.
+
+#### E-RUBRIC — ready, and should define evaluation-record versioning
+
+Version dimension IDs, descriptions, scales, direction, required evidence, and parsing schema.
+Keep weights/scalarization outside the raw multidimensional judgment unless the rubric explicitly
+versions them. Valid, malformed, and partial judge outputs must produce typed parse outcomes;
+never fill a missing dimension with zero or silently discard unknown dimensions.
+
+Also define the canonical evaluation record or assign that explicitly to E-JUDGE. It must link
+the rubric and source run/artifact hashes and have space for declared judge inputs, exact prompt,
+controls, raw response, parsed dimensions, and sanitized failure data.
+
+#### E-JUDGE — ready after the evaluation record exists
+
+Use a fresh or explicitly reset Pi-backed judge for every independent evaluation so no prior
+candidate leaks into context. Build its exact message list only from the declared artifact
+manifest, default to no tools, and record every message and control using the same observability
+standards as debate agents. Preserve raw response even when parsing fails.
+
+Resolve the `EvaluatorPort` result from the E-RUBRIC parser and write the linked evaluation
+record atomically. Unit/contract tests use scripted responses; any provider smoke is separately
+opt-in, budget-bounded, and not required for the task to pass.
+
+#### E-RELIABILITY — tighten experimental design before spending
+
+Split the work conceptually into an offline deterministic analyzer and an opt-in live collector.
+The study spec must fix sample size, judges, candidate/model strata, permutations, random seed,
+blinding labels, variance statistic, ordering-bias statistic, self-preference comparison, judge
+disagreement statistic, and all thresholds before collection.
+
+“Matching accepted artifact” must mean exact matches for rubric version, judge model(s), judge
+prompt, controls, analysis version, and relevant sampling design. Missing/uncomputable threshold
+data yields `rejected`. Store every randomized order and raw score vector, and ensure the
+collector stops under the same attempt-inclusive turn/token/cost guardrails as other live work.
+
+#### E-REWARD — ready after reliability semantics are fixed
+
+Define whether reward is per run or an aggregate over cases/repetitions. Variance is an aggregate
+term and cannot honestly appear in a single-run reward without group input. Preserve a versioned
+reward vector with units, direction, missingness, and source evidence, plus a separately
+versioned scalarization if the optimizer needs one number.
+
+Use exact cost from the run snapshot and make unknown required components produce an unknown or
+structured failure, never a zero contribution. Table-test normalization, weights, penalties,
+boundary equality, missing components, and the difference between vector computation and
+scalarization.
+
+### Milestone F
+
+#### F-OPTIMIZER-FIXTURE — clarify the implementation target, then ready
+
+Use the optimizer library intended for F-OPTUNA—most likely pinned Python/Optuna—against a pure
+deterministic objective without invoking the engine. This task proves seeded trial generation,
+durable local storage, resume without duplicate trials, failure/pruning semantics, and
+deterministic best-trial tie-breaking. It does not require a reliability artifact because no
+model evaluation occurs.
+
+Keep its temporary database and Python environment isolated from production study artifacts.
+Avoid inventing a second generic optimizer framework in TypeScript unless a real second backend
+requires that abstraction.
+
+#### F-SCHEMA — ready after reward vector/scalarization is explicit
+
+Publish one canonical schema artifact shared by TypeScript and Python fixtures. Specify exact
+framing—one JSON value on stdin and one newline-terminated JSON value on stdout—plus schema
+version, correlation/run ID, study-spec hash, run specification, success/failure discriminator,
+reward vector, optional preregistered scalar objective, and artifact references. Forbid
+`NaN`/infinity and unversioned free-form failures.
+
+Clarify that one engine invocation executes one run. The Optuna bridge, not the engine schema,
+aggregates cases and repetitions into a trial unless the study spec deliberately defines a
+different unit. Test golden cross-language fixtures in addition to TypeScript round trips.
+
+#### F-ENGINE-CLI — ready, but keep the process shell thin
+
+Parse and validate stdin before constructing agents, keep stdout reserved for the single schema
+response, and route diagnostics to stderr with secret-safe errors. The shell composes the domain
+runner/evaluators, handles signals, disposes resources, and returns an artifact-backed structured
+failure whenever possible. Assign stable meanings to exit codes and test them with injected
+scripted factories.
+
+Validate artifact paths against traversal/collision, stamp both spec hash and code Git commit,
+and enforce the clean/committed preregistration rule before a real run. The explicit development
+override must appear in canonical output. This task has many cases; implement them incrementally
+under the one stable task ID while keeping domain code free of process/Git concerns.
+
+#### F-OPTUNA — ready after the schema has cross-language fixtures
+
+Invoke the engine with an argument array and JSON stdin, never shell interpolation. Capture
+stdout/stderr separately, enforce timeout/cancellation, validate exactly one schema response,
+and retain artifact/error references for missing, malformed, mismatched, or nonzero-exit output.
+Test with a fake executable implementing the golden fixtures.
+
+The study spec must predeclare how structured engine failures map to failed trials, pruned trials,
+or penalties. Aggregate the configured cases/repetitions into the preregistered vector and
+scalar objective without dropping failed runs or recomputing historical costs.
+
+#### F-STUDY — execution-ready only after an accepted reliability artifact and preflight
+
+Before any paid calls, verify a committed/clean study spec, matching accepted reliability
+artifact, immutable pricing snapshot, available cases/models/credentials, artifact capacity,
+declared maximum spend/tokens/turns, and code commit. The user must explicitly authorize the live
+study and its budget at execution time.
+
+Use multiple benchmark cases and repetitions for selection, keep holdout artifacts unread by the
+optimizer, and stop according to the preregistered rule. Persist model response identities,
+attempt usage, environment/tool versions, spec hash, and Git commit with every trial. Unknown
+cost or a reliability mismatch fails closed unless the committed spec already permits the exact
+exception.
+
+#### F-REPORT — ready after a preregistered holdout comparison
+
+Generate the report from validated canonical artifacts with a versioned analysis, not by
+scraping transcripts or rerunning selectively. Compare baseline and selected protocol on the
+same holdout cases/repetitions, disclose sample sizes, missing/failed runs, paired uncertainty,
+quality dimensions, cost, latency, variance, and every evaluator used.
+
+Any “better” claim must satisfy the study's planned analysis and reliability gates and must not
+rest only on benchmark topics or the selecting judge. Link the report to study/spec/code/pricing/
+rubric/reliability hashes, label exploratory findings, and run the repository's Markdown style
+gate on the generated artifact.
+
 ## Round 4 — 2026-07-19, after third revision
 
 All round-3 findings were addressed (log at bottom). **Verdict: the plan is ready to execute from

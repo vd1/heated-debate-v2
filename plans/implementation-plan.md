@@ -83,9 +83,9 @@ Compare Pi's low-level `Agent` with `AgentSession` only as needed. Choose the sm
 
 ### Task A-LIVE-TURN — opt-in provider smoke test
 
-Add one skipped-by-default integration test selected by environment variables. It sends a fixed minimal prompt through stored Pi authentication.
+Add one test gated by `HEATED_DEBATE_LIVE=1`; the ordinary suite must skip it before constructing any network-capable runtime. Add the smallest production factory that resolves an explicit model identity through `ModelRuntime`, verifies stored authentication, and creates `PiAgent`. Send a fixed minimal prompt with a short test timeout and small output cap, disposing in `finally`.
 
-**Done when:** The test records provider/model/usage and gives a clear skip or authentication error. It is not part of CI's required unit suite.
+**Done when:** The test reports only normalized model identity, control states, and whatever usage kinds the provider actually exposes; it never treats forwarding as provider verification or emits credential/header data. Missing model/auth produces a clear failure when opted in, while the required CI suite remains offline.
 
 ---
 
@@ -93,23 +93,21 @@ Add one skipped-by-default integration test selected by environment variables. I
 
 ### Task B-EXCHANGE — one exchange
 
-**Red:** Given scripted architect and reviewer replies, assert the reviewer receives the topic plus architect proposal in the defined order.
+**Red:** Define an exchange as exactly two ordered turns—proposer then reviewer—and assert the complete reviewer `TurnRequest`, not substring inclusion. Use a deterministic turn-ID rule and keep topic, proposal, and review structurally distinct.
 
-**Green:** Implement one architect→reviewer exchange.
-
-**No dials, moderator, files, or persistence yet.**
+**Green:** Implement one proposer→reviewer exchange returning immutable snapshots of both requests and replies. Keep model controls and the empty capability policy explicit; add no dials, moderator, files, or persistence.
 
 ### Task B-ROLES — explicit role prompts
 
-Test and add immutable role definitions for proposer and reviewer. Record role IDs and exact prompt text in results.
-
-### Task B-ROUNDS — multiple rounds
-
-Test two rounds first. Agent A receives the prior review; Agent B receives the new proposal. Generalize only after the two-round test passes.
+Test and add runtime-immutable, versioned role definitions for proposer and reviewer. Record each stable role ID and exact prompt snapshot used by every turn; role behavior remains separate from agent/model assignment.
 
 ### Task B-CONTEXT — explicit context policy
 
-Introduce a `ContextPolicy` boundary. First implementation: `last-exchange`. Tests must show exactly which messages each agent receives. Add no summarization yet.
+Before implementing multiple rounds, introduce a pure `ContextPolicy` boundary returning a named/versioned decision and an exact ordered list of normalized model-input messages. Define `last-exchange` separately for proposer and reviewer and test inclusion/order of topic, own prior response, counterparty response, and current proposal. Extend `TurnRequest` to carry this selected list. `PiAgent` must synchronize its internal transcript to the selected messages—reset/replay on mismatch—so retained provider state can never add undeclared context. Add no summarization yet.
+
+### Task B-ROUNDS — multiple rounds
+
+After B-CONTEXT, test two rounds with exact ordered inputs and chronological results. One round is two turns; absent failure, `roundCount` yields `2 * roundCount` requests. Round one has no prior review, later proposer turns consume only the context-policy-selected prior review, and reviewer turns consume the current proposal. Prove no earlier exchange leaks through Pi retention.
 
 ### Task B-DIAL — creativity schedule
 
@@ -127,7 +125,7 @@ Run one skipped-by-default two-round debate through `PiAgent` using the default 
 
 ### Task C-EVENTS — canonical event schema
 
-Define versioned events for run start/end, turn request/completion/failure, control statuses, and adapter attempts. Represent controls with the explicit taxonomy `requested`, `forwarded`, `adjusted`, `unsupported`, and `providerVerified`; do not use an ambiguous `effective` field. Add and test control-trace validation before freezing the schema so contradictory combinations such as `unsupported` plus `forwarded` or `providerVerified` are rejected. Freeze the normalized per-attempt usage fields `inputTokens`, `outputTokens`, `cacheReadTokens`, `cacheWriteTokens`, and `reasoningTokens`, preserving unavailable or ambiguous-zero values as absent and retaining zero only with reporting evidence. Test JSON round trips, schema-version rejection, and a general invariant that canonical events never serialize credentials, authorization headers, or configured secret fields.
+Define a closed, discriminated event union with schema version, run ID, monotonic sequence, event type, and event-specific data. Turn-request events include role/round/turn IDs, the context-policy decision, every exact model-input message, controls, and capabilities; completion/failure links back to the request; attempt events preserve attempt number, status, observable HTTP status, usage, and evidence. Represent controls with `requested`, `forwarded`, `adjusted`, `unsupported`, and `providerVerified`, never ambiguous `effective`. Validate traces before serialization: `unsupported` excludes forwarded/adjusted/verified; adjustment requires an equal forwarded value; forwarding never implies verification. Preserve unavailable or ambiguous-zero usage as absent. Define compatibility for unknown fields/versions and sanitized domain failures. Canonical types expose no credentials/headers; sentinel-secret tests prove configured secrets cannot reach serialization without claiming arbitrary user/model prose is secret-free.
 
 ### Task C-JSONL — append-only JSONL writer
 
@@ -147,15 +145,15 @@ Render a human-readable transcript solely from canonical events. Snapshot-test a
 
 ### Task C-FAILURES — failure semantics
 
-Table-test timeout, cancellation, empty output, provider failure, per-run turn/token budget exhaustion, and partial-run closure. The domain debate loop owns checks before each new turn and after each adapter attempt so it halts an in-flight run as soon as an observable budget is exhausted. Monetary-budget rows are added in D-PRICING once deterministic pricing exists. Do not call `process.exit` or perform Git introspection from domain code.
+First extend `AgentPort` with standard-signal cancellation and a normalized typed failure carrying partial attempt traces; `dispose()` remains cleanup, not the only cancellation API. Add adapter-attempt observation where Pi exposes it and explicitly document hidden retries. Then land table-tested timeout, cancellation, whitespace-only output, provider failure, per-run turn/token exhaustion, and partial-run closure one behavior at a time. A turn is one dispatched request, attempts are not turns, attempt usage is summed once, absent usage remains unknown, and reasoning subsets are not double-counted. The domain loop checks before turns and after observable attempts, stops at the first observable overage, emits exactly one terminal outcome, and disposes resources in `finally`. Monetary rows remain in D-PRICING. Do not call `process.exit` or inspect Git from domain code.
 
 ### Task C-TOOL-POLICY — tool capability policy
 
-Define a per-role/per-phase capability policy containing an explicit tool allowlist, call budget, timeout, and result-size limit. Default to no tools, but do not hard-code tool-free agents. Test denial of undeclared tools and exhaustion of budgets.
+Define a pure, versioned per-role/per-phase policy with allowed tool IDs/schema versions, aggregate and per-tool call limits, timeout, and byte-defined result limit. Keep environment availability separate. Test uniqueness, positive/zero semantics, authorization, and accounting: accepted execution consumes budget even when it fails/times out; denied calls are recorded but do not consume budget unless explicitly configured.
 
 ### Task C-TOOL-LOOP — deterministic tool loop
 
-Give a scripted agent one fake search tool. Test tool request → execution → result → final response, including malformed arguments, tool failure, and cancellation. Record tool schemas, calls, results, durations, and errors as canonical events. Extend deterministic replay so a tool-using run reconstructs tool results as inputs to subsequent model turns and detects tool-trace drift.
+Introduce a project-owned normalized tool request/result/error vocabulary and dispatcher. Pi `AgentTool` wrappers and a scripted model driver both use that dispatcher, which alone enforces C-TOOL-POLICY and emits traces. Test malformed arguments, undeclared tools, timeout, thrown errors, cancellation, oversized output, and success followed by final response. Record stable call/schema IDs, arguments, ordering, duration, truncation, and sanitized errors. Replay feeds recorded results back at the exact message position and compares the whole trace; Pi's internal transcript is never the only result copy.
 
 ### Task C-WEB-SEARCH — opt-in web search adapter
 
@@ -171,19 +169,11 @@ Define a versioned model-pricing snapshot with provider/model identity, input/ou
 
 ### Task D-CONFIG — versioned `ExperimentConfig`
 
-Add validated configuration for topic, roles, models, rounds, context policy, per-turn controls, and hard run/study guardrails: maximum turns, input/output/total tokens, and optional maximum estimated monetary cost tied to a pricing snapshot. Test defaults (`openai-codex/gpt-5.6-sol`, thinking `high`), invalid values, explicit overrides, retry-inclusive budget exhaustion, and canonical serialization.
+Define validated configuration for one run: topic/case reference, immutable roles and agent assignments, protocol/round/context settings, per-turn controls, capabilities, and `RunBudget` for turns/tokens plus optional monetary limit tied to a pricing snapshot. Aggregate study concurrency/budgets belong to D-STUDY-SPEC/D-EXECUTOR. Parse untrusted JSON rather than cast it; test defaults (`openai-codex/gpt-5.6-sol`, thinking `high`), unknown fields/version, omission versus explicit values, per-role overrides, cross-field constraints, retry-inclusive usage, and canonical round trips.
 
-### Task D-CONTROLS — richer control vectors
+### Task D-CONTROLS — end-to-end control propagation audit
 
-One control at a time, with tests and provider capability reporting:
-
-1. thinking/reasoning level;
-2. maximum output tokens;
-3. temperature;
-4. creativity prompt dial;
-5. tool allowlist and per-tool budgets.
-
-Every control must record the applicable states among `requested`, `forwarded`, `adjusted`, `unsupported`, and `providerVerified`; never collapse them into an ambiguous `effective` value. Prompt dials, provider sampling controls, and tool capabilities remain separate dimensions.
+Do not add controls again. Prove each existing dimension travels from validated config through scheduling/request, adapter or policy enforcement, control report, and canonical events; only then mark it matrix-eligible. Provider taxonomy applies to thinking, output limit, and temperature. Creativity materializes as an exact prompt instruction, while tool allowlists are enforced by the project dispatcher—neither receives fictitious provider verification. Test all five separately so prompt dials and temperature cannot recouple.
 
 ### Task D-CASES — benchmark case format
 
@@ -215,11 +205,11 @@ Implement non-LLM checks first: completion, contract adherence markers, repetiti
 
 ### Task E-RUBRIC — judge rubric and structured result
 
-Define a versioned multidimensional rubric. Contract-test judge parsing with scripted valid, malformed, and partial outputs. Preserve individual dimensions; do not collapse immediately to one score.
+Define versioned dimensions, scales, direction, required evidence, and parsing schema. Valid, malformed, and partial outputs produce typed outcomes; missing dimensions never become zero. Also version a canonical evaluation record linking rubric and source artifact hashes with declared judge inputs, exact prompt/messages, controls, raw response, parsed dimensions, artifact references, and sanitized failure data.
 
 ### Task E-JUDGE — judge agent
 
-Implement a Pi-backed judge behind an `EvaluatorPort`. The judge sees only declared artifacts. Record judge model, prompt, controls, and raw response.
+Implement a Pi-backed judge behind `EvaluatorPort`, using a fresh/reset agent and exact messages built only from declared artifacts, with no tools by default. Preserve raw response even on parse failure and atomically write the linked E-RUBRIC evaluation record. Offline tests use scripted responses; any provider smoke is separately opt-in and budget-bounded.
 
 ### Task E-RELIABILITY — opt-in evaluator reliability study
 
