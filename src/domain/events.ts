@@ -92,9 +92,17 @@ const USAGE_KINDS = [
   "reasoningTokens",
 ] as const satisfies readonly UsageKind[];
 
-export function serializeCanonicalEvent(event: CanonicalEvent): string {
+export function serializeCanonicalEvent(
+  event: CanonicalEvent,
+  options: { secrets: readonly string[] },
+): string {
   assertCanonicalEvent(event);
-  return JSON.stringify(event);
+  const snapshot = structuredClone(event);
+  redactFailureSecrets(snapshot, options.secrets);
+  assertCanonicalEvent(snapshot);
+  const serialized = JSON.stringify(snapshot);
+  assertCanonicalEvent(JSON.parse(serialized) as unknown);
+  return serialized;
 }
 
 export function parseCanonicalEvent(serialized: string): CanonicalEvent {
@@ -123,11 +131,25 @@ export function sanitizeFailure(
   error: unknown,
   options: { code: string; secrets?: readonly string[] },
 ): SanitizedFailure {
-  let message = error instanceof Error ? error.message : String(error);
-  for (const secret of options.secrets ?? []) {
-    if (secret.length > 0) message = message.split(secret).join("[REDACTED]");
+  const message = redactSecrets(
+    error instanceof Error ? error.message : String(error),
+    options.secrets ?? [],
+  );
+  return { code: redactSecrets(options.code, options.secrets ?? []), message };
+}
+
+function redactFailureSecrets(event: CanonicalEvent, secrets: readonly string[]): void {
+  if (event.type !== "turn.failed" && event.type !== "run.failed") return;
+  event.data.failure.code = redactSecrets(event.data.failure.code, secrets);
+  event.data.failure.message = redactSecrets(event.data.failure.message, secrets);
+}
+
+function redactSecrets(value: string, secrets: readonly string[]): string {
+  let redacted = value;
+  for (const secret of secrets) {
+    if (secret.length > 0) redacted = redacted.split(secret).join("[REDACTED]");
   }
-  return { code: options.code, message };
+  return redacted;
 }
 
 export function assertCanonicalEvent(value: unknown): asserts value is CanonicalEvent {
@@ -248,8 +270,9 @@ function validateCreativity(value: unknown): asserts value is CreativitySelectio
     [],
     "creativity",
   );
-  assertNonEmptyString(creativity.scheduleId, "creativity.scheduleId");
-  assertNonEmptyString(creativity.scheduleVersion, "creativity.scheduleVersion");
+  if (creativity.scheduleId !== "linear-cooling" || creativity.scheduleVersion !== "1") {
+    throw new Error("canonical creativity schedule must be linear-cooling@1");
+  }
   if (!Number.isInteger(creativity.level) || Number(creativity.level) < 1 || Number(creativity.level) > 5) {
     throw new Error("creativity.level must be an integer from 1 to 5");
   }
@@ -286,8 +309,8 @@ function validateRequestedControls(value: unknown): asserts value is RequestedCo
   if (typeof controls.thinkingLevel !== "string" || !THINKING_LEVELS.has(controls.thinkingLevel as ThinkingLevel)) {
     throw new Error("requestedControls.thinkingLevel is invalid");
   }
-  if ("temperature" in controls) assertNonNegativeNumber(controls.temperature, "requestedControls.temperature");
-  if ("maxOutputTokens" in controls) assertPositiveInteger(controls.maxOutputTokens, "requestedControls.maxOutputTokens");
+  if (hasOwn(controls, "temperature")) assertNonNegativeNumber(controls.temperature, "requestedControls.temperature");
+  if (hasOwn(controls, "maxOutputTokens")) assertPositiveInteger(controls.maxOutputTokens, "requestedControls.maxOutputTokens");
 }
 
 function validateCapabilities(value: unknown): asserts value is CapabilityPolicy {
@@ -323,12 +346,12 @@ function validateControlReport(value: unknown): asserts value is ControlReport {
       throw new Error("control thinking level is invalid");
     }
   });
-  if ("temperature" in controls) {
+  if (hasOwn(controls, "temperature")) {
     validateControlTrace(controls.temperature, (item) => {
       assertNonNegativeNumber(item, "control.temperature");
     });
   }
-  if ("maxOutputTokens" in controls) {
+  if (hasOwn(controls, "maxOutputTokens")) {
     validateControlTrace(controls.maxOutputTokens, (item) => {
       assertPositiveInteger(item, "control.maxOutputTokens");
     });
@@ -347,26 +370,26 @@ function validateControlTrace<T>(
     "controlTrace",
   );
   validateValue(trace.requested);
-  if ("forwarded" in trace) validateValue(trace.forwarded);
-  if ("providerVerified" in trace) validateValue(trace.providerVerified);
+  if (hasOwn(trace, "forwarded")) validateValue(trace.forwarded);
+  if (hasOwn(trace, "providerVerified")) validateValue(trace.providerVerified);
 
-  if ("adjusted" in trace) {
+  if (hasOwn(trace, "adjusted")) {
     const adjusted = assertRecord(trace.adjusted, "controlTrace.adjusted");
     assertExactFields(adjusted, ["value", "reason"], [], "controlTrace.adjusted");
     validateValue(adjusted.value);
     assertNonEmptyString(adjusted.reason, "controlTrace.adjusted.reason");
   }
-  if ("unsupported" in trace) {
+  if (hasOwn(trace, "unsupported")) {
     const unsupported = assertRecord(trace.unsupported, "controlTrace.unsupported");
     assertExactFields(unsupported, ["reason"], [], "controlTrace.unsupported");
     assertNonEmptyString(unsupported.reason, "controlTrace.unsupported.reason");
-    if ("forwarded" in trace || "adjusted" in trace || "providerVerified" in trace) {
+    if (hasOwn(trace, "forwarded") || hasOwn(trace, "adjusted") || hasOwn(trace, "providerVerified")) {
       throw new Error("unsupported control cannot be forwarded, adjusted, or provider-verified");
     }
     return;
   }
-  if (!("forwarded" in trace)) throw new Error("supported control must be forwarded");
-  if ("adjusted" in trace) {
+  if (!hasOwn(trace, "forwarded")) throw new Error("supported control must be forwarded");
+  if (hasOwn(trace, "adjusted")) {
     const adjusted = trace.adjusted as Record<string, unknown>;
     if (!deepEqual(trace.forwarded, adjusted.value)) {
       throw new Error("adjusted control must forward the adjusted value");
@@ -388,7 +411,7 @@ function validateAttempt(value: unknown): asserts value is AttemptTrace {
   if (attempt.status !== "succeeded" && attempt.status !== "failed" && attempt.status !== "aborted") {
     throw new Error("attempt.status is invalid");
   }
-  if ("httpStatus" in attempt) {
+  if (hasOwn(attempt, "httpStatus")) {
     assertPositiveInteger(attempt.httpStatus, "attempt.httpStatus");
     if (attempt.httpStatus > 599) throw new Error("attempt.httpStatus must not exceed 599");
   }
@@ -418,7 +441,7 @@ function validateUsage(value: unknown, evidence: UsageEvidence): asserts value i
   const usage = assertRecord(value, "usage");
   assertExactFields(usage, [], [...USAGE_KINDS], "usage");
   for (const kind of USAGE_KINDS) {
-    if (!(kind in usage)) continue;
+    if (!hasOwn(usage, kind)) continue;
     assertNonNegativeNumber(usage[kind], `usage.${kind}`);
     if (usage[kind] === 0 && !evidence.explicitlyReported.includes(kind)) {
       throw new Error(`zero ${kind} requires explicit reporting evidence`);
@@ -444,6 +467,10 @@ function assertRecord(value: unknown, path: string): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new Error(`${path} must be an object`);
   }
+  const prototype: unknown = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new Error(`${path} must be a plain object`);
+  }
   return value as Record<string, unknown>;
 }
 
@@ -458,8 +485,12 @@ function assertExactFields(
     if (!allowed.has(key)) throw new Error(`unknown field at ${path}: ${key}`);
   }
   for (const key of required) {
-    if (!(key in value)) throw new Error(`missing field at ${path}: ${key}`);
+    if (!hasOwn(value, key)) throw new Error(`missing field at ${path}: ${key}`);
   }
+}
+
+function hasOwn(value: object, key: PropertyKey): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key);
 }
 
 function assertString(value: unknown, path: string): asserts value is string {

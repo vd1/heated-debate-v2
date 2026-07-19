@@ -841,6 +841,49 @@ commit whitespace validation, and the
 are green. The opt-in provider calls were not repeated for this assertion-only correction. All
 three findings are closed: B-LIVE-DEBATE and Milestone B pass, and C-EVENTS is unblocked.
 
+### C-EVENTS (`e13b552`) — changes requested
+
+The core shape is strong. `CanonicalEvent` is a seven-member discriminated union with a common
+schema version, run ID, zero-based sequence, event type, and event-specific data. Turn requests
+carry round/turn/role identity, the complete versioned context decision and exact messages,
+creativity, requested controls, and capabilities. Separate attempt events retain status,
+observable HTTP status, normalized usage, and evidence; completion/failure events link by turn
+ID. The Pi correction also stops inventing HTTP 200 when no response hook was observed.
+
+Validation rejects unknown event/schema versions and fields, contradictory or unresolved
+control traces, silent adjustments, invalid numbers, and ambiguous zero usage. Failure payloads
+exclude arbitrary objects and stacks, while the free-form text test correctly avoids claiming
+that user/model prose is secret-free. Three serialization-boundary corrections remain:
+
+1. Failure sanitization is optional rather than enforced. `SanitizedFailure` is a public
+   structural interface, and `serializeCanonicalEvent` has no configured-secret input or proof
+   that `sanitizeFailure` produced the value. A direct `run.failed` event whose failure message
+   contained `"configured-secret-123"` serialized that sentinel unchanged. Make raw failures
+   unable to enter the serialization path, or make serialization redact/reject configured
+   secrets in the structured failure fields. Add a regression that constructs the failure event
+   directly; retain the explicit exemption for free-form user/model text.
+2. Runtime validation does not validate the representation that is actually serialized.
+   Required fields are checked with the prototype-aware `in` operator, so an event whose entire
+   envelope is inherited passes and serializes as `{}`. An otherwise valid event with an
+   inherited `toJSON` also passes validation and serialized as
+   `{"credentials":"configured-secret-123"}` in a direct probe. Require plain records and own
+   required fields, then serialize a validated plain snapshot or validate the serialized
+   representation. Lock both inherited-field and `toJSON` cases with sentinel regressions.
+3. The runtime compatibility rule and declared type disagree for creativity. The validator
+   accepts arbitrary non-empty `scheduleId` and `scheduleVersion`, but then asserts the narrower
+   domain `CreativitySelection` whose only valid values are `"linear-cooling"` and `"1"`.
+   `parseCanonicalEvent` therefore accepted `"unknown"@999` while returning a type that says this
+   is impossible. Either enforce the current literals for schema v1 or define an explicit
+   canonical creativity type that permits other identifiers; test the selected compatibility
+   rule. The closed-union round-trip table should also include the currently untested
+   `run.failed` discriminant.
+
+The required suite passes 51 tests with two intentional live skips; the focused event/adapter
+suite, type checking, linting, commit whitespace validation, and the
+[C-EVENTS GitHub Actions run](https://github.com/vd1/heated-debate-v2/actions/runs/29698772760)
+are green. Those checks do not cover the reproduced boundary cases above. Keep C-EVENTS active
+and C-JSONL blocked until all three findings are resolved and re-reviewed.
+
 ## Round 2 — 2026-07-18, first revision (all resolved)
 
 1. **No real engine executable** (Optuna bridge tested only against a fake) → F-ENGINE-CLI.

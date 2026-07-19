@@ -113,35 +113,61 @@ function events(): CanonicalEvent[] {
 describe("canonical event schema v1", () => {
   test("round-trips every successful-run event without losing absent usage", () => {
     for (const event of events()) {
-      expect(parseCanonicalEvent(serializeCanonicalEvent(event))).toEqual(event);
+      expect(parseCanonicalEvent(serializeCanonicalEvent(event, { secrets: [] }))).toEqual(event);
     }
     const attempt = events()[2];
     if (attempt?.type !== "adapter.attempt") throw new Error("bad fixture");
     expect(attempt.data.attempt.usage.cacheReadTokens).toBeUndefined();
   });
 
-  test("round-trips sanitized failure events", () => {
+  test("round-trips both failure discriminants with sanitized failures", () => {
     const failure = sanitizeFailure(
       new Error("request failed with token secret-123"),
       { code: "provider_error", secrets: ["secret-123"] },
     );
+    const failureEvents: CanonicalEvent[] = [
+      {
+        schemaVersion: 1,
+        runId: "run-1",
+        sequence: 0,
+        type: "turn.failed",
+        data: { turnId: REQUEST.turnId, failure },
+      },
+      {
+        schemaVersion: 1,
+        runId: "run-1",
+        sequence: 0,
+        type: "run.failed",
+        data: { failure },
+      },
+    ];
+
+    for (const event of failureEvents) {
+      const serialized = serializeCanonicalEvent(event, { secrets: ["secret-123"] });
+      expect(serialized).not.toContain("secret-123");
+      expect(serialized).not.toContain("stack");
+      expect(parseCanonicalEvent(serialized)).toEqual(event);
+    }
+  });
+
+  test("redacts configured secrets from a directly constructed failure", () => {
     const event: CanonicalEvent = {
       schemaVersion: 1,
       runId: "run-1",
       sequence: 0,
-      type: "turn.failed",
-      data: { turnId: REQUEST.turnId, failure },
+      type: "run.failed",
+      data: {
+        failure: {
+          code: "configured-secret-123_error",
+          message: "leaked configured-secret-123",
+        },
+      },
     };
 
-    const serialized = serializeCanonicalEvent(event);
-    expect(serialized).not.toContain("secret-123");
-    expect(serialized).not.toContain("stack");
-    expect(parseCanonicalEvent(serialized)).toEqual({
-      ...event,
-      data: {
-        ...event.data,
-        failure: { code: "provider_error", message: "request failed with token [REDACTED]" },
-      },
+    const serialized = serializeCanonicalEvent(event, { secrets: ["configured-secret-123"] });
+    expect(serialized).not.toContain("configured-secret-123");
+    expect(parseCanonicalEvent(serialized)).toMatchObject({
+      data: { failure: { code: "[REDACTED]_error", message: "leaked [REDACTED]" } },
     });
   });
 
@@ -162,13 +188,13 @@ describe("canonical event schema v1", () => {
       },
     };
 
-    expect(serializeCanonicalEvent(withSentinel)).toContain("secret-123");
+    expect(serializeCanonicalEvent(withSentinel, { secrets: ["secret-123"] })).toContain("secret-123");
   });
 
   test("rejects unknown schema versions, event types, and fields", () => {
     const first = events()[0];
     if (!first) throw new Error("bad fixture");
-    const valid = JSON.parse(serializeCanonicalEvent(first)) as Record<string, unknown>;
+    const valid = JSON.parse(serializeCanonicalEvent(first, { secrets: [] })) as Record<string, unknown>;
 
     expect(() => parseCanonicalEvent(JSON.stringify({ ...valid, schemaVersion: 2 }))).toThrow(
       "unsupported schema version: 2",
@@ -183,6 +209,40 @@ describe("canonical event schema v1", () => {
       ...valid,
       data: { ...(valid.data as object), headers: { authorization: "secret" } },
     }))).toThrow("unknown field at run.started.data: headers");
+  });
+
+  test("rejects inherited envelopes and inherited toJSON before serialization", () => {
+    const first = events()[0];
+    if (!first) throw new Error("bad fixture");
+    const inheritedEnvelope = Object.create(first) as CanonicalEvent;
+    expect(() => serializeCanonicalEvent(inheritedEnvelope, {
+      secrets: ["configured-secret-123"],
+    })).toThrow("event must be a plain object");
+
+    const inheritedToJson = Object.assign(
+      Object.create({
+        toJSON: () => ({ credentials: "configured-secret-123" }),
+      }),
+      first,
+    ) as CanonicalEvent;
+    expect(() => serializeCanonicalEvent(inheritedToJson, {
+      secrets: ["configured-secret-123"],
+    })).toThrow("event must be a plain object");
+  });
+
+  test("rejects creativity identities outside canonical schema v1", () => {
+    const requested = events()[1];
+    if (requested?.type !== "turn.requested") throw new Error("bad fixture");
+    const serialized = serializeCanonicalEvent(requested, { secrets: [] });
+    const value = JSON.parse(serialized) as {
+      data: { request: { creativity: { scheduleId: string; scheduleVersion: string } } };
+    };
+    value.data.request.creativity.scheduleId = "unknown";
+    value.data.request.creativity.scheduleVersion = "999";
+
+    expect(() => parseCanonicalEvent(JSON.stringify(value))).toThrow(
+      "canonical creativity schedule must be linear-cooling@1",
+    );
   });
 
   test("rejects contradictory or silently changed control traces", () => {
@@ -222,7 +282,7 @@ describe("canonical event schema v1", () => {
       },
     };
 
-    expect(() => serializeCanonicalEvent(invalid)).toThrow(
+    expect(() => serializeCanonicalEvent(invalid, { secrets: [] })).toThrow(
       "zero outputTokens requires explicit reporting evidence",
     );
   });
@@ -260,5 +320,5 @@ function expectInvalidModelTrace(
       },
     },
   };
-  expect(() => serializeCanonicalEvent(invalid)).toThrow(message);
+  expect(() => serializeCanonicalEvent(invalid, { secrets: [] })).toThrow(message);
 }
