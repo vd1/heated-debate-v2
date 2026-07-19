@@ -127,7 +127,7 @@ Run one skipped-by-default two-round debate through `PiAgent` using the default 
 
 ### Task C-EVENTS — canonical event schema
 
-Define versioned events for run start/end, turn request/completion/failure, control statuses, and adapter attempts. Represent controls with the explicit taxonomy `requested`, `forwarded`, `adjusted`, `unsupported`, and `providerVerified`; do not use an ambiguous `effective` field. Freeze the normalized per-attempt usage fields `inputTokens`, `outputTokens`, `cacheReadTokens`, `cacheWriteTokens`, and `reasoningTokens`, preserving unavailable or ambiguous-zero values as absent and retaining zero only with reporting evidence. Test JSON round trips, schema-version rejection, and a general invariant that canonical events never serialize credentials, authorization headers, or configured secret fields.
+Define versioned events for run start/end, turn request/completion/failure, control statuses, and adapter attempts. Represent controls with the explicit taxonomy `requested`, `forwarded`, `adjusted`, `unsupported`, and `providerVerified`; do not use an ambiguous `effective` field. Add and test control-trace validation before freezing the schema so contradictory combinations such as `unsupported` plus `forwarded` or `providerVerified` are rejected. Freeze the normalized per-attempt usage fields `inputTokens`, `outputTokens`, `cacheReadTokens`, `cacheWriteTokens`, and `reasoningTokens`, preserving unavailable or ambiguous-zero values as absent and retaining zero only with reporting evidence. Test JSON round trips, schema-version rejection, and a general invariant that canonical events never serialize credentials, authorization headers, or configured secret fields.
 
 ### Task C-JSONL — append-only JSONL writer
 

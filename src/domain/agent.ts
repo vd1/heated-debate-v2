@@ -125,7 +125,7 @@ export class ScriptedAgent implements AgentPort {
     if (!scripted) return Promise.reject(new Error("scripted agent has no reply remaining"));
 
     this.nextReplyIndex += 1;
-    this.requests.push(request);
+    this.requests.push(structuredClone(request));
 
     return Promise.resolve({
       text: scripted.text,

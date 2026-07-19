@@ -90,6 +90,26 @@ describe("ScriptedAgent", () => {
     expect(agent.disposed).toBe(true);
   });
 
+  test("captures an immutable snapshot of each request", async () => {
+    const request = structuredClone(REQUEST);
+    const agent = new ScriptedAgent([
+      {
+        text: "Reply",
+        durationMs: 1,
+        model: MODEL,
+        controls: CONTROL_REPORT,
+        usage: { values: {}, explicitlyReported: [] },
+      },
+    ]);
+
+    await agent.reply(request);
+    request.prompt = "Mutated after the call";
+    request.controls.thinkingLevel = "off";
+
+    expect(agent.requests[0]?.prompt).toBe("Make the first proposal.");
+    expect(agent.requests[0]?.controls.thinkingLevel).toBe("high");
+  });
+
   test("rejects replies after disposal", async () => {
     const agent = new ScriptedAgent([]);
     await agent.dispose();
