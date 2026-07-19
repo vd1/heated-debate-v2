@@ -67,6 +67,7 @@ describe("ScriptedAgent", () => {
           },
           explicitlyReported: ["outputTokens", "reasoningTokens"],
         },
+        trace: { attempts: [] },
       },
     ]);
 
@@ -84,6 +85,7 @@ describe("ScriptedAgent", () => {
         cacheWriteTokens: 3,
         reasoningTokens: 0,
       },
+      trace: { attempts: [] },
     });
 
     await agent.dispose();
@@ -99,6 +101,7 @@ describe("ScriptedAgent", () => {
         model: MODEL,
         controls: CONTROL_REPORT,
         usage: { values: {}, explicitlyReported: [] },
+        trace: { attempts: [] },
       },
     ]);
 

@@ -59,12 +59,30 @@ export interface UsageObservation {
   explicitlyReported: readonly UsageKind[];
 }
 
+export interface UsageEvidence {
+  explicitlyReported: readonly UsageKind[];
+  source: string;
+}
+
+export interface AttemptTrace {
+  attempt: number;
+  status: "succeeded" | "failed" | "aborted";
+  httpStatus?: number;
+  usage: NormalizedUsage;
+  usageEvidence: UsageEvidence;
+}
+
+export interface AgentTrace {
+  attempts: readonly AttemptTrace[];
+}
+
 export interface AgentReply {
   text: string;
   durationMs: number;
   model: ModelIdentity;
   controls: ControlReport;
   usage: NormalizedUsage;
+  trace: AgentTrace;
 }
 
 export interface AgentPort {
@@ -78,6 +96,7 @@ export interface ScriptedReply {
   model: ModelIdentity;
   controls: ControlReport;
   usage: UsageObservation;
+  trace: AgentTrace;
 }
 
 const USAGE_KINDS = [
@@ -133,6 +152,7 @@ export class ScriptedAgent implements AgentPort {
       model: scripted.model,
       controls: scripted.controls,
       usage: normalizeUsage(scripted.usage),
+      trace: structuredClone(scripted.trace),
     });
   }
 
