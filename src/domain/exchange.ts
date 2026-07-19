@@ -13,11 +13,17 @@ export interface ExchangeParticipant {
   controls: RequestedControls;
 }
 
+export interface PriorExchange {
+  proposal: string;
+  review: string;
+}
+
 export interface RunExchangeInput {
   exchangeId: string;
   topic: string;
   proposer: ExchangeParticipant;
   reviewer: ExchangeParticipant;
+  priorExchange?: PriorExchange;
 }
 
 export type DeepReadonly<T> = T extends (...args: never[]) => unknown
@@ -43,6 +49,9 @@ export interface ExchangeResult {
 export async function runExchange(input: RunExchangeInput): Promise<ExchangeResult> {
   const exchangeId = input.exchangeId;
   const topic = input.topic;
+  const priorExchange = input.priorExchange === undefined
+    ? undefined
+    : structuredClone(input.priorExchange);
   const proposer = {
     agent: input.proposer.agent,
     role: structuredClone(input.proposer.role),
@@ -57,7 +66,16 @@ export async function runExchange(input: RunExchangeInput): Promise<ExchangeResu
   const proposalRequest: TurnRequest = {
     turnId: turnId(exchangeId, "proposer"),
     role: proposer.role,
-    context: selectLastExchangeContext({ role: "proposer", topic }),
+    context: selectLastExchangeContext({
+      role: "proposer",
+      topic,
+      ...(priorExchange === undefined
+        ? {}
+        : {
+            ownPriorResponse: priorExchange.proposal,
+            counterpartyResponse: priorExchange.review,
+          }),
+    }),
     controls: proposer.controls,
     capabilities: { toolNames: [] },
   };
@@ -71,6 +89,12 @@ export async function runExchange(input: RunExchangeInput): Promise<ExchangeResu
       role: "reviewer",
       topic,
       currentProposal: proposalReply.text,
+      ...(priorExchange === undefined
+        ? {}
+        : {
+            ownPriorResponse: priorExchange.review,
+            counterpartyResponse: priorExchange.proposal,
+          }),
     }),
     controls: reviewer.controls,
     capabilities: { toolNames: [] },
