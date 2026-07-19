@@ -656,6 +656,26 @@ both reply objects across the two awaits, proving the recorded requests and froz
 the original values. The full suite passes 19 tests with one intentional live skip, and type
 checking and linting remain green. B-ROLES is unblocked.
 
+### B-ROLES (`eb4d00c`) — pass
+
+The task establishes a domain-owned `RoleDefinition` with stable ID, explicit version, and exact
+system prompt. `defineRole` returns a defensive frozen copy, and both built-in v1 roles are
+locked by exact-text tests plus runtime `Object.isFrozen` assertions. All fields are primitive,
+so shallow freezing is sufficient for the current role shape.
+
+`TurnRequest` now carries the complete role snapshot rather than a bare system string.
+`runExchange` clones each participant role before its first await, records it in both immutable
+request snapshots, and keeps role assignment separate from `RequestedControls` and the
+`AgentPort`. `PiAgent` consumes only `request.role.systemPrompt`; role IDs/versions remain domain
+data and no Pi type enters the role module. Existing agent, exchange, adapter, and live-smoke
+fixtures were migrated without changing their behavior.
+
+The required suite passes 22 tests with one intentional live skip; type checking and linting are
+green, as is the
+[B-ROLES GitHub Actions run](https://github.com/vd1/heated-debate-v2/actions/runs/29691240654).
+No corrective carry-forward is needed. B-CONTEXT is next and must make the exact ordered
+model-input messages explicit before B-ROUNDS.
+
 ## Round 2 — 2026-07-18, first revision (all resolved)
 
 1. **No real engine executable** (Optuna bridge tested only against a fake) → F-ENGINE-CLI.
