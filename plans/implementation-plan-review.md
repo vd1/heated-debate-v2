@@ -23,6 +23,23 @@ A-HARNESS.** The remaining comments are polish; none blocks starting.
   monetary row when D-PRICING lands, or note that its "cost" rows use a stub price so the test
   intent is clear at execution time.
 
+### Verified as genuinely resolved, not papered over
+
+- The fails-closed rule in D-PRICING (missing priced token kind → cost `unknown`, monetary
+  enforcement blocks unless the study spec permits token-only accounting) is exactly the right
+  default for a lab that makes cost claims.
+- The deterministic `accepted`/`rejected` derivation in E-RELIABILITY removes the
+  "accepted by vibe" problem entirely; the gate is now mechanical.
+- Moving schema definition ahead of the F-OPTUNA fake fixes the round-3 ordering contradiction
+  cleanly — the fake now has a schema to conform to.
+
+### Where the next feedback comes from
+
+Nothing further at the plan level once the three polish items are folded in. The next real
+feedback loop is execution: run A-HARNESS, then let A-PI-SPIKE's measured findings test ADR-0001
+against reality — that spike is the first point where the plan's assumptions about Pi (control
+availability, attempt observability, conversation retention) meet evidence.
+
 ## Round 3 — 2026-07-18, second revision (all resolved)
 
 1. **Interchange schema implemented before defined** (F-ENGINE-CLI vs F-OPTUNA ordering) →
