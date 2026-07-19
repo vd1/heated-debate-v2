@@ -976,7 +976,7 @@ checking, linting, commit whitespace validation, and the
 [final GitHub Actions run](https://github.com/vd1/heated-debate-v2/actions/runs/29704961121)
 are green. All C-JSONL findings are closed. C-JSONL passes and C-REPLAY is unblocked.
 
-### C-REPLAY (`d46fb37`) — changes requested
+### C-REPLAY (`d46fb37`, corrected by `abc5fdb`) — pass
 
 The implementation validates the canonical sequence and successful-run shape, links attempts
 and completions to the active turn, rejects duplicate turn IDs and incomplete or failed runs,
@@ -1018,6 +1018,30 @@ type checking, linting, domain/Pi boundary scan, commit whitespace validation, a
 are green. Those checks do not cover the reproduced identity failure or the required pure
 scheduler boundary. Keep C-REPLAY active and C-LIVE-ARTIFACT blocked until all three findings
 are resolved and re-reviewed.
+
+Re-review of `abc5fdb`: all three findings are closed. Canonical `runId` now remains the artifact
+stream identity while `debateId` independently drives protocol and turn identity; the dedicated
+regression replays a valid trace whose identifiers differ.
+
+The new domain `DebateScheduler` owns deterministic turn construction and state transitions
+without an `AgentPort`. Production `runDebate` alone dispatches each scheduled request to the
+selected agent, while replay compares each request before directly accepting the corresponding
+recorded reply. Static boundary scans confirm that replay and scheduler contain no `AgentPort`,
+`runDebate`, Pi, or Pi-package references. Existing debate and exchange behavior remains green
+after the extraction.
+
+Coverage now includes exact two-round reconstruction with ordered prior-exchange context,
+distinct artifact/debate identities, and table-driven drift checks for role identity/version/
+prompt, context policy identity/version, exact message sequence/content, controls,
+capabilities, and run configuration. Separate regressions prove attempt/usage/latency data is
+observational and reject turn failure, terminal run failure, missing terminal state, and an
+uncompleted requested turn.
+
+The corrected suite passes 77 tests with two intentional live skips; the 19 focused replay,
+debate, and exchange tests, type checking, linting, boundary scans, commit whitespace
+validation, and the
+[corrected GitHub Actions run](https://github.com/vd1/heated-debate-v2/actions/runs/29705631666)
+are green. C-REPLAY passes and C-LIVE-ARTIFACT is unblocked.
 
 ## Round 2 — 2026-07-18, first revision (all resolved)
 
