@@ -841,7 +841,7 @@ commit whitespace validation, and the
 are green. The opt-in provider calls were not repeated for this assertion-only correction. All
 three findings are closed: B-LIVE-DEBATE and Milestone B pass, and C-EVENTS is unblocked.
 
-### C-EVENTS (`e13b552`) — changes requested
+### C-EVENTS (`e13b552`, corrected by `e2625ff`) — pass
 
 The core shape is strong. `CanonicalEvent` is a seven-member discriminated union with a common
 schema version, run ID, zero-based sequence, event type, and event-specific data. Turn requests
@@ -883,6 +883,23 @@ suite, type checking, linting, commit whitespace validation, and the
 [C-EVENTS GitHub Actions run](https://github.com/vd1/heated-debate-v2/actions/runs/29698772760)
 are green. Those checks do not cover the reproduced boundary cases above. Keep C-EVENTS active
 and C-JSONL blocked until all three findings are resolved and re-reviewed.
+
+Resolved in `e2625ff`: serialization now requires the configured-secret list, snapshots the
+validated event, redacts structured failure code/message fields, revalidates the snapshot, and
+validates the actual serialized representation. Directly constructed failure events can no
+longer leak the sentinel, while free-form user/model messages remain unchanged as explicitly
+intended.
+
+Record validation now requires plain objects and own required/optional properties. Both the
+inherited-envelope and inherited-`toJSON` probes fail before serialization, with dedicated
+regressions. Schema v1 now enforces `linear-cooling@1`, aligning the runtime assertion with
+`CreativitySelection`, and both failure discriminants are round-tripped. Re-running all three
+original probes confirmed redaction or rejection at the intended boundary.
+
+The corrected suite passes 54 tests with two intentional live skips; the focused event suite,
+type checking, linting, commit whitespace validation, and the
+[corrected GitHub Actions run](https://github.com/vd1/heated-debate-v2/actions/runs/29704248259)
+are green. All three findings are closed. C-EVENTS passes and C-JSONL is unblocked.
 
 ## Round 2 — 2026-07-18, first revision (all resolved)
 
