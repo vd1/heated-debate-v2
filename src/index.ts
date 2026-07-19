@@ -6,6 +6,7 @@ export * from "./domain/events";
 export * from "./domain/exchange";
 export * from "./domain/replay";
 export * from "./domain/roles";
+export * from "./domain/scheduler";
 export * from "./infrastructure/jsonl-events";
 export * from "./infrastructure/pi-agent";
 

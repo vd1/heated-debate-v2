@@ -976,6 +976,49 @@ checking, linting, commit whitespace validation, and the
 [final GitHub Actions run](https://github.com/vd1/heated-debate-v2/actions/runs/29704961121)
 are green. All C-JSONL findings are closed. C-JSONL passes and C-REPLAY is unblocked.
 
+### C-REPLAY (`d46fb37`) — changes requested
+
+The implementation validates the canonical sequence and successful-run shape, links attempts
+and completions to the active turn, rejects duplicate turn IDs and incomplete or failed runs,
+and checks the recorded terminal turn count. Replay remains offline: it never reaches Pi or a
+provider. The recursive comparison checks complete structured `TurnRequest` values rather than
+trusting a hash and reports the first mismatched path. Recorded reply text drives subsequent
+context while observational reply data does not drive request construction.
+
+Three corrections are required before C-LIVE-ARTIFACT:
+
+1. Replay incorrectly requires the canonical envelope `runId` to equal the debate protocol's
+   `debateId`. They are separately named and validated identifiers in the canonical schema; only
+   the former identifies one event stream, while the latter seeds debate and turn identity. A
+   direct valid one-round probe with `runId: "artifact-run-9"` and
+   `debateId: "debate-1"` passed sequence validation but replay rejected it with
+   `run ID artifact-run-9 does not match debate ID debate-1`. Remove this equality constraint,
+   retain each identifier for its own purpose, and add a distinct-identities regression. The
+   current fixture uses `"run-1"` for both and masks the bug.
+2. Replay is implemented by constructing two `ReplayAgent` instances that implement
+   `AgentPort`, passing them into `runDebate`, and allowing the full debate to dispatch before
+   comparing requests. That violates the accepted C-REPLAY contract that replay feed replies
+   directly into a pure debate scheduler and never call an `AgentPort`. Extract a pure
+   scheduler/state transition that produces one request and consumes one supplied normalized
+   reply. The production runner can dispatch each produced request through its port; replay
+   should compare that request before supplying the corresponding recorded reply. This keeps
+   replay structurally incapable of agent dispatch and establishes the boundary later tool
+   replay depends on.
+3. The test fixture covers only one round and therefore does not lock the core multi-round
+   reconstruction or ordered prior-exchange context. Add a two-round replay and table-driven
+   drift coverage for role identity/prompt, context policy ID/version, message order/content,
+   controls, capabilities, and protocol configuration. Also prove that attempt/usage/latency
+   changes are observational rather than semantic, and explicitly cover `turn.failed`,
+   `run.failed`, and missing-terminal rejection. These are the acceptance dimensions named in
+   the forward review, not optional hardening.
+
+The current suite passes 71 tests with two intentional live skips; the six focused replay tests,
+type checking, linting, domain/Pi boundary scan, commit whitespace validation, and the
+[C-REPLAY GitHub Actions run](https://github.com/vd1/heated-debate-v2/actions/runs/29705231437)
+are green. Those checks do not cover the reproduced identity failure or the required pure
+scheduler boundary. Keep C-REPLAY active and C-LIVE-ARTIFACT blocked until all three findings
+are resolved and re-reviewed.
+
 ## Round 2 — 2026-07-18, first revision (all resolved)
 
 1. **No real engine executable** (Optuna bridge tested only against a fake) → F-ENGINE-CLI.

@@ -1,10 +1,8 @@
 import type {
-  AgentPort,
   AgentReply,
   RequestedControls,
   TurnRequest,
 } from "./agent";
-import { runDebate } from "./debate";
 import type { DeepReadonly } from "./exchange";
 import {
   validateCanonicalSequence,
@@ -12,6 +10,7 @@ import {
   type CanonicalTurnReply,
 } from "./events";
 import type { RoleDefinition } from "./roles";
+import { DebateScheduler } from "./scheduler";
 
 export interface ReplayParticipantConfiguration {
   role: RoleDefinition;
@@ -54,9 +53,15 @@ interface RecordedTurn {
   reply: CanonicalTurnReply;
 }
 
-export async function replayCanonicalRun(
-  input: ReplayCanonicalRunInput,
-): Promise<ReplayResult> {
+export function replayCanonicalRun(input: ReplayCanonicalRunInput): Promise<ReplayResult> {
+  try {
+    return Promise.resolve(replayCanonicalRunSync(input));
+  } catch (error) {
+    return Promise.reject(error instanceof Error ? error : new Error(String(error)));
+  }
+}
+
+function replayCanonicalRunSync(input: ReplayCanonicalRunInput): ReplayResult {
   validateCanonicalSequence(input.events);
   const trace = readSuccessfulTrace(input.events);
   const configuration = structuredClone(input.configuration);
@@ -71,48 +76,27 @@ export async function replayCanonicalRun(
     roundCount: configuration.roundCount,
   });
 
-  const proposerReplies = trace.turns
-    .filter((_, index) => index % 2 === 0)
-    .map((turn) => turn.reply);
-  const reviewerReplies = trace.turns
-    .filter((_, index) => index % 2 === 1)
-    .map((turn) => turn.reply);
+  const scheduler = new DebateScheduler(configuration);
+  const reconstructed: DeepReadonly<TurnRequest>[] = [];
 
-  const result = await runDebate({
-    debateId: configuration.debateId,
-    topic: configuration.topic,
-    roundCount: configuration.roundCount,
-    proposer: {
-      ...configuration.proposer,
-      agent: new ReplayAgent(proposerReplies),
-    },
-    reviewer: {
-      ...configuration.reviewer,
-      agent: new ReplayAgent(reviewerReplies),
-    },
-  });
-
-  const reconstructed = result.rounds.flatMap((round) => [
-    { roundNumber: round.roundNumber, request: round.exchange.proposal.request },
-    { roundNumber: round.roundNumber, request: round.exchange.review.request },
-  ]);
-  if (reconstructed.length !== trace.turns.length) {
-    throw new Error(
-      `recorded ${String(trace.turns.length)} turns but reconstructed ${String(reconstructed.length)}`,
-    );
-  }
-
-  for (let index = 0; index < reconstructed.length; index += 1) {
-    const recorded = trace.turns[index];
-    const replayed = reconstructed[index];
-    if (!recorded || !replayed) throw new Error("replay turn indexing failed");
+  for (const recorded of trace.turns) {
+    const replayed = scheduler.nextTurn();
+    if (!replayed) {
+      throw new Error(
+        `recorded ${String(trace.turns.length)} turns but scheduler ended after ${String(reconstructed.length)}`,
+      );
+    }
     assertNoDrift(recorded.request.turnId, recorded.roundNumber, replayed.roundNumber, "roundNumber");
     assertNoDrift(recorded.request.turnId, recorded.request, replayed.request);
+    reconstructed.push(replayed.request);
+    scheduler.acceptReply(toReplayReply(recorded.reply));
   }
+  if (scheduler.nextTurn() !== undefined) {
+    throw new Error(`recorded ${String(trace.turns.length)} turns but scheduler has more turns`);
+  }
+  scheduler.result();
 
-  return Object.freeze({
-    requests: Object.freeze(reconstructed.map((turn) => turn.request)),
-  });
+  return Object.freeze({ requests: Object.freeze(reconstructed) });
 }
 
 function readSuccessfulTrace(events: readonly CanonicalEvent[]): {
@@ -125,13 +109,12 @@ function readSuccessfulTrace(events: readonly CanonicalEvent[]): {
   const first = events[0];
   if (first?.type !== "run.started") throw new Error("canonical replay must start with run.started");
   const last = events.at(-1);
+  if (last?.type === "run.failed") {
+    throw new Error("cannot deterministically replay a failed run");
+  }
   if (last?.type !== "run.completed") {
     throw new Error("canonical replay requires a terminal run.completed event");
   }
-  if (first.runId !== first.data.debateId) {
-    throw new Error(`run ID ${first.runId} does not match debate ID ${first.data.debateId}`);
-  }
-
   const turns: RecordedTurn[] = [];
   let active: { roundNumber: number; request: TurnRequest } | undefined;
   const seenTurnIds = new Set<string>();
@@ -195,26 +178,12 @@ function readSuccessfulTrace(events: readonly CanonicalEvent[]): {
   };
 }
 
-class ReplayAgent implements AgentPort {
-  private index = 0;
-
-  constructor(private readonly replies: readonly CanonicalTurnReply[]) {}
-
-  reply(): Promise<AgentReply> {
-    const reply = this.replies[this.index];
-    if (!reply) return Promise.reject(new Error("recorded reply script is exhausted"));
-    this.index += 1;
-    return Promise.resolve({
-      ...structuredClone(reply),
-      usage: {},
-      trace: { attempts: [] },
-      model: structuredClone(reply.model),
-    });
-  }
-
-  dispose(): Promise<void> {
-    return Promise.resolve();
-  }
+function toReplayReply(reply: CanonicalTurnReply): AgentReply {
+  return {
+    ...structuredClone(reply),
+    usage: {},
+    trace: { attempts: [] },
+  };
 }
 
 function assertNoDrift(
@@ -237,12 +206,14 @@ function findMismatch(
   if (Object.is(expected, actual)) return undefined;
   if (Array.isArray(expected) || Array.isArray(actual)) {
     if (!Array.isArray(expected) || !Array.isArray(actual)) return { path, expected, actual };
-    if (expected.length !== actual.length) return { path: `${path}.length`, expected: expected.length, actual: actual.length };
-    for (let index = 0; index < expected.length; index += 1) {
+    const sharedLength = Math.min(expected.length, actual.length);
+    for (let index = 0; index < sharedLength; index += 1) {
       const mismatch = findMismatch(expected[index], actual[index], `${path}[${String(index)}]`);
       if (mismatch) return mismatch;
     }
-    return undefined;
+    return expected.length === actual.length
+      ? undefined
+      : { path: `${path}.length`, expected: expected.length, actual: actual.length };
   }
   if (!isRecord(expected) || !isRecord(actual)) return { path, expected, actual };
 
