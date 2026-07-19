@@ -765,6 +765,45 @@ mutation regression, type checking, linting, commit whitespace validation, and t
 [corrected GitHub Actions run](https://github.com/vd1/heated-debate-v2/actions/runs/29694117580)
 are green. Both findings are closed. B-DIAL passes and B-LIVE-DEBATE is unblocked.
 
+### B-LIVE-DEBATE (`dac4d2f`) — changes requested
+
+The basic smoke path is sound. It is gated by `HEATED_DEBATE_LIVE=1`, defaults to
+`openai-codex/gpt-5.6-sol`, accepts provider/model overrides, constructs separate proposer and
+reviewer `PiAgent` instances, and runs the real two-round domain scheduler. Assertions cover four
+ordered turn IDs, `[5, 5, 1, 1]` creativity, versioned context decisions, prior-response
+inclusion, non-empty completed replies, model identity, observable attempts, and normalized
+usage. A harness timeout bounds the debate calls, and ADR-0001 records the observed default-route
+behavior without claiming that forwarding proves enforcement.
+
+Three corrections are required:
+
+1. The control assertions are not valid for all supported model overrides. They require
+   `thinkingLevel: high` and `maxOutputTokens: 128` to be forwarded unchanged, although
+   `PiAgent` correctly reports unsupported thinking for a non-reasoning model and adjusts an
+   output limit above model metadata. Validate every requested control and the applicable trace
+   invariants instead: unsupported excludes forwarding/adjustment/verification, adjustment
+   matches the forwarded value, and provider verification is optional but must match the
+   observed response identity. Keep unsupported and adjusted branch mechanics in the offline
+   adapter tests, as the forward review requires.
+2. Clean disposal is attempted but not verified. `Promise.allSettled` discards both cleanup
+   outcomes, so the live test can pass after either `dispose()` rejects. Agent creation also
+   occurs before the `try`, allowing the proposer to leak if reviewer construction fails. Track
+   each acquired agent inside the lifecycle guard, require every disposal to fulfill, and assert
+   the exposed disposed/reset state after real latency.
+3. `tests/live/support.ts` shares only constants and `withTimeout`; the actual runtime creation,
+   two-agent setup, controls, `runDebate` call, and cleanup remain embedded in the test. Thus the
+   shared live-debate harness required by the task does not yet exist, and C-LIVE-ARTIFACT would
+   have to duplicate or first refactor this path. Extract a reusable runner that returns the
+   complete in-memory result and owns lifecycle cleanup; have this smoke invoke it so the later
+   artifact smoke can extend the same path.
+
+The offline suite passes 42 tests with both live tests intentionally skipped; type checking,
+linting, commit whitespace validation, and the
+[B-LIVE-DEBATE GitHub Actions run](https://github.com/vd1/heated-debate-v2/actions/runs/29697968901)
+are green. CI is also skip-only for the live path. This review did not repeat the opt-in provider
+calls. Keep B-LIVE-DEBATE active, and do not start C-EVENTS or claim Milestone B complete until
+the three lifecycle/harness corrections are resolved and re-reviewed.
+
 ## Round 2 — 2026-07-18, first revision (all resolved)
 
 1. **No real engine executable** (Optuna bridge tested only against a fake) → F-ENGINE-CLI.

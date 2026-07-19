@@ -6,6 +6,6 @@ The engine owns debate protocols, explicit experiment configuration, evaluation,
 
 ## Status
 
-Implementation is proceeding one independently testable task at a time; see [`plans/implementation-plan.md`](plans/implementation-plan.md). Milestones A and B are complete through B-LIVE-DEBATE; C-EVENTS is next.
+Implementation is proceeding one independently testable task at a time; see [`plans/implementation-plan.md`](plans/implementation-plan.md). B-LIVE-DEBATE corrections are complete and awaiting re-review; C-EVENTS follows after approval.
 
 The original implementation remains in the sibling repository `../heated-debate/` and is treated as reference behavior, not as code to copy wholesale.
