@@ -1,20 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 
-import type {
-  AgentPort,
-  ModelIdentity,
-  TurnRequest,
-} from "../../src/domain/agent";
+import type { TurnRequest } from "../../src/domain/agent";
 import { createPiAgentFromRuntime } from "../../src/infrastructure/pi-agent";
-
-const LIVE_ENABLED = process.env.HEATED_DEBATE_LIVE === "1";
-const LIVE_TIMEOUT_MS = 60_000;
-
-const LIVE_MODEL: ModelIdentity = {
-  providerId: process.env.HEATED_DEBATE_PROVIDER ?? "openai-codex",
-  modelId: process.env.HEATED_DEBATE_MODEL ?? "gpt-5.6-sol",
-};
+import {
+  LIVE_ENABLED,
+  LIVE_MODEL,
+  LIVE_TURN_TIMEOUT_MS,
+  withTimeout,
+} from "./support";
 
 describe("PiAgent live provider smoke", () => {
   if (!LIVE_ENABLED) {
@@ -58,7 +52,11 @@ describe("PiAgent live provider smoke", () => {
     };
 
     try {
-      const reply = await replyWithTimeout(agent, request, LIVE_TIMEOUT_MS);
+      const reply = await withTimeout(
+        agent.reply(request),
+        LIVE_TURN_TIMEOUT_MS,
+        "live model call",
+      );
 
       expect(reply.text.trim().length).toBeGreaterThan(0);
       expect(reply.controls.model.requested).toEqual(LIVE_MODEL);
@@ -79,24 +77,5 @@ describe("PiAgent live provider smoke", () => {
     } finally {
       await agent.dispose();
     }
-  }, LIVE_TIMEOUT_MS + 15_000);
+  }, LIVE_TURN_TIMEOUT_MS + 15_000);
 });
-
-async function replyWithTimeout(
-  agent: AgentPort,
-  request: TurnRequest,
-  timeoutMs: number,
-): Promise<Awaited<ReturnType<AgentPort["reply"]>>> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(() => {
-      reject(new Error(`live model call timed out after ${String(timeoutMs)}ms`));
-    }, timeoutMs);
-  });
-
-  try {
-    return await Promise.race([agent.reply(request), timeout]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-}
