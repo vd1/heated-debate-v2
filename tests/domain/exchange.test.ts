@@ -154,7 +154,14 @@ describe("runExchange", () => {
         version: "test",
         systemPrompt: "Propose a concrete architecture.",
       },
-      prompt: "Topic:\nDesign a resilient job processor.",
+      context: {
+        policyId: "last-exchange",
+        policyVersion: "1",
+        messages: [{
+          role: "user",
+          content: "Topic:\nDesign a resilient job processor.",
+        }],
+      },
       controls: PROPOSER_CONTROLS,
       capabilities: { toolNames: [] },
     };
@@ -165,13 +172,20 @@ describe("runExchange", () => {
         version: "test",
         systemPrompt: "Challenge the proposal.",
       },
-      prompt: [
-        "Topic:",
-        "Design a resilient job processor.",
-        "",
-        "Proposal:",
-        "Use a queue with explicit backpressure.",
-      ].join("\n"),
+      context: {
+        policyId: "last-exchange",
+        policyVersion: "1",
+        messages: [{
+          role: "user",
+          content: [
+            "Topic:",
+            "Design a resilient job processor.",
+            "",
+            "Current proposal:",
+            "Use a queue with explicit backpressure.",
+          ].join("\n"),
+        }],
+      },
       controls: REVIEWER_CONTROLS,
       capabilities: { toolNames: [] },
     };
@@ -230,7 +244,14 @@ describe("runExchange", () => {
         version: "1",
         systemPrompt: "Original reviewer system",
       },
-      prompt: "Topic:\nOriginal topic\n\nProposal:\nOriginal proposal",
+      context: {
+        policyId: "last-exchange",
+        policyVersion: "1",
+        messages: [{
+          role: "user",
+          content: "Topic:\nOriginal topic\n\nCurrent proposal:\nOriginal proposal",
+        }],
+      },
       controls: REVIEWER_CONTROLS,
       capabilities: { toolNames: [] },
     });

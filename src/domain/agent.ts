@@ -1,3 +1,4 @@
+import type { ContextDecision } from "./context";
 import type { RoleDefinition } from "./roles";
 
 export interface ModelIdentity {
@@ -41,7 +42,7 @@ export interface CapabilityPolicy {
 export interface TurnRequest {
   turnId: string;
   role: RoleDefinition;
-  prompt: string;
+  context: ContextDecision;
   controls: RequestedControls;
   capabilities: CapabilityPolicy;
 }

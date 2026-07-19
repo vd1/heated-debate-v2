@@ -4,6 +4,7 @@ import type {
   RequestedControls,
   TurnRequest,
 } from "./agent";
+import { selectLastExchangeContext } from "./context";
 import type { RoleDefinition } from "./roles";
 
 export interface ExchangeParticipant {
@@ -56,7 +57,7 @@ export async function runExchange(input: RunExchangeInput): Promise<ExchangeResu
   const proposalRequest: TurnRequest = {
     turnId: turnId(exchangeId, "proposer"),
     role: proposer.role,
-    prompt: proposalPrompt(topic),
+    context: selectLastExchangeContext({ role: "proposer", topic }),
     controls: proposer.controls,
     capabilities: { toolNames: [] },
   };
@@ -66,7 +67,11 @@ export async function runExchange(input: RunExchangeInput): Promise<ExchangeResu
   const reviewRequest: TurnRequest = {
     turnId: turnId(exchangeId, "reviewer"),
     role: reviewer.role,
-    prompt: reviewPrompt(topic, proposalReply.text),
+    context: selectLastExchangeContext({
+      role: "reviewer",
+      topic,
+      currentProposal: proposalReply.text,
+    }),
     controls: reviewer.controls,
     capabilities: { toolNames: [] },
   };
@@ -89,14 +94,6 @@ export async function runExchange(input: RunExchangeInput): Promise<ExchangeResu
 
 function turnId(exchangeId: string, role: "proposer" | "reviewer"): string {
   return `${exchangeId}:${role}`;
-}
-
-function proposalPrompt(topic: string): string {
-  return `Topic:\n${topic}`;
-}
-
-function reviewPrompt(topic: string, proposal: string): string {
-  return ["Topic:", topic, "", "Proposal:", proposal].join("\n");
 }
 
 function deepFreeze<T>(value: T): DeepReadonly<T> {

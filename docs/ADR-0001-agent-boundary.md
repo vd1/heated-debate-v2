@@ -33,7 +33,7 @@ Debaters are not inherently tool-free. A role or phase may receive tools such as
 
 ## Context rule
 
-Pi may retain provider conversation state, but the engine remains the source of truth for what each participant is intended to know. Any implicit retained history must be observable in the adapter trace. Later context policies may choose persistent, replayed, bounded, or summarized histories.
+The engine is the source of truth for what each participant knows. Every `TurnRequest` carries a named/versioned context decision and the exact ordered normalized model-input messages. As of B-CONTEXT, `PiAgent` resets and replays the selected prefix before each prompt, so no retained Pi history can leak into a turn. A future persistence optimization is valid only if it proves the retained provider transcript is exactly equivalent to the selected list; bounded or summarized histories must remain explicit context policies.
 
 ## Default model
 

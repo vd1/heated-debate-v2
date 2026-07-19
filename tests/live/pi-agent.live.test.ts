@@ -35,7 +35,14 @@ describe("PiAgent live provider smoke", () => {
         version: "1",
         systemPrompt: "You are a concise connectivity test. Do not use tools.",
       },
-      prompt: "Reply with a brief confirmation that the live model call succeeded.",
+      context: {
+        policyId: "last-exchange",
+        policyVersion: "1",
+        messages: [{
+          role: "user",
+          content: "Reply with a brief confirmation that the live model call succeeded.",
+        }],
+      },
       controls: {
         model: LIVE_MODEL,
         thinkingLevel: "high",

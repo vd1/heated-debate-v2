@@ -1,5 +1,6 @@
 import {
   Agent,
+  type AgentMessage,
   type AgentTool,
   type StreamFn,
 } from "@earendil-works/pi-agent-core";
@@ -29,6 +30,7 @@ import {
   type UsageEvidence,
   type UsageObservation,
 } from "../domain/agent";
+import type { ContextDecision, ModelInputMessage } from "../domain/context";
 
 export type ModelStream = StreamFn;
 
@@ -181,12 +183,13 @@ export class PiAgent implements AgentPort {
     this.agent.state.model = this.model;
     this.agent.state.thinkingLevel = controls.thinkingLevel;
     this.agent.state.tools = tools;
+    const prompt = this.synchronizeContext(request.context);
 
     this.activeResponses = [];
     const startedAt = this.now();
     this.agent.streamFn = this.wrapControls(this.baseStream, controls);
     try {
-      await this.agent.prompt(request.prompt);
+      await this.agent.prompt(prompt);
     } catch (error) {
       this.activeResponses = undefined;
       throw error;
@@ -213,6 +216,20 @@ export class PiAgent implements AgentPort {
       usage,
       trace: buildTrace(responses, message, usage, this.usageEvidence),
     };
+  }
+
+  private synchronizeContext(context: ContextDecision): string {
+    const messages = context.messages;
+    const finalMessage = messages[messages.length - 1];
+    if (!finalMessage) throw new Error("selected model input must contain at least one message");
+    if (finalMessage.role !== "user") {
+      throw new Error("selected model input must end with a user message");
+    }
+
+    this.agent.state.messages = messages
+      .slice(0, -1)
+      .map((message) => toAgentMessage(message, this.model));
+    return finalMessage.content;
   }
 
   private withAttemptObservation(options: SimpleStreamOptions | undefined): SimpleStreamOptions {
@@ -369,6 +386,33 @@ function providerVerifiedModelIdentity(message: AssistantMessage): ModelIdentity
   return message.responseModel === undefined
     ? undefined
     : { providerId: message.provider, modelId: message.responseModel };
+}
+
+function toAgentMessage(message: ModelInputMessage, model: Model<Api>): AgentMessage {
+  if (message.role === "user") {
+    return {
+      role: "user",
+      content: message.content,
+      timestamp: 0,
+    };
+  }
+  return {
+    role: "assistant",
+    content: [{ type: "text", text: message.content }],
+    api: model.api,
+    provider: model.provider,
+    model: model.id,
+    usage: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 0,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+    stopReason: "stop",
+    timestamp: 0,
+  };
 }
 
 function modelIdentity(model: Model<Api>): ModelIdentity {

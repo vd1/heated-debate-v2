@@ -4,6 +4,7 @@ import {
   InMemoryCredentialStore,
   type AssistantMessage,
   type Context,
+  type Message,
   type Model,
   type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
@@ -46,7 +47,11 @@ const REQUEST: TurnRequest = {
     version: "1",
     systemPrompt: "You are the architect.",
   },
-  prompt: "Propose a design.",
+  context: {
+    policyId: "last-exchange",
+    policyVersion: "1",
+    messages: [{ role: "user", content: "Propose a design." }],
+  },
   controls: {
     model: MODEL_IDENTITY,
     thinkingLevel: "high",
@@ -117,6 +122,15 @@ function scriptedStream(options: ScriptedStreamOptions): { calls: StreamCall[]; 
       return events;
     },
   };
+}
+
+function messageText(message: Message): string {
+  if (message.role === "toolResult") return "";
+  if (typeof message.content === "string") return message.content;
+  return message.content
+    .filter((content) => content.type === "text")
+    .map((content) => content.text)
+    .join("");
 }
 
 function clock(...values: number[]): () => number {
@@ -280,7 +294,7 @@ describe("PiAgent", () => {
     await agent.dispose();
   });
 
-  test("retains conversation and synthesizes disposal around low-level Agent", async () => {
+  test("synchronizes Pi state to the exact selected messages and synthesizes disposal", async () => {
     const fake = scriptedStream({ replies: ["First", "Second"] });
     const agent = new PiAgent({
       model: MODEL,
@@ -290,12 +304,29 @@ describe("PiAgent", () => {
     });
 
     await agent.reply(REQUEST);
-    await agent.reply({ ...REQUEST, turnId: "turn-2", prompt: "Continue" });
+    await agent.reply({
+      ...REQUEST,
+      turnId: "turn-2",
+      context: {
+        policyId: "last-exchange",
+        policyVersion: "1",
+        messages: [
+          { role: "user", content: "Selected prior question" },
+          { role: "assistant", content: "Selected prior answer" },
+          { role: "user", content: "Continue from only this context" },
+        ],
+      },
+    });
 
     expect(fake.calls[1]?.context.messages.map((message) => message.role)).toEqual([
       "user",
       "assistant",
       "user",
+    ]);
+    expect(fake.calls[1]?.context.messages.map(messageText)).toEqual([
+      "Selected prior question",
+      "Selected prior answer",
+      "Continue from only this context",
     ]);
 
     await agent.dispose();

@@ -20,7 +20,11 @@ const REQUEST: TurnRequest = {
     version: "1",
     systemPrompt: "You are the proposing side.",
   },
-  prompt: "Make the first proposal.",
+  context: {
+    policyId: "last-exchange",
+    policyVersion: "1",
+    messages: [{ role: "user", content: "Make the first proposal." }],
+  },
   controls: {
     model: MODEL,
     thinkingLevel: "high",
@@ -110,10 +114,14 @@ describe("ScriptedAgent", () => {
     ]);
 
     await agent.reply(request);
-    request.prompt = "Mutated after the call";
+    request.context = {
+      policyId: "last-exchange",
+      policyVersion: "1",
+      messages: [{ role: "user", content: "Mutated after the call" }],
+    };
     request.controls.thinkingLevel = "off";
 
-    expect(agent.requests[0]?.prompt).toBe("Make the first proposal.");
+    expect(agent.requests[0]?.context.messages[0]?.content).toBe("Make the first proposal.");
     expect(agent.requests[0]?.controls.thinkingLevel).toBe("high");
   });
 
