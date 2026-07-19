@@ -546,9 +546,10 @@ All three commands verified green, independently, with no credentials. Toolchain
 consistently (Bun 1.2.11 in `packageManager` and CI); TypeScript beyond strict
 (`noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, `verbatimModuleSyntax`); ESLint
 `strictTypeChecked` with the project service; CI runs the identical commands with a frozen
-lockfile. Open item: **CI has never actually run — the repo still has no git remote.** The
-workflow satisfies the letter of the criterion; a green Actions run is the real proof. Trivial:
-no bun cache or concurrency-cancel in the workflow; fold in when next touched.
+lockfile. The original open item is now resolved: the repository has an `origin`, and the
+[Milestone A completion run](https://github.com/vd1/heated-debate-v2/actions/runs/29684875641)
+passed install, test, type checking, and linting on GitHub Actions. Trivial: no Bun cache or
+concurrency cancellation in the workflow; fold those in only when the workflow is next touched.
 
 ### A-PI-SPIKE (`12d0756`) — pass, with three carry-forwards
 
@@ -576,11 +577,57 @@ exists in the codebase. Notes for later tasks, neither blocking:
 1. **`ControlTrace` permits contradictory states** (`unsupported` and `forwarded` can coexist).
    Before C-EVENTS freezes the shape into the canonical schema, add a validation function or
    restructure as a discriminated union so contradictions are unrepresentable.
-2. `ScriptedAgent.requests` stores requests by reference; a later mutation would rewrite
-   recorded history. Clone on capture (the spike's fake already used `structuredClone`).
+2. ~~`ScriptedAgent.requests` stores requests by reference.~~ Resolved in `1dc7795` by cloning on
+   capture, with a regression test that mutates the caller's request after `reply`.
 
-Next: A-PI-ADAPTER — contract-test `PiAgent` against `ScriptedAgent` behavior, implement
-per-attempt accounting evidence, and remove `spikes/` in the same diff.
+### A-PI-ADAPTER (`48c65b2`) — pass, with two later-schema carry-forwards
+
+The adapter matches the scripted domain contract without a provider call and keeps all Pi types
+behind infrastructure. Tests prove prompt/system/tool-policy forwarding, normalized output and
+usage, requested/forwarded/adjusted/unsupported/provider-verified control states, multiple
+observable HTTP responses, ambiguous-zero removal, conversation retention, active-turn abort,
+and synthesized disposal. The adapter accepts a tool registry and resolves request allowlists
+rather than hard-coding no tools. The disposable spike and its dedicated test were deleted, and
+the tsconfig no longer includes `spikes/`.
+
+Attempt accounting is honest about the available evidence: pre-final observed responses receive
+empty usage, the final response receives normalized final-message usage, and no hidden retry
+usage is invented. Provider verification is added only from `responseModel`. The contract test's
+fake supplies explicit zero-reporting evidence, so positive, explicit-zero, and ambiguous-zero
+semantics agree with `ScriptedAgent`.
+
+Two issues are deliberately carried forward; neither blocks B-EXCHANGE:
+
+1. When `agent.prompt` throws, `runReply` clears `activeResponses` and rethrows, so failed replies
+   cannot yet expose partial attempts. C-FAILURES already requires a normalized typed failure or
+   attempt observer and must close this gap before retry-inclusive failure budgets are claimed.
+2. If Pi invokes no response hook, `buildTrace` correctly synthesizes one logical attempt but
+   also synthesizes `httpStatus: 200` for success. HTTP status is observational data and should
+   remain absent in that fallback. Add the missing-hook regression test and remove the invented
+   status before C-EVENTS freezes the attempt schema.
+
+### A-LIVE-TURN (`0a8230a`) — pass
+
+The ordinary suite discovers the live test and skips it before creating `ModelRuntime` unless
+`HEATED_DEBATE_LIVE=1`. Offline factory tests prove explicit model resolution, non-secret auth
+status checking, clear missing-model/auth errors, and construction without a provider request.
+The live turn uses the required default model unless explicitly overridden, fixes the prompt,
+caps output at 128 tokens, races the reply against a 60-second timeout, and disposes in `finally`.
+Its report contains only normalized model identity, controls, and usage.
+
+The checked-in ADR records the opted-in observation: stored OAuth reached
+`openai-codex/gpt-5.6-sol`, positive input/output usage was exposed, and no `responseModel` was
+returned. The adapter therefore left provider verification absent rather than equating it with
+forwarding. This review did not repeat the paid call; it verified the offline behavior
+(16 passed, one live skip), type checking, linting, and the successful GitHub Actions run linked
+above.
+
+### Milestone A completion verdict — pass
+
+All five task IDs meet their intended completion criteria, the domain remains Pi-independent,
+the required suite is offline, and live authentication/model wiring now has one bounded opt-in
+path. The two adapter carry-forwards are assigned to the schema/failure tasks that need them.
+B-EXCHANGE can start; per the revised plan, B-CONTEXT must still land before B-ROUNDS.
 
 ## Round 2 — 2026-07-18, first revision (all resolved)
 
