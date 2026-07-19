@@ -14,6 +14,7 @@ import { PROPOSER_ROLE, REVIEWER_ROLE } from "../../src/domain/roles";
 const PROPOSER_CONTROLS: RequestedControls = {
   model: { providerId: "test", modelId: "proposer" },
   thinkingLevel: "high",
+  temperature: 0.7,
 };
 const REVIEWER_CONTROLS: RequestedControls = {
   model: { providerId: "test", modelId: "reviewer" },
@@ -98,25 +99,33 @@ describe("runDebate", () => {
       { roundNumber: 2, proposal: "P2", review: "R2" },
     ]);
 
+    expect(proposer.agent.requests.map((request) => request.creativity.level)).toEqual([5, 1]);
+    expect(reviewer.agent.requests.map((request) => request.creativity.level)).toEqual([5, 1]);
+    expect(proposer.agent.requests.map((request) => request.controls.temperature)).toEqual([0.7, 0.7]);
     expect(proposer.agent.requests[0]?.context.messages).toEqual([
-      { role: "user", content: "Topic:\nDesign a scheduler." },
+      {
+        role: "user",
+        content: "[Creativity: 5/5] Explore radical alternatives. Question the premise. Propose unconventional approaches even if risky.\n\nTopic:\nDesign a scheduler.",
+      },
     ]);
     expect(reviewer.agent.requests[0]?.context.messages).toEqual([
       {
         role: "user",
-        content: "Topic:\nDesign a scheduler.\n\nCurrent proposal:\nP1",
+        content: "[Creativity: 5/5] Explore radical alternatives. Question the premise. Propose unconventional approaches even if risky.\n\nTopic:\nDesign a scheduler.\n\nCurrent proposal:\nP1",
       },
     ]);
     expect(proposer.agent.requests[1]?.context.messages).toEqual([
       {
         role: "user",
-        content: "Topic:\nDesign a scheduler.\n\nPrevious proposal:\nP1\n\nReview:\nR1",
+        content: "[Creativity: 1/5] Converge and finalize the architectural decisions into a clear bulleted plan.\n\nTopic:\nDesign a scheduler.\n\nPrevious proposal:\nP1\n\nReview:\nR1",
       },
     ]);
     expect(reviewer.agent.requests[1]?.context.messages).toEqual([
       {
         role: "user",
         content: [
+          "[Creativity: 1/5] Converge and finalize the architectural decisions into a clear bulleted plan.",
+          "",
           "Topic:",
           "Design a scheduler.",
           "",

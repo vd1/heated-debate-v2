@@ -73,6 +73,32 @@ describe("last-exchange context policy", () => {
     expect(Object.isFrozen(decision.messages[0])).toBe(true);
   });
 
+  test("materializes creativity guidance while keeping the selection separately auditable", () => {
+    const creativity = {
+      scheduleId: "linear-cooling" as const,
+      scheduleVersion: "1" as const,
+      level: 4 as const,
+      instruction: "Suggest improvements and alternatives. Challenge assumptions. Consider non-obvious solutions.",
+    };
+
+    const decision = selectLastExchangeContext({
+      role: "proposer",
+      topic: "Design a queue.",
+      creativity,
+    });
+
+    expect(decision.messages).toEqual([{
+      role: "user",
+      content: "[Creativity: 4/5] Suggest improvements and alternatives. Challenge assumptions. Consider non-obvious solutions.\n\nTopic:\nDesign a queue.",
+    }]);
+    expect(creativity).toEqual({
+      scheduleId: "linear-cooling",
+      scheduleVersion: "1",
+      level: 4,
+      instruction: "Suggest improvements and alternatives. Challenge assumptions. Consider non-obvious solutions.",
+    });
+  });
+
   test("selects the first reviewer input without inventing prior responses", () => {
     expect(selectLastExchangeContext({
       role: "reviewer",

@@ -20,10 +20,19 @@ const REQUEST: TurnRequest = {
     version: "1",
     systemPrompt: "You are the proposing side.",
   },
+  creativity: {
+    scheduleId: "linear-cooling",
+    scheduleVersion: "1",
+    level: 3,
+    instruction: "Mix new ideas with refinement. Address open questions. Weigh tradeoffs.",
+  },
   context: {
     policyId: "last-exchange",
     policyVersion: "1",
-    messages: [{ role: "user", content: "Make the first proposal." }],
+    messages: [{
+      role: "user",
+      content: "[Creativity: 3/5] Mix new ideas with refinement. Address open questions. Weigh tradeoffs.\n\nMake the first proposal.",
+    }],
   },
   controls: {
     model: MODEL,
@@ -121,7 +130,9 @@ describe("ScriptedAgent", () => {
     };
     request.controls.thinkingLevel = "off";
 
-    expect(agent.requests[0]?.context.messages[0]?.content).toBe("Make the first proposal.");
+    expect(agent.requests[0]?.context.messages[0]?.content).toBe(
+      "[Creativity: 3/5] Mix new ideas with refinement. Address open questions. Weigh tradeoffs.\n\nMake the first proposal.",
+    );
     expect(agent.requests[0]?.controls.thinkingLevel).toBe("high");
   });
 

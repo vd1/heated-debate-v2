@@ -1,3 +1,4 @@
+import { selectCreativity } from "./dial";
 import {
   runExchange,
   type ExchangeParticipant,
@@ -43,6 +44,7 @@ export async function runDebate(input: RunDebateInput): Promise<DebateResult> {
       topic,
       proposer,
       reviewer,
+      creativity: selectCreativity(roundNumber - 1, roundCount),
       ...(priorExchange === undefined ? {} : { priorExchange }),
     });
     rounds.push(Object.freeze({ roundNumber, exchange }));

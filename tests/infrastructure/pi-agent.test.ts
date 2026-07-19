@@ -47,10 +47,19 @@ const REQUEST: TurnRequest = {
     version: "1",
     systemPrompt: "You are the architect.",
   },
+  creativity: {
+    scheduleId: "linear-cooling",
+    scheduleVersion: "1",
+    level: 3,
+    instruction: "Mix new ideas with refinement. Address open questions. Weigh tradeoffs.",
+  },
   context: {
     policyId: "last-exchange",
     policyVersion: "1",
-    messages: [{ role: "user", content: "Propose a design." }],
+    messages: [{
+      role: "user",
+      content: "[Creativity: 3/5] Mix new ideas with refinement. Address open questions. Weigh tradeoffs.\n\nPropose a design.",
+    }],
   },
   controls: {
     model: MODEL_IDENTITY,
@@ -313,7 +322,10 @@ describe("PiAgent", () => {
         messages: [
           { role: "user", content: "Selected prior question" },
           { role: "assistant", content: "Selected prior answer" },
-          { role: "user", content: "Continue from only this context" },
+          {
+            role: "user",
+            content: "[Creativity: 3/5] Mix new ideas with refinement. Address open questions. Weigh tradeoffs.\n\nContinue from only this context",
+          },
         ],
       },
     });
@@ -326,7 +338,7 @@ describe("PiAgent", () => {
     expect(fake.calls[1]?.context.messages.map(messageText)).toEqual([
       "Selected prior question",
       "Selected prior answer",
-      "Continue from only this context",
+      "[Creativity: 3/5] Mix new ideas with refinement. Address open questions. Weigh tradeoffs.\n\nContinue from only this context",
     ]);
 
     await agent.dispose();

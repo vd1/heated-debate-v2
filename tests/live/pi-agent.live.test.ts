@@ -35,12 +35,18 @@ describe("PiAgent live provider smoke", () => {
         version: "1",
         systemPrompt: "You are a concise connectivity test. Do not use tools.",
       },
+      creativity: {
+        scheduleId: "linear-cooling",
+        scheduleVersion: "1",
+        level: 3,
+        instruction: "Mix new ideas with refinement. Address open questions. Weigh tradeoffs.",
+      },
       context: {
         policyId: "last-exchange",
         policyVersion: "1",
         messages: [{
           role: "user",
-          content: "Reply with a brief confirmation that the live model call succeeded.",
+          content: "[Creativity: 3/5] Mix new ideas with refinement. Address open questions. Weigh tradeoffs.\n\nReply with a brief confirmation that the live model call succeeded.",
         }],
       },
       controls: {

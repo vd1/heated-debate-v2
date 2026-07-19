@@ -1,3 +1,5 @@
+import type { CreativitySelection } from "./dial";
+
 export interface ModelInputMessage {
   readonly role: "user" | "assistant";
   readonly content: string;
@@ -11,6 +13,7 @@ export interface ContextDecision {
 
 interface CommonContextInput {
   topic: string;
+  creativity?: CreativitySelection;
   ownPriorResponse?: string;
   counterpartyResponse?: string;
 }
@@ -46,9 +49,13 @@ export function selectLastExchangeContext(input: LastExchangeContextInput): Cont
     sections.push(section("Current proposal", input.currentProposal));
   }
 
+  const selectedContent = sections.join("\n\n");
+  const content = input.creativity === undefined
+    ? selectedContent
+    : `[Creativity: ${String(input.creativity.level)}/5] ${input.creativity.instruction}\n\n${selectedContent}`;
   const message = Object.freeze({
     role: "user" as const,
-    content: sections.join("\n\n"),
+    content,
   });
   return Object.freeze({
     policyId: "last-exchange" as const,

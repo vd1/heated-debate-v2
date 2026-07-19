@@ -5,6 +5,7 @@ import type {
   TurnRequest,
 } from "./agent";
 import { selectLastExchangeContext } from "./context";
+import type { CreativitySelection } from "./dial";
 import type { RoleDefinition } from "./roles";
 
 export interface ExchangeParticipant {
@@ -23,6 +24,7 @@ export interface RunExchangeInput {
   topic: string;
   proposer: ExchangeParticipant;
   reviewer: ExchangeParticipant;
+  creativity: CreativitySelection;
   priorExchange?: PriorExchange;
 }
 
@@ -49,6 +51,7 @@ export interface ExchangeResult {
 export async function runExchange(input: RunExchangeInput): Promise<ExchangeResult> {
   const exchangeId = input.exchangeId;
   const topic = input.topic;
+  const creativity = structuredClone(input.creativity);
   const priorExchange = input.priorExchange === undefined
     ? undefined
     : structuredClone(input.priorExchange);
@@ -66,9 +69,11 @@ export async function runExchange(input: RunExchangeInput): Promise<ExchangeResu
   const proposalRequest: TurnRequest = {
     turnId: turnId(exchangeId, "proposer"),
     role: proposer.role,
+    creativity,
     context: selectLastExchangeContext({
       role: "proposer",
       topic,
+      creativity,
       ...(priorExchange === undefined
         ? {}
         : {
@@ -85,9 +90,11 @@ export async function runExchange(input: RunExchangeInput): Promise<ExchangeResu
   const reviewRequest: TurnRequest = {
     turnId: turnId(exchangeId, "reviewer"),
     role: reviewer.role,
+    creativity,
     context: selectLastExchangeContext({
       role: "reviewer",
       topic,
+      creativity,
       currentProposal: proposalReply.text,
       ...(priorExchange === undefined
         ? {}

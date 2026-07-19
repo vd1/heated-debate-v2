@@ -25,6 +25,13 @@ const REVIEWER_CONTROLS: RequestedControls = {
   maxOutputTokens: 384,
 };
 
+const CREATIVITY = {
+  scheduleId: "linear-cooling" as const,
+  scheduleVersion: "1" as const,
+  level: 5 as const,
+  instruction: "Explore radical alternatives. Question the premise. Propose unconventional approaches even if risky.",
+};
+
 function reply(text: string, controls: RequestedControls): AgentReply {
   return {
     text,
@@ -145,6 +152,7 @@ describe("runExchange", () => {
       topic: "Design a resilient job processor.",
       proposer: proposer.participant,
       reviewer: reviewer.participant,
+      creativity: CREATIVITY,
     });
 
     const expectedProposalRequest: TurnRequest = {
@@ -154,12 +162,13 @@ describe("runExchange", () => {
         version: "test",
         systemPrompt: "Propose a concrete architecture.",
       },
+      creativity: CREATIVITY,
       context: {
         policyId: "last-exchange",
         policyVersion: "1",
         messages: [{
           role: "user",
-          content: "Topic:\nDesign a resilient job processor.",
+          content: "[Creativity: 5/5] Explore radical alternatives. Question the premise. Propose unconventional approaches even if risky.\n\nTopic:\nDesign a resilient job processor.",
         }],
       },
       controls: PROPOSER_CONTROLS,
@@ -172,12 +181,15 @@ describe("runExchange", () => {
         version: "test",
         systemPrompt: "Challenge the proposal.",
       },
+      creativity: CREATIVITY,
       context: {
         policyId: "last-exchange",
         policyVersion: "1",
         messages: [{
           role: "user",
           content: [
+            "[Creativity: 5/5] Explore radical alternatives. Question the premise. Propose unconventional approaches even if risky.",
+            "",
             "Topic:",
             "Design a resilient job processor.",
             "",
@@ -225,6 +237,7 @@ describe("runExchange", () => {
         },
         controls: structuredClone(REVIEWER_CONTROLS),
       },
+      creativity: CREATIVITY,
     };
 
     const pending = runExchange(input);
@@ -244,12 +257,13 @@ describe("runExchange", () => {
         version: "1",
         systemPrompt: "Original reviewer system",
       },
+      creativity: CREATIVITY,
       context: {
         policyId: "last-exchange",
         policyVersion: "1",
         messages: [{
           role: "user",
-          content: "Topic:\nOriginal topic\n\nCurrent proposal:\nOriginal proposal",
+          content: "[Creativity: 5/5] Explore radical alternatives. Question the premise. Propose unconventional approaches even if risky.\n\nTopic:\nOriginal topic\n\nCurrent proposal:\nOriginal proposal",
         }],
       },
       controls: REVIEWER_CONTROLS,
@@ -293,6 +307,7 @@ describe("runExchange", () => {
       topic: "Original topic",
       proposer: proposer.participant,
       reviewer: reviewer.participant,
+      creativity: CREATIVITY,
     };
 
     const result = await runExchange(input);
