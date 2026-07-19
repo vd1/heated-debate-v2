@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed; validate in Task A-PI-SPIKE.
+Accepted after Task A-PI-SPIKE.
 
 ## Decision
 
@@ -39,8 +39,21 @@ Pi may retain provider conversation state, but the engine remains the source of 
 
 Live agents default to `openai-codex/gpt-5.6-sol` with thinking level `high`. Experiment configurations may override either value, and canonical run events record both requested and effective settings. Unit tests use fakes rather than this live default.
 
+## Pi integration findings
+
+Task A-PI-SPIKE selected Pi's low-level `Agent` with a `ModelRuntime.streamSimple` wrapper:
+
+- `Agent` retains the transcript, preserves the explicit system prompt and tool list, emits typed streaming/lifecycle events, and supports cancellation.
+- `ModelRuntime` supplies provider/model lookup and authentication without requiring coding-agent resource discovery.
+- `AgentSession` is unnecessary for the engine boundary and would introduce session/resource machinery that the debate domain does not need.
+- `Agent` has reset and abort operations but no dispose method; the project adapter must define disposal by aborting, waiting for idle, unsubscribing listeners, and clearing state.
+
+The offline characterization tests use a fake stream and an in-memory `ModelRuntime`; they make no provider request.
+
 ## Sampling controls
 
-Pi's underlying `pi-ai` stream options include `temperature` and `maxTokens`, and Pi exposes thinking level. Provider support varies. Task A-PI-SPIKE must establish which controls are available through the chosen integration level and record the effective—not merely requested—controls. Unsupported controls must fail validation or be explicitly marked unsupported; they must never be silently ignored by the experiment layer.
+Thinking level is native `Agent` state. `temperature` and `maxTokens` exist in `pi-ai` stream options but are not constructor options on low-level `Agent`, so the ModelRuntime stream wrapper must inject them. Known model metadata can reject unsupported thinking or temperature and clamp maximum output before a request.
 
-Pi may perform retries, but the adapter trace must expose attempt count, outcome, and per-attempt usage. Canonical budgets and cost calculations include every observable attempt rather than only the final successful response.
+Passing a value to the stream proves only that it was requested/forwarded, not that a provider honored it. The adapter must distinguish requested, forwarded, adjusted, unsupported, and provider-verified values. Unsupported controls must fail validation or be explicitly reported; they must never be silently ignored.
+
+Pi may perform retries, but the fake-stream spike cannot establish provider retry observability. Task A-PI-ADAPTER must instrument available response hooks and report attempt count, outcome, and per-attempt usage where the provider exposes it. Missing attempt usage remains absent, not zero. Canonical budgets and cost calculations include every observable attempt rather than only the final successful response.

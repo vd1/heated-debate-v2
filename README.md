@@ -6,6 +6,6 @@ The engine owns debate protocols, explicit experiment configuration, evaluation,
 
 ## Status
 
-Implementation is proceeding one independently testable task at a time; see [`plans/implementation-plan.md`](plans/implementation-plan.md). Task A-HARNESS is complete; A-PI-SPIKE is next.
+Implementation is proceeding one independently testable task at a time; see [`plans/implementation-plan.md`](plans/implementation-plan.md). Tasks A-HARNESS and A-PI-SPIKE are complete; A-AGENT-PORT is next.
 
 The original implementation remains in the sibling repository `../heated-debate/` and is treated as reference behavior, not as code to copy wholesale.
