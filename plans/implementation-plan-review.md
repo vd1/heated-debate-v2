@@ -53,6 +53,52 @@ availability, attempt observability, conversation retention) meet evidence.
    CLI/executor layer; milestone letters declared historical in rule 9; live-smoke overlap
    resolved — C-LIVE-ARTIFACT reuses and supersedes the B-LIVE-DEBATE harness.
 
+## Implementation reviews
+
+Per-task reviews of executed work, per the plan's "review the diff after each green task" rule.
+
+### A-HARNESS (`02a474e`) — pass
+
+All three commands verified green, independently, with no credentials. Toolchain pinned
+consistently (Bun 1.2.11 in `packageManager` and CI); TypeScript beyond strict
+(`noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, `verbatimModuleSyntax`); ESLint
+`strictTypeChecked` with the project service; CI runs the identical commands with a frozen
+lockfile. Open item: **CI has never actually run — the repo still has no git remote.** The
+workflow satisfies the letter of the criterion; a green Actions run is the real proof. Trivial:
+no bun cache or concurrency-cancel in the workflow; fold in when next touched.
+
+### A-PI-SPIKE (`12d0756`) — pass, with three carry-forwards
+
+Every "prove" item is covered offline, and ADR-0001 moved to Accepted on measured findings, the
+honest kind: Pi's low-level `Agent` has no dispose (adapter must synthesize
+abort → waitForIdle → unsubscribe → reset); `temperature`/`maxTokens` must be injected by the
+stream wrapper, not the `Agent` constructor; control forwarding proves nothing about provider
+honoring, marked `verification: "request-only"`. Dependencies exact-pinned at 0.80.10.
+Carry-forwards raised: (1) replace the plan's "requested and effective" language with the
+five-state taxonomy; (2) define a zero-vs-absent rule, since `pi-ai` usage fields are
+non-optional numbers; (3) delete `spikes/` when A-PI-ADAPTER lands. **All three were folded into
+the plan/ADR/AGENTS.md in `7f66eb9` before the next task — resolved.** Minor, accepted as-is:
+temperature-unsupported detection is Anthropic-specific; the `ModelRuntime` test's assertion is
+weak (the substance is offline `create()` succeeding).
+
+### A-AGENT-PORT (`d8c0bfa`) — pass, two forward-looking notes
+
+"Done when" holds in its strongest form: `src/domain/agent.ts` has zero imports of any kind.
+The zero-vs-absent rule got a real mechanism — `UsageObservation` separates values from an
+`explicitlyReported` evidence list, and `normalizeUsage` is tested on all three branches
+(positive without evidence kept, explicit zero kept, ambiguous zero dropped) plus input
+validation. The five-state `ControlTrace` makes the taxonomy structural; "effective" no longer
+exists in the codebase. Notes for later tasks, neither blocking:
+
+1. **`ControlTrace` permits contradictory states** (`unsupported` and `forwarded` can coexist).
+   Before C-EVENTS freezes the shape into the canonical schema, add a validation function or
+   restructure as a discriminated union so contradictions are unrepresentable.
+2. `ScriptedAgent.requests` stores requests by reference; a later mutation would rewrite
+   recorded history. Clone on capture (the spike's fake already used `structuredClone`).
+
+Next: A-PI-ADAPTER — contract-test `PiAgent` against `ScriptedAgent` behavior, implement
+per-attempt accounting evidence, and remove `spikes/` in the same diff.
+
 ## Round 2 — 2026-07-18, first revision (all resolved)
 
 1. **No real engine executable** (Optuna bridge tested only against a fake) → F-ENGINE-CLI.
