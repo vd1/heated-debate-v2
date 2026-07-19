@@ -765,7 +765,7 @@ mutation regression, type checking, linting, commit whitespace validation, and t
 [corrected GitHub Actions run](https://github.com/vd1/heated-debate-v2/actions/runs/29694117580)
 are green. Both findings are closed. B-DIAL passes and B-LIVE-DEBATE is unblocked.
 
-### B-LIVE-DEBATE (`dac4d2f`) — changes requested
+### B-LIVE-DEBATE (`dac4d2f`, corrected by `5130a6a`) — changes requested
 
 The basic smoke path is sound. It is gated by `HEATED_DEBATE_LIVE=1`, defaults to
 `openai-codex/gpt-5.6-sol`, accepts provider/model overrides, constructs separate proposer and
@@ -803,6 +803,30 @@ linting, commit whitespace validation, and the
 are green. CI is also skip-only for the live path. This review did not repeat the opt-in provider
 calls. Keep B-LIVE-DEBATE active, and do not start C-EVENTS or claim Milestone B complete until
 the three lifecycle/harness corrections are resolved and re-reviewed.
+
+Re-review of `5130a6a`: findings 2 and 3 are closed. `runLiveDebateHarness` now acquires agents
+inside its guarded lifecycle, disposes every acquired agent even after partial setup or run
+failure, propagates individual or aggregate cleanup failures, and returns disposed/reset state
+for the live assertion. The offline partial-acquisition regression proves the proposer is
+disposed if reviewer creation fails. The extracted runner owns model/runtime setup, controls,
+timeouts, the domain call, cleanup, and the complete in-memory result, giving C-LIVE-ARTIFACT one
+path to extend rather than copy.
+
+Finding 1 is only partially resolved. The new `assertControlTrace` checks unsupported-state
+exclusivity and adjusted/forwarded equality, but it still accepts an unresolved trace containing
+only `requested`, or a silently changed `forwarded` value without `adjusted`. It also replaced
+the earlier exact forwarded-model assertion with that permissive helper. Require every
+non-unsupported requested control to have `forwarded`; when `adjusted` is absent, require
+`forwarded` to equal `requested`; when adjustment is present, require `forwarded` to equal the
+adjusted value. This will accept legitimate unsupported/adjusted overrides while rejecting
+unreported or silently altered controls, and will again prove that the selected model identity
+was forwarded.
+
+The corrected offline suite passes 43 tests with two intentional live skips; type checking,
+linting, commit whitespace validation, and the
+[correction GitHub Actions run](https://github.com/vd1/heated-debate-v2/actions/runs/29698277421)
+are green. This re-review did not repeat the opt-in provider calls. Keep B-LIVE-DEBATE active and
+C-EVENTS blocked until the remaining control-trace assertion is corrected and re-reviewed.
 
 ## Round 2 — 2026-07-18, first revision (all resolved)
 

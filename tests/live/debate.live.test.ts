@@ -91,9 +91,14 @@ function assertControlTrace<T>(trace: ControlTrace<T> | undefined): void {
     expect(trace.forwarded).toBeUndefined();
     expect(trace.adjusted).toBeUndefined();
     expect(trace.providerVerified).toBeUndefined();
+    return;
   }
+
+  expect(trace.forwarded).toBeDefined();
   if (trace.adjusted) {
     expect(trace.forwarded).toEqual(trace.adjusted.value);
+  } else {
+    expect(trace.forwarded).toEqual(trace.requested);
   }
 }
 
