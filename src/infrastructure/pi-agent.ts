@@ -6,6 +6,7 @@ import {
 import type {
   Api,
   AssistantMessage,
+  AuthCheck,
   Model,
   ModelThinkingLevel,
   ProviderResponse,
@@ -31,10 +32,24 @@ import {
 
 export type ModelStream = StreamFn;
 
+export interface PiModelRuntime {
+  getModel(providerId: string, modelId: string): Model<Api> | undefined;
+  checkAuth(providerId: string): Promise<AuthCheck | undefined>;
+  streamSimple: ModelStream;
+}
+
 export interface PiAgentOptions {
   model: Model<Api>;
   modelStream: ModelStream;
   usageEvidence: UsageEvidence;
+  tools?: readonly AgentTool[];
+  now?: () => number;
+}
+
+export interface CreatePiAgentFromRuntimeOptions {
+  runtime: PiModelRuntime;
+  model: ModelIdentity;
+  usageEvidence?: UsageEvidence;
   tools?: readonly AgentTool[];
   now?: () => number;
 }
@@ -46,8 +61,37 @@ interface ResolvedControls {
   maxTokens?: number;
 }
 
-export function streamFromModelRuntime(runtime: ModelRuntime): ModelStream {
+export function streamFromModelRuntime(runtime: Pick<ModelRuntime, "streamSimple">): ModelStream {
   return (model, context, options) => runtime.streamSimple(model, context, options);
+}
+
+export async function createPiAgentFromRuntime(
+  options: CreatePiAgentFromRuntimeOptions,
+): Promise<PiAgent> {
+  const model = options.runtime.getModel(options.model.providerId, options.model.modelId);
+  if (!model) {
+    throw new Error(`model is unavailable: ${options.model.providerId}/${options.model.modelId}`);
+  }
+
+  const auth = await options.runtime.checkAuth(options.model.providerId);
+  if (!auth) {
+    throw new Error(`authentication is unavailable for provider: ${options.model.providerId}`);
+  }
+
+  return new PiAgent({
+    model,
+    modelStream: (requestModel, context, streamOptions) => options.runtime.streamSimple(
+      requestModel,
+      context,
+      streamOptions,
+    ),
+    usageEvidence: structuredClone(options.usageEvidence ?? {
+      explicitlyReported: [],
+      source: "pi-ai-fields-without-provider-reporting-evidence",
+    }),
+    ...(options.tools === undefined ? {} : { tools: options.tools }),
+    ...(options.now === undefined ? {} : { now: options.now }),
+  });
 }
 
 export class PiAgent implements AgentPort {
