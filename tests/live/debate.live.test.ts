@@ -1,9 +1,14 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import type {
   AgentReply,
   ControlTrace,
 } from "../../src/domain/agent";
+import { replayCanonicalRun } from "../../src/domain/replay";
+import { readCanonicalJsonl } from "../../src/infrastructure/jsonl-events";
 import { runLiveDebateHarness } from "./debate-harness";
 import {
   LIVE_DEBATE_TIMEOUT_MS,
@@ -11,14 +16,38 @@ import {
   LIVE_MODEL,
 } from "./support";
 
+const temporaryDirectories: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(temporaryDirectories.splice(0).map(async (directory) => {
+    await rm(directory, { recursive: true, force: true });
+  }));
+});
+
 describe("two-round live debate", () => {
   if (!LIVE_ENABLED) {
     test.skip("requires HEATED_DEBATE_LIVE=1", () => {});
     return;
   }
 
-  test("runs four bounded turns with exact policy-selected messages", async () => {
-    const { result, lifecycle } = await runLiveDebateHarness();
+  test("persists, parses, and replays four bounded canonical turns", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "heated-debate-live-artifact-"));
+    temporaryDirectories.push(directory);
+    const artifactPath = join(directory, "live-debate.jsonl");
+    const secretSentinel = "configured-live-secret-sentinel-7f693b";
+    const configuredSecrets = [
+      secretSentinel,
+      process.env.OPENAI_API_KEY,
+      process.env.ANTHROPIC_API_KEY,
+      process.env.OPENROUTER_API_KEY,
+    ].filter((value): value is string => typeof value === "string" && value.length > 0);
+    const { result, lifecycle, configuration, artifact } = await runLiveDebateHarness({
+      artifact: {
+        path: artifactPath,
+        runId: "live-artifact-run",
+        secrets: configuredSecrets,
+      },
+    });
     const turns = result.rounds.flatMap((round) => [round.exchange.proposal, round.exchange.review]);
 
     expect(result.rounds).toHaveLength(2);
@@ -70,6 +99,29 @@ describe("two-round live debate", () => {
       proposer: { disposed: true, messageCount: 0 },
       reviewer: { disposed: true, messageCount: 0 },
     });
+
+    const persisted = await readCanonicalJsonl(artifactPath);
+    expect(persisted.tail).toEqual({ status: "clean" });
+    expect(artifact).toBeDefined();
+    if (!artifact) throw new Error("live harness did not return artifact metadata");
+    expect(persisted.events).toHaveLength(artifact.eventCount);
+    expect(persisted.events[0]?.type).toBe("run.started");
+    expect(persisted.events.at(-1)?.type).toBe("run.completed");
+    expect(persisted.events.filter((event) => event.type === "turn.requested")).toHaveLength(4);
+    expect(persisted.events.filter((event) => event.type === "turn.completed")).toHaveLength(4);
+
+    for (const turn of turns) {
+      const recordedAttempts = persisted.events
+        .filter((event) => event.type === "adapter.attempt")
+        .filter((event) => event.data.turnId === turn.request.turnId)
+        .map((event) => event.data.attempt);
+      expect(recordedAttempts).toEqual([...turn.reply.trace.attempts]);
+    }
+
+    const replay = await replayCanonicalRun({ events: persisted.events, configuration });
+    expect(replay.requests).toEqual(turns.map((turn) => turn.request));
+    const serializedArtifact = await readFile(artifactPath, "utf8");
+    for (const secret of configuredSecrets) expect(serializedArtifact).not.toContain(secret);
 
     console.info(`LIVE_DEBATE_RESULT ${JSON.stringify({
       debateId: result.debateId,
