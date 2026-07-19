@@ -1043,6 +1043,55 @@ validation, and the
 [corrected GitHub Actions run](https://github.com/vd1/heated-debate-v2/actions/runs/29705631666)
 are green. C-REPLAY passes and C-LIVE-ARTIFACT is unblocked.
 
+### C-LIVE-ARTIFACT (`05af69c`) — changes requested
+
+The implementation correctly extends the existing live-debate harness rather than creating a
+second provider path. It retains the explicit opt-in gate, default model, two rounds, high
+thinking, 128-token request, debate timeout, and lifecycle cleanup. The successful-result
+projection records exact turn requests, every normalized attempt, control reports, replies, and
+the terminal count under an independent artifact run ID. The smoke writes to a caller-selected
+temporary path, closes the writer on write failure or success, reads and sequence-validates the
+JSONL, checks a clean tail and event counts, replays the persisted requests, compares each
+persisted attempt with the in-memory trace, and scans the raw artifact for configured secrets.
+
+Two corrections are required before C-MARKDOWN:
+
+1. Persistence occurs only after the entire debate has completed. `runLiveDebateHarness` awaits
+   `runDebate`, then projects the final in-memory result, opens the writer, and appends all events
+   in one post-run batch. A deferred-reviewer probe confirmed that the artifact path did not
+   exist during the second turn and appeared only after the run returned. This does not exercise
+   append-only persistence across turns or preserve a committed prefix if the live process is
+   interrupted—the resilience C-JSONL was built to provide. Integrate a canonical event sink
+   with the scheduler/run path: create the writer before dispatch, append `run.started` and each
+   `turn.requested` at their actual boundaries, append observed attempts and completion after
+   each reply, flush at a documented turn boundary, and close in `finally`. C-FAILURES can still
+   add terminal failure semantics later; this task only needs to retain the valid incomplete
+   prefix. Add an offline gated-agent test that inspects the file between turns and after
+   interruption.
+2. The claimed per-turn output cap is not effective on the required default route. The opt-in
+   `openai-codex/gpt-5.6-sol` run requested and reported
+   `maxOutputTokens: { requested: 128, forwarded: 128 }`, but its four observed output-token
+   values were 1,100, 1,560, 943, and 1,059, with reasoning recorded as a subset. Inspection of
+   the pinned Pi 0.80.10 Codex Responses path explains the result: `maxTokens` reaches
+   `buildBaseOptions`, but the Codex request-body builder emits no `max_output_tokens` field.
+   The live test checks only the control-trace shape and therefore passes despite being
+   unbounded. The selected correction is an enforced 4,096-output-token cap per turn, replacing
+   the impractically small 128-token request for this high-reasoning smoke. Make the
+   adapter/provider capability report truthful and ensure the Codex request actually carries
+   that limit (or enforce the same bound client-side); do not label an ignored option as
+   supported. Add an offline payload-level regression and make the live assertion verify the
+   selected cap semantics using the emitted request plus observable usage/termination evidence,
+   without upgrading forwarding to provider verification.
+
+The required offline suite passes 79 tests with two intentional live skips; the 26 focused
+event-projection, harness, JSONL, and replay tests, type checking, linting, domain/Pi boundary
+scan, commit whitespace validation, and the
+[C-LIVE-ARTIFACT GitHub Actions run](https://github.com/vd1/heated-debate-v2/actions/runs/29706153426)
+are green. I also ran the opt-in four-turn smoke against the default model: write/read/replay,
+secret scanning, and cleanup passed in 90.8 seconds, but that run exposed the ineffective output
+cap above. Keep C-LIVE-ARTIFACT active and C-MARKDOWN blocked until both findings are resolved
+and re-reviewed.
+
 ## Round 2 — 2026-07-18, first revision (all resolved)
 
 1. **No real engine executable** (Optuna bridge tested only against a fake) → F-ENGINE-CLI.

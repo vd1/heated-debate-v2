@@ -4,14 +4,17 @@ import {
   type AgentTool,
   type StreamFn,
 } from "@earendil-works/pi-agent-core";
-import type {
-  Api,
-  AssistantMessage,
-  AuthCheck,
-  Model,
-  ModelThinkingLevel,
-  ProviderResponse,
-  SimpleStreamOptions,
+import {
+  createAssistantMessageEventStream,
+  type Api,
+  type AssistantMessage,
+  type AssistantMessageEvent,
+  type AssistantMessageEventStream,
+  type AuthCheck,
+  type Model,
+  type ModelThinkingLevel,
+  type ProviderResponse,
+  type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 
@@ -61,6 +64,7 @@ interface ResolvedControls {
   thinkingLevel: ModelThinkingLevel;
   temperature?: number;
   maxTokens?: number;
+  clientOutputByteLimit?: number;
 }
 
 export function streamFromModelRuntime(runtime: Pick<ModelRuntime, "streamSimple">): ModelStream {
@@ -244,11 +248,65 @@ export class PiAgent implements AgentPort {
   }
 
   private wrapControls(stream: ModelStream, controls: ResolvedControls): ModelStream {
-    return (model, context, options) => stream(model, context, {
-      ...options,
-      ...(controls.temperature === undefined ? {} : { temperature: controls.temperature }),
-      ...(controls.maxTokens === undefined ? {} : { maxTokens: controls.maxTokens }),
-    });
+    return async (model, context, options) => {
+      const outputController = new AbortController();
+      const signal = options?.signal === undefined
+        ? outputController.signal
+        : AbortSignal.any([options.signal, outputController.signal]);
+      const source = await stream(model, context, {
+        ...options,
+        signal,
+        ...(controls.temperature === undefined ? {} : { temperature: controls.temperature }),
+        ...(controls.maxTokens === undefined ? {} : { maxTokens: controls.maxTokens }),
+      });
+      return controls.clientOutputByteLimit === undefined
+        ? source
+        : boundObservableOutput(source, outputController, controls.clientOutputByteLimit);
+    };
+  }
+}
+
+function boundObservableOutput(
+  source: AssistantMessageEventStream,
+  controller: AbortController,
+  byteLimit: number,
+): AssistantMessageEventStream {
+  const bounded = createAssistantMessageEventStream();
+  void (async () => {
+    let observedBytes = 0;
+    for await (const event of source) {
+      const output = outputDelta(event);
+      if (output !== undefined) {
+        observedBytes += new TextEncoder().encode(output.delta).byteLength;
+        if (observedBytes > byteLimit) {
+          controller.abort();
+          const error: AssistantMessage = {
+            ...structuredClone(output.partial),
+            stopReason: "aborted",
+            errorMessage: `client observable-output byte limit exceeded: ${String(byteLimit)}`,
+          };
+          bounded.push({ type: "error", reason: "aborted", error });
+          bounded.end(error);
+          return;
+        }
+      }
+      bounded.push(event);
+    }
+    bounded.end(await source.result());
+  })();
+  return bounded;
+}
+
+function outputDelta(
+  event: AssistantMessageEvent,
+): { delta: string; partial: AssistantMessage } | undefined {
+  switch (event.type) {
+    case "text_delta":
+    case "thinking_delta":
+    case "toolcall_delta":
+      return { delta: event.delta, partial: event.partial };
+    default:
+      return undefined;
   }
 }
 
@@ -274,6 +332,9 @@ function resolveControls(model: Model<Api>, requested: RequestedControls): Resol
   return {
     report,
     thinkingLevel: report.thinkingLevel.forwarded ?? "off",
+    ...(model.api === "openai-codex-responses" && requested.maxOutputTokens !== undefined
+      ? { clientOutputByteLimit: requested.maxOutputTokens }
+      : {}),
     ...(report.temperature?.forwarded === undefined
       ? {}
       : { temperature: report.temperature.forwarded }),
@@ -308,6 +369,14 @@ function resolveTemperature(model: Model<Api>, requested: number): ControlTrace<
 }
 
 function resolveMaxTokens(model: Model<Api>, requested: number): ControlTrace<number> {
+  if (model.api === "openai-codex-responses") {
+    return {
+      requested,
+      unsupported: {
+        reason: "Codex route omits provider token cap; client enforces an observable UTF-8 byte ceiling",
+      },
+    };
+  }
   if (requested <= model.maxTokens) return { requested, forwarded: requested };
   return {
     requested,

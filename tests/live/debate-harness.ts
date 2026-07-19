@@ -4,7 +4,6 @@ import type {
   AgentPort,
   RequestedControls,
 } from "../../src/domain/agent";
-import { projectDebateEvents } from "../../src/domain/debate-events";
 import {
   runDebate,
   type DebateResult,
@@ -15,6 +14,7 @@ import { JsonlEventWriter } from "../../src/infrastructure/jsonl-events";
 import { createPiAgentFromRuntime } from "../../src/infrastructure/pi-agent";
 import {
   LIVE_DEBATE_TIMEOUT_MS,
+  LIVE_MAX_OUTPUT_TOKENS,
   LIVE_MODEL,
   withTimeout,
 } from "./support";
@@ -53,7 +53,7 @@ export async function runLiveDebateHarness(
   const controls: RequestedControls = {
     model: LIVE_MODEL,
     thinkingLevel: "high",
-    maxOutputTokens: 128,
+    maxOutputTokens: LIVE_MAX_OUTPUT_TOKENS,
   };
   const configuration: ReplayConfiguration = {
     debateId: options.debateId ?? "live-debate",
@@ -66,28 +66,49 @@ export async function runLiveDebateHarness(
   let reviewer: LiveHarnessAgent | undefined;
   let result: DebateResult | undefined;
   let artifactResult: LiveDebateHarnessResult["artifact"];
+  let artifactWriter: JsonlEventWriter | undefined;
+  let artifactEventCount = 0;
   let runError: unknown;
 
   try {
     const createAgent = options.createAgent ?? await defaultAgentFactory();
     proposer = await createAgent("proposer");
     reviewer = await createAgent("reviewer");
+    if (options.artifact) {
+      artifactWriter = await JsonlEventWriter.create(options.artifact.path, {
+        secrets: options.artifact.secrets,
+      });
+    }
     result = await withTimeout(
       runDebate({
         ...configuration,
         proposer: { ...configuration.proposer, agent: proposer },
         reviewer: { ...configuration.reviewer, agent: reviewer },
+        ...(artifactWriter === undefined || options.artifact === undefined
+          ? {}
+          : {
+              recording: {
+                runId: options.artifact.runId,
+                sink: {
+                  append: async (event) => {
+                    await artifactWriter?.append(event);
+                    artifactEventCount += 1;
+                  },
+                  flush: async () => {
+                    await artifactWriter?.flush();
+                  },
+                },
+              },
+            }),
       }),
       options.timeoutMs ?? LIVE_DEBATE_TIMEOUT_MS,
       "live debate",
     );
     if (options.artifact) {
-      const events = projectDebateEvents(result, options.artifact.runId);
-      await persistArtifact(options.artifact.path, events, options.artifact.secrets);
       artifactResult = {
         path: options.artifact.path,
         runId: options.artifact.runId,
-        eventCount: events.length,
+        eventCount: artifactEventCount,
       };
     }
   } catch (error) {
@@ -95,6 +116,13 @@ export async function runLiveDebateHarness(
   }
 
   const cleanupErrors: unknown[] = [];
+  if (artifactWriter) {
+    try {
+      await artifactWriter.close();
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+  }
   for (const agent of [reviewer, proposer]) {
     if (!agent) continue;
     try {
@@ -125,31 +153,6 @@ export async function runLiveDebateHarness(
       reviewer: { disposed: reviewer.disposed, messageCount: reviewer.messageCount },
     },
   };
-}
-
-async function persistArtifact(
-  path: string,
-  events: ReturnType<typeof projectDebateEvents>,
-  secrets: readonly string[],
-): Promise<void> {
-  const writer = await JsonlEventWriter.create(path, { secrets });
-  let appendError: unknown;
-  try {
-    for (const event of events) await writer.append(event);
-    await writer.flush();
-  } catch (error) {
-    appendError = error;
-  }
-
-  let closeError: unknown;
-  try {
-    await writer.close();
-  } catch (error) {
-    closeError = error;
-  }
-  const errors = [appendError, closeError].filter((error) => error !== undefined).map(toError);
-  if (errors.length === 1 && errors[0]) throw errors[0];
-  if (errors.length > 1) throw new AggregateError(errors, "live artifact write or close failed");
 }
 
 async function defaultAgentFactory(): Promise<

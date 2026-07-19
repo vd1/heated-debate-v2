@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   createAssistantMessageEventStream,
   InMemoryCredentialStore,
+  type Api,
   type AssistantMessage,
   type Context,
   type Message,
@@ -33,6 +34,13 @@ const MODEL: Model<"anthropic-messages"> = {
   cost: { input: 1, output: 2, cacheRead: 0.1, cacheWrite: 1.25 },
   contextWindow: 8_192,
   maxTokens: 1_024,
+};
+
+const CODEX_MODEL: Model<"openai-codex-responses"> = {
+  ...MODEL,
+  id: "codex-test-model",
+  api: "openai-codex-responses",
+  provider: "openai-codex",
 };
 
 const MODEL_IDENTITY: ModelIdentity = {
@@ -78,16 +86,17 @@ interface StreamCall {
 interface ScriptedStreamOptions {
   replies: string[];
   statuses?: number[];
+  model?: Model<Api>;
 }
 
-function assistantMessage(text: string): AssistantMessage {
+function assistantMessage(text: string, model: Model<Api> = MODEL): AssistantMessage {
   return {
     role: "assistant",
     content: [{ type: "text", text }],
-    api: MODEL.api,
-    provider: MODEL.provider,
-    model: MODEL.id,
-    responseModel: MODEL.id,
+    api: model.api,
+    provider: model.provider,
+    model: model.id,
+    responseModel: model.id,
     usage: {
       input: 20,
       output: 0,
@@ -102,23 +111,33 @@ function assistantMessage(text: string): AssistantMessage {
   };
 }
 
-function scriptedStream(options: ScriptedStreamOptions): { calls: StreamCall[]; stream: ModelStream } {
+function scriptedStream(options: ScriptedStreamOptions): {
+  calls: StreamCall[];
+  emittedPayloads: unknown[];
+  stream: ModelStream;
+} {
   const calls: StreamCall[] = [];
+  const emittedPayloads: unknown[] = [];
   let replyIndex = 0;
 
   return {
     calls,
-    stream: (_model, context, streamOptions) => {
+    emittedPayloads,
+    stream: (requestModel, context, streamOptions) => {
       calls.push({ context: structuredClone(context), options: streamOptions });
       const events = createAssistantMessageEventStream();
       const text = options.replies[replyIndex] ?? "unexpected";
       replyIndex += 1;
-      const message = assistantMessage(text);
+      const selectedModel = options.model ?? requestModel;
+      const message = assistantMessage(text, selectedModel);
 
       queueMicrotask(() => {
         void (async () => {
+          const basePayload = { model: selectedModel.id, stream: true };
+          const replacedPayload = await streamOptions?.onPayload?.(basePayload, selectedModel);
+          emittedPayloads.push(replacedPayload ?? basePayload);
           for (const status of options.statuses ?? [200]) {
-            await streamOptions?.onResponse?.({ status, headers: {} }, MODEL);
+            await streamOptions?.onResponse?.({ status, headers: {} }, selectedModel);
           }
           events.push({ type: "start", partial: { ...message, content: [] } });
           events.push({ type: "text_start", contentIndex: 0, partial: message });
@@ -283,6 +302,63 @@ describe("PiAgent", () => {
       usage: { inputTokens: 20, cacheWriteTokens: 3 },
       usageEvidence: { explicitlyReported: [], source: "test" },
     }]);
+    await agent.dispose();
+  });
+
+  test("reports the omitted Codex provider cap truthfully at payload level", async () => {
+    const fake = scriptedStream({ replies: ["Bounded answer"], model: CODEX_MODEL });
+    const agent = new PiAgent({
+      model: CODEX_MODEL,
+      modelStream: fake.stream,
+      usageEvidence: { explicitlyReported: [], source: "test" },
+      now: clock(0, 1),
+    });
+    const request: TurnRequest = {
+      ...REQUEST,
+      controls: {
+        ...REQUEST.controls,
+        model: { providerId: CODEX_MODEL.provider, modelId: CODEX_MODEL.id },
+      },
+    };
+
+    const reply = await agent.reply(request);
+
+    expect(fake.emittedPayloads).toEqual([{
+      model: CODEX_MODEL.id,
+      stream: true,
+    }]);
+    expect(reply.controls.maxOutputTokens).toEqual({
+      requested: 512,
+      unsupported: {
+        reason: "Codex route omits provider token cap; client enforces an observable UTF-8 byte ceiling",
+      },
+    });
+    await agent.dispose();
+  });
+
+  test("aborts Codex output that exceeds the client observable-byte bound", async () => {
+    const fake = scriptedStream({ replies: ["long output"], model: CODEX_MODEL });
+    const agent = new PiAgent({
+      model: CODEX_MODEL,
+      modelStream: fake.stream,
+      usageEvidence: { explicitlyReported: [], source: "test" },
+      now: clock(0, 1),
+    });
+    const request: TurnRequest = {
+      ...REQUEST,
+      controls: {
+        ...REQUEST.controls,
+        model: { providerId: CODEX_MODEL.provider, modelId: CODEX_MODEL.id },
+        maxOutputTokens: 4,
+      },
+    };
+
+    const reply = await agent.reply(request);
+
+    expect(fake.calls[0]?.options?.signal?.aborted).toBe(true);
+    expect(reply.trace.attempts[0]?.status).toBe("aborted");
+    expect(reply.controls.maxOutputTokens?.forwarded).toBeUndefined();
+    expect(reply.controls.maxOutputTokens?.unsupported).toBeDefined();
     await agent.dispose();
   });
 

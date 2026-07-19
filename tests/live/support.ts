@@ -3,6 +3,9 @@ import type { ModelIdentity } from "../../src/domain/agent";
 export const LIVE_ENABLED = process.env.HEATED_DEBATE_LIVE === "1";
 export const LIVE_TURN_TIMEOUT_MS = 60_000;
 export const LIVE_DEBATE_TIMEOUT_MS = 120_000;
+// Codex counts hidden reasoning against max_output_tokens. This leaves room for
+// high reasoning plus a concise visible answer while enforcing a real bound.
+export const LIVE_MAX_OUTPUT_TOKENS = 8_192;
 
 export const LIVE_MODEL: ModelIdentity = Object.freeze({
   providerId: process.env.HEATED_DEBATE_PROVIDER ?? "openai-codex",

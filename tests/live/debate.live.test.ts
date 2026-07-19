@@ -13,6 +13,7 @@ import { runLiveDebateHarness } from "./debate-harness";
 import {
   LIVE_DEBATE_TIMEOUT_MS,
   LIVE_ENABLED,
+  LIVE_MAX_OUTPUT_TOKENS,
   LIVE_MODEL,
 } from "./support";
 
@@ -61,6 +62,12 @@ describe("two-round live debate", () => {
     expect(turns.map((turn) => turn.request.creativity.level)).toEqual([5, 5, 1, 1]);
 
     for (const turn of turns) {
+      console.info(`LIVE_TURN_EVIDENCE ${JSON.stringify({
+        turnId: turn.request.turnId,
+        textLength: turn.reply.text.length,
+        usage: turn.reply.usage,
+        attempts: turn.reply.trace.attempts,
+      })}`);
       expect(turn.request.context.policyId).toBe("last-exchange");
       expect(turn.request.context.policyVersion).toBe("1");
       expect(turn.request.context.messages.length).toBeGreaterThan(0);
@@ -71,8 +78,15 @@ describe("two-round live debate", () => {
       assertControlTrace(turn.reply.controls.model);
       expect(turn.reply.controls.thinkingLevel.requested).toBe("high");
       assertControlTrace(turn.reply.controls.thinkingLevel);
-      expect(turn.reply.controls.maxOutputTokens?.requested).toBe(128);
+      expect(turn.reply.controls.maxOutputTokens?.requested).toBe(LIVE_MAX_OUTPUT_TOKENS);
       assertControlTrace(turn.reply.controls.maxOutputTokens);
+      expect(turn.reply.usage.outputTokens).toBeDefined();
+      expect(turn.reply.usage.outputTokens).toBeLessThanOrEqual(LIVE_MAX_OUTPUT_TOKENS);
+      if (turn.reply.usage.reasoningTokens !== undefined) {
+        expect(turn.reply.usage.reasoningTokens).toBeLessThanOrEqual(
+          turn.reply.usage.outputTokens ?? -1,
+        );
+      }
       expect(turn.reply.trace.attempts.length).toBeGreaterThan(0);
       if (turn.reply.controls.model.providerVerified) {
         expect(turn.reply.controls.model.providerVerified).toEqual(turn.reply.model);

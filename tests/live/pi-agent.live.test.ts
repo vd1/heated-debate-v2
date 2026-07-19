@@ -5,6 +5,7 @@ import type { TurnRequest } from "../../src/domain/agent";
 import { createPiAgentFromRuntime } from "../../src/infrastructure/pi-agent";
 import {
   LIVE_ENABLED,
+  LIVE_MAX_OUTPUT_TOKENS,
   LIVE_MODEL,
   LIVE_TURN_TIMEOUT_MS,
   withTimeout,
@@ -46,7 +47,7 @@ describe("PiAgent live provider smoke", () => {
       controls: {
         model: LIVE_MODEL,
         thinkingLevel: "high",
-        maxOutputTokens: 128,
+        maxOutputTokens: LIVE_MAX_OUTPUT_TOKENS,
       },
       capabilities: { toolNames: [] },
     };

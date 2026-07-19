@@ -44,7 +44,14 @@ class SuccessfulLifecycleAgent implements LiveHarnessAgent {
           requested: request.controls.thinkingLevel,
           forwarded: request.controls.thinkingLevel,
         },
-        maxOutputTokens: { requested: 128, forwarded: 128 },
+        ...(request.controls.maxOutputTokens === undefined
+          ? {}
+          : {
+              maxOutputTokens: {
+                requested: request.controls.maxOutputTokens,
+                forwarded: request.controls.maxOutputTokens,
+              },
+            }),
       },
       usage: { inputTokens: 2, outputTokens: 1 },
       trace: {
@@ -85,6 +92,30 @@ test("live harness disposes the proposer if reviewer acquisition fails", async (
   expect(proposer.disposed).toBe(true);
 });
 
+class GatedReviewerAgent extends SuccessfulLifecycleAgent {
+  readonly entered: Promise<void>;
+  private markEntered: (() => void) | undefined;
+  private rejectReply: ((error: Error) => void) | undefined;
+
+  constructor() {
+    super("unused");
+    this.entered = new Promise((resolve) => {
+      this.markEntered = resolve;
+    });
+  }
+
+  override reply(): Promise<AgentReply> {
+    this.markEntered?.();
+    return new Promise((_resolve, reject) => {
+      this.rejectReply = reject;
+    });
+  }
+
+  interrupt(): void {
+    this.rejectReply?.(new Error("injected interruption"));
+  }
+}
+
 test("live harness persists and closes a canonical artifact with offline agents", async () => {
   const directory = await mkdtemp(join(tmpdir(), "heated-debate-harness-artifact-"));
   const path = join(directory, "run.jsonl");
@@ -108,3 +139,56 @@ test("live harness persists and closes a canonical artifact with offline agents"
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("live harness commits a readable prefix between turns and retains it on interruption", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "heated-debate-harness-prefix-"));
+  const path = join(directory, "run.jsonl");
+  const proposer = new SuccessfulLifecycleAgent("Proposal");
+  const reviewer = new GatedReviewerAgent();
+  const running = runLiveDebateHarness({
+    roundCount: 1,
+    createAgent: (role) => Promise.resolve(role === "proposer" ? proposer : reviewer),
+    artifact: { path, runId: "artifact-run", secrets: [] },
+  });
+
+  try {
+    await reviewer.entered;
+    let betweenTurns;
+    try {
+      betweenTurns = await readCanonicalJsonl(path);
+    } finally {
+      reviewer.interrupt();
+    }
+    expect(betweenTurns.tail).toEqual({ status: "clean" });
+    expect(betweenTurns.events.map((event) => event.type)).toEqual([
+      "run.started",
+      "turn.requested",
+      "adapter.attempt",
+      "turn.completed",
+      "turn.requested",
+    ]);
+    expect(await rejectionMessage(running)).toBe("injected interruption");
+
+    const afterInterruption = await readCanonicalJsonl(path);
+    expect(afterInterruption).toEqual(betweenTurns);
+    expect(proposer.disposed).toBe(true);
+    expect(reviewer.disposed).toBe(true);
+  } finally {
+    reviewer.interrupt();
+    try {
+      await running;
+    } catch {
+      // The interruption is the behavior under test.
+    }
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+async function rejectionMessage(promise: Promise<unknown>): Promise<string> {
+  try {
+    await promise;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+  throw new Error("expected promise to reject");
+}
