@@ -17,7 +17,7 @@ interface AgentPort {
 }
 ```
 
-`TurnRequest` carries the explicit debate input, per-turn controls, and capability policy. `AgentReply` carries text, latency, and normalized usage split into optional input, output, cache-read, cache-write, and reasoning token counts; unavailable provider fields remain absent rather than becoming false zeroes. Reasoning tokens are treated as a reported subset of output unless an immutable pricing snapshot specifies separate billing. Tool activity is emitted into the canonical run trace. Exact types are finalized test-first in Task A-AGENT-PORT.
+`TurnRequest` carries the explicit debate input, per-turn controls, and capability policy. `AgentReply` carries text, latency, and normalized usage split into optional input, output, cache-read, cache-write, and reasoning token counts. Pi-ai exposes required numeric fields and may use zero when a provider omits a kind, so zero alone is not evidence of availability: positive values are present, while zero is retained only when adapter/provider evidence proves that kind was explicitly reported; otherwise it becomes absent. Reasoning tokens are treated as a reported subset of output unless an immutable pricing snapshot specifies separate billing. Tool activity is emitted into the canonical run trace. Exact types are finalized test-first in Task A-AGENT-PORT.
 
 ## Why
 
@@ -37,7 +37,7 @@ Pi may retain provider conversation state, but the engine remains the source of 
 
 ## Default model
 
-Live agents default to `openai-codex/gpt-5.6-sol` with thinking level `high`. Experiment configurations may override either value, and canonical run events record both requested and effective settings. Unit tests use fakes rather than this live default.
+Live agents default to `openai-codex/gpt-5.6-sol` with thinking level `high`. Experiment configurations may override either value, and canonical run events record their requested, forwarded, adjusted, unsupported, and provider-verified states as applicable. Unit tests use fakes rather than this live default.
 
 ## Pi integration findings
 
@@ -54,6 +54,8 @@ The offline characterization tests use a fake stream and an in-memory `ModelRunt
 
 Thinking level is native `Agent` state. `temperature` and `maxTokens` exist in `pi-ai` stream options but are not constructor options on low-level `Agent`, so the ModelRuntime stream wrapper must inject them. Known model metadata can reject unsupported thinking or temperature and clamp maximum output before a request.
 
-Passing a value to the stream proves only that it was requested/forwarded, not that a provider honored it. The adapter must distinguish requested, forwarded, adjusted, unsupported, and provider-verified values. Unsupported controls must fail validation or be explicitly reported; they must never be silently ignored.
+Passing a value to the stream proves only that it was requested/forwarded, not that a provider honored it. The adapter and canonical events must distinguish `requested`, `forwarded`, `adjusted`, `unsupported`, and `providerVerified`; the term `effective` is deliberately avoided. Unsupported controls must fail validation or be explicitly reported; they must never be silently ignored.
 
-Pi may perform retries, but the fake-stream spike cannot establish provider retry observability. Task A-PI-ADAPTER must instrument available response hooks and report attempt count, outcome, and per-attempt usage where the provider exposes it. Missing attempt usage remains absent, not zero. Canonical budgets and cost calculations include every observable attempt rather than only the final successful response.
+Pi may perform retries, but the fake-stream spike cannot establish provider retry observability. Task A-PI-ADAPTER must instrument available response hooks and report attempt count, outcome, reporting evidence, and per-attempt usage where the provider exposes it. Missing or ambiguous-zero attempt usage remains absent, not zero. Canonical budgets and cost calculations include every observable attempt rather than only the final successful response.
+
+The spike is disposable evidence, not production architecture. Task A-PI-ADAPTER must migrate useful coverage and remove the probe source, probe-specific tests, and spike tsconfig inclusion.

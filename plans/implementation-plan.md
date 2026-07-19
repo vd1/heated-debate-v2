@@ -67,7 +67,7 @@ Compare Pi's low-level `Agent` with `AgentSession` only as needed. Choose the sm
 
 ### Task A-AGENT-PORT — domain-owned `AgentPort`
 
-**Red:** Specify that a scripted agent receives a `TurnRequest` and returns normalized text, timing, model identity, effective controls, and normalized usage containing `inputTokens`, `outputTokens`, `cacheReadTokens`, `cacheWriteTokens`, and `reasoningTokens`. Each token kind is optional: omit unavailable provider data rather than reporting a false zero.
+**Red:** Specify that a scripted agent receives a `TurnRequest` and returns normalized text, timing, model identity, a control-status report, and normalized usage containing optional `inputTokens`, `outputTokens`, `cacheReadTokens`, `cacheWriteTokens`, and `reasoningTokens`. A positive pi-ai value proves presence; a zero maps to domain zero only when adapter evidence says that provider response explicitly reported that token kind. Without such evidence, zero maps to absent. Tests cover positive, explicitly reported zero, and ambiguous zero so unavailable data never becomes a false zero.
 
 **Green:** Implement only the domain types and `ScriptedAgent`.
 
@@ -79,7 +79,7 @@ Compare Pi's low-level `Agent` with `AgentSession` only as needed. Choose the sm
 
 **Green:** Implement one turn through Pi with an explicit empty tool policy.
 
-**Done when:** Prompt, system role, output, usage, effective controls, and capability policy cross the boundary without a live API call. The adapter trace includes attempt count plus per-attempt status and usage so provider or Pi retries cannot disappear from budgets. The design must not assume the allowlist stays empty.
+**Done when:** Prompt, system role, output, normalized usage, the full control-status taxonomy, and capability policy cross the boundary without a live API call. The adapter trace includes attempt count plus per-attempt status, reporting evidence, and usage so provider or Pi retries cannot disappear from budgets. Ambiguous pi-ai zeroes normalize to absent; explicit reported zeroes remain zero. The design must not assume the allowlist stays empty. Migrate any still-useful characterization coverage into adapter contract tests, then delete `spikes/pi-agent-probe.ts`, its dedicated probe test, and the `spikes/**/*.ts` tsconfig inclusion so the disposable probe cannot become a shadow adapter.
 
 ### Task A-LIVE-TURN — opt-in provider smoke test
 
@@ -117,7 +117,7 @@ Port the 5→1 dial as a pure function. Use table-driven tests for 1, 2, 3, and 
 
 ### Task B-LIVE-DEBATE — opt-in live two-round debate
 
-Run one skipped-by-default two-round debate through `PiAgent` using the default model or explicit environment overrides. Verify real conversation retention, streaming completion, effective-controls reporting, and clean disposal under real latency.
+Run one skipped-by-default two-round debate through `PiAgent` using the default model or explicit environment overrides. Verify real conversation retention, streaming completion, control-status reporting across the full taxonomy, and clean disposal under real latency.
 
 **Done when:** The shared live-debate harness produces a complete in-memory result or a clear skip/authentication failure and remains outside the required unit suite. C-LIVE-ARTIFACT later reuses and supersedes this path for persisted-run validation rather than creating a second live harness.
 
@@ -127,7 +127,7 @@ Run one skipped-by-default two-round debate through `PiAgent` using the default 
 
 ### Task C-EVENTS — canonical event schema
 
-Define versioned events for run start/end, turn request/completion/failure, effective controls, and adapter attempts. Freeze the normalized per-attempt usage fields `inputTokens`, `outputTokens`, `cacheReadTokens`, `cacheWriteTokens`, and `reasoningTokens`, preserving unavailable values as absent rather than zero. Test JSON round trips, schema-version rejection, and a general invariant that canonical events never serialize credentials, authorization headers, or configured secret fields.
+Define versioned events for run start/end, turn request/completion/failure, control statuses, and adapter attempts. Represent controls with the explicit taxonomy `requested`, `forwarded`, `adjusted`, `unsupported`, and `providerVerified`; do not use an ambiguous `effective` field. Freeze the normalized per-attempt usage fields `inputTokens`, `outputTokens`, `cacheReadTokens`, `cacheWriteTokens`, and `reasoningTokens`, preserving unavailable or ambiguous-zero values as absent and retaining zero only with reporting evidence. Test JSON round trips, schema-version rejection, and a general invariant that canonical events never serialize credentials, authorization headers, or configured secret fields.
 
 ### Task C-JSONL — append-only JSONL writer
 
@@ -183,7 +183,7 @@ One control at a time, with tests and provider capability reporting:
 4. creativity prompt dial;
 5. tool allowlist and per-tool budgets.
 
-Requested and effective values must both be recorded. Prompt dials, provider sampling controls, and tool capabilities remain separate dimensions.
+Every control must record the applicable states among `requested`, `forwarded`, `adjusted`, `unsupported`, and `providerVerified`; never collapse them into an ambiguous `effective` value. Prompt dials, provider sampling controls, and tool capabilities remain separate dimensions.
 
 ### Task D-CASES — benchmark case format
 

@@ -7,6 +7,6 @@
 - Keep the domain independent of Pi. Pi belongs behind the `AgentPort` adapter.
 - Do not use live models in unit tests. Live-provider tests must be opt-in integration tests.
 - The default live model is `openai-codex/gpt-5.6-sol` with thinking level `high`, unless an experiment explicitly overrides it.
-- The canonical run record must expose every effective experiment parameter and every message given to an agent.
+- The canonical run record must expose every control as requested, forwarded, adjusted, unsupported, and/or provider-verified, plus every message given to an agent.
 - Do not silently add context. Context selection must be an explicit policy represented in run data.
 - Prefer small commits that each leave tests, type checking, and linting green.
