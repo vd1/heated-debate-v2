@@ -147,7 +147,7 @@ Render a human-readable transcript solely from canonical events. Snapshot-test a
 
 ### Task C-FAILURES — failure semantics
 
-Table-test timeout, cancellation, empty output, provider failure, per-run token/cost budget exhaustion, and partial-run closure. The domain debate loop owns checks before each new turn and after each adapter attempt so it halts an in-flight run as soon as an observable budget is exhausted. Do not call `process.exit` or perform Git introspection from domain code.
+Table-test timeout, cancellation, empty output, provider failure, per-run turn/token budget exhaustion, and partial-run closure. The domain debate loop owns checks before each new turn and after each adapter attempt so it halts an in-flight run as soon as an observable budget is exhausted. Monetary-budget rows are added in D-PRICING once deterministic pricing exists. Do not call `process.exit` or perform Git introspection from domain code.
 
 ### Task C-TOOL-POLICY — tool capability policy
 
@@ -167,7 +167,7 @@ Add one provider-independent `WebSearchPort` implementation behind a Pi tool. Co
 
 ### Task D-PRICING — versioned pricing snapshot
 
-Define a versioned model-pricing snapshot with provider/model identity, input/output/cache rates, currency, effective date, and provenance. Include deterministic fixtures and an explicit zero-cost local-model entry. Test usage-to-cost calculation and require run artifacts to identify the exact snapshot or hash used; never recompute historical costs from a mutable current table. If a priced token kind is absent from provider usage, monetary cost is `unknown`, not zero, and monetary budget enforcement fails closed unless the study spec explicitly permits token-only accounting.
+Define a versioned model-pricing snapshot with provider/model identity, input/output/cache rates, currency, effective date, provenance, and an explicit reasoning billing rule per model: `included-in-output`, `unbilled`, or `separate-rate` with its own rate. Treat reported reasoning tokens as a subset of output unless the snapshot explicitly selects `separate-rate`, preventing accidental double charging. Include deterministic fixtures and an explicit zero-cost local-model entry. Test usage-to-cost calculation, reasoning modes, and monetary-budget exhaustion in the domain loop; require run artifacts to identify the exact snapshot or hash used and never recompute historical costs from a mutable current table. If a priced token kind is absent from provider usage, monetary cost is `unknown`, not zero, and monetary budget enforcement fails closed unless the study spec explicitly permits token-only accounting.
 
 ### Task D-CONFIG — versioned `ExperimentConfig`
 
@@ -237,13 +237,17 @@ Define a pure, versioned reward function such as quality minus weighted token co
 
 Use a toy objective to prove trial generation, persistence, resume, and best-trial selection without models.
 
+### Task F-SCHEMA — engine interchange schema
+
+Define and version the JSON-over-stdio contract: one run specification enters on stdin and exactly one reward vector or structured failure exits on stdout. Test canonical serialization, schema-version mismatch, malformed values, and output framing independently of any process or model.
+
 ### Task F-ENGINE-CLI — real engine JSON entry point
 
-First define and version the JSON-over-stdio interchange schema: one run specification enters on stdin and exactly one reward vector or structured failure exits on stdout. Then build the production executable that implements it, executes the debate and declared evaluators, and sends diagnostics only to stderr. Contract-test schema-version mismatch, exit codes, malformed input, interruption, budget exhaustion, artifact paths, and output framing using scripted agents. Git cleanliness and study-spec commit stamping belong in this CLI/executor layer. This is also the minimal human-facing CLI; a richer TUI remains deferred.
+Build the production executable implementing F-SCHEMA. Execute the debate and declared evaluators, emit contract output only on stdout, and send diagnostics only to stderr. Contract-test exit codes, malformed input, interruption, budget exhaustion, artifact paths, and Git cleanliness/study-spec commit stamping using scripted agents. This is also the minimal human-facing CLI; a richer TUI remains deferred.
 
 ### Task F-OPTUNA — Optuna bridge
 
-Consume the F-ENGINE-CLI interchange schema from Optuna rather than redefining it. Test process boundaries and malformed/missing output with a fake schema-conformant engine executable.
+Consume F-SCHEMA from Optuna rather than redefining it. Test process boundaries and malformed/missing output with a fake schema-conformant engine executable.
 
 ### Task F-STUDY — bounded real study
 
