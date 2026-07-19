@@ -30,7 +30,11 @@ describe("PiAgent live provider smoke", () => {
     });
     const request: TurnRequest = {
       turnId: "live-smoke-1",
-      systemPrompt: "You are a concise connectivity test. Do not use tools.",
+      role: {
+        id: "live-smoke",
+        version: "1",
+        systemPrompt: "You are a concise connectivity test. Do not use tools.",
+      },
       prompt: "Reply with a brief confirmation that the live model call succeeded.",
       controls: {
         model: LIVE_MODEL,

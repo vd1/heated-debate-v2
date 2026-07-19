@@ -41,7 +41,11 @@ const MODEL_IDENTITY: ModelIdentity = {
 
 const REQUEST: TurnRequest = {
   turnId: "turn-1",
-  systemPrompt: "You are the architect.",
+  role: {
+    id: "proposer",
+    version: "1",
+    systemPrompt: "You are the architect.",
+  },
   prompt: "Propose a design.",
   controls: {
     model: MODEL_IDENTITY,
@@ -197,7 +201,7 @@ describe("PiAgent", () => {
 
     expect(piReply).toEqual(expected);
     expect(piReply).toEqual(scriptedReply);
-    expect(fake.calls[0]?.context.systemPrompt).toBe(REQUEST.systemPrompt);
+    expect(fake.calls[0]?.context.systemPrompt).toBe(REQUEST.role.systemPrompt);
     expect(fake.calls[0]?.context.tools).toEqual([]);
     expect(fake.calls[0]?.options).toMatchObject({
       reasoning: "high",

@@ -79,7 +79,11 @@ function scriptedParticipant(
     },
   };
   return {
-    participant: { agent: orderedAgent, systemPrompt, controls },
+    participant: {
+      agent: orderedAgent,
+      role: { id: role, version: "test", systemPrompt },
+      controls,
+    },
     agent,
   };
 }
@@ -145,14 +149,22 @@ describe("runExchange", () => {
 
     const expectedProposalRequest: TurnRequest = {
       turnId: "exchange-42:proposer",
-      systemPrompt: "Propose a concrete architecture.",
+      role: {
+        id: "proposer",
+        version: "test",
+        systemPrompt: "Propose a concrete architecture.",
+      },
       prompt: "Topic:\nDesign a resilient job processor.",
       controls: PROPOSER_CONTROLS,
       capabilities: { toolNames: [] },
     };
     const expectedReviewRequest: TurnRequest = {
       turnId: "exchange-42:reviewer",
-      systemPrompt: "Challenge the proposal.",
+      role: {
+        id: "reviewer",
+        version: "test",
+        systemPrompt: "Challenge the proposal.",
+      },
       prompt: [
         "Topic:",
         "Design a resilient job processor.",
@@ -183,12 +195,20 @@ describe("runExchange", () => {
       topic: "Original topic",
       proposer: {
         agent: proposer,
-        systemPrompt: "Original proposer system",
+        role: {
+          id: "proposer",
+          version: "1",
+          systemPrompt: "Original proposer system",
+        },
         controls: structuredClone(PROPOSER_CONTROLS),
       },
       reviewer: {
         agent: reviewer,
-        systemPrompt: "Original reviewer system",
+        role: {
+          id: "reviewer",
+          version: "1",
+          systemPrompt: "Original reviewer system",
+        },
         controls: structuredClone(REVIEWER_CONTROLS),
       },
     };
@@ -197,7 +217,7 @@ describe("runExchange", () => {
     await proposer.started;
     input.exchangeId = "mutated-id";
     input.topic = "Mutated topic";
-    input.reviewer.systemPrompt = "Mutated reviewer system";
+    input.reviewer.role.systemPrompt = "Mutated reviewer system";
     input.reviewer.controls.thinkingLevel = "off";
 
     const mutableProposal = reply("Original proposal", PROPOSER_CONTROLS);
@@ -205,7 +225,11 @@ describe("runExchange", () => {
     await reviewer.started;
     expect(reviewer.requests[0]).toEqual({
       turnId: "deferred:reviewer",
-      systemPrompt: "Original reviewer system",
+      role: {
+        id: "reviewer",
+        version: "1",
+        systemPrompt: "Original reviewer system",
+      },
       prompt: "Topic:\nOriginal topic\n\nProposal:\nOriginal proposal",
       controls: REVIEWER_CONTROLS,
       capabilities: { toolNames: [] },

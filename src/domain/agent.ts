@@ -1,3 +1,5 @@
+import type { RoleDefinition } from "./roles";
+
 export interface ModelIdentity {
   providerId: string;
   modelId: string;
@@ -38,7 +40,7 @@ export interface CapabilityPolicy {
 
 export interface TurnRequest {
   turnId: string;
-  systemPrompt: string;
+  role: RoleDefinition;
   prompt: string;
   controls: RequestedControls;
   capabilities: CapabilityPolicy;

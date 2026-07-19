@@ -177,7 +177,7 @@ export class PiAgent implements AgentPort {
       return tool;
     });
 
-    this.agent.state.systemPrompt = request.systemPrompt;
+    this.agent.state.systemPrompt = request.role.systemPrompt;
     this.agent.state.model = this.model;
     this.agent.state.thinkingLevel = controls.thinkingLevel;
     this.agent.state.tools = tools;

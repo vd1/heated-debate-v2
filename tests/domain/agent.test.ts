@@ -15,7 +15,11 @@ const MODEL: ModelIdentity = {
 
 const REQUEST: TurnRequest = {
   turnId: "turn-1",
-  systemPrompt: "You are the proposing side.",
+  role: {
+    id: "proposer",
+    version: "1",
+    systemPrompt: "You are the proposing side.",
+  },
   prompt: "Make the first proposal.",
   controls: {
     model: MODEL,

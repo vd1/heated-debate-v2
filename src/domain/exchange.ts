@@ -4,10 +4,11 @@ import type {
   RequestedControls,
   TurnRequest,
 } from "./agent";
+import type { RoleDefinition } from "./roles";
 
 export interface ExchangeParticipant {
   agent: AgentPort;
-  systemPrompt: string;
+  role: RoleDefinition;
   controls: RequestedControls;
 }
 
@@ -43,18 +44,18 @@ export async function runExchange(input: RunExchangeInput): Promise<ExchangeResu
   const topic = input.topic;
   const proposer = {
     agent: input.proposer.agent,
-    systemPrompt: input.proposer.systemPrompt,
+    role: structuredClone(input.proposer.role),
     controls: structuredClone(input.proposer.controls),
   };
   const reviewer = {
     agent: input.reviewer.agent,
-    systemPrompt: input.reviewer.systemPrompt,
+    role: structuredClone(input.reviewer.role),
     controls: structuredClone(input.reviewer.controls),
   };
 
   const proposalRequest: TurnRequest = {
     turnId: turnId(exchangeId, "proposer"),
-    systemPrompt: proposer.systemPrompt,
+    role: proposer.role,
     prompt: proposalPrompt(topic),
     controls: proposer.controls,
     capabilities: { toolNames: [] },
@@ -64,7 +65,7 @@ export async function runExchange(input: RunExchangeInput): Promise<ExchangeResu
 
   const reviewRequest: TurnRequest = {
     turnId: turnId(exchangeId, "reviewer"),
-    systemPrompt: reviewer.systemPrompt,
+    role: reviewer.role,
     prompt: reviewPrompt(topic, proposalReply.text),
     controls: reviewer.controls,
     capabilities: { toolNames: [] },
