@@ -901,6 +901,45 @@ type checking, linting, commit whitespace validation, and the
 [corrected GitHub Actions run](https://github.com/vd1/heated-debate-v2/actions/runs/29704248259)
 are green. All three findings are closed. C-EVENTS passes and C-JSONL is unblocked.
 
+### C-JSONL (`04e4f13`) — changes requested
+
+The basic writer path is well structured. It opens a new file in exclusive append mode, copies
+the secret configuration, validates and snapshots each event before queueing, and serializes
+exactly one newline-terminated event per append. One promise queue preserves invocation order
+without allowing a rejected operation to break later queue scheduling. Sequence and run-ID
+checks occur inside that queue before the event's bytes are appended. `flush` queues an `fsync`,
+and `close` stops new work, drains earlier operations, syncs, closes, and reuses one close promise.
+
+The reader validates every newline-committed record and the complete prefix's canonical
+run/sequence. Three corrections are required:
+
+1. Interrupted-tail state is silently discarded. `readCanonicalJsonl` removes every
+   non-newline-terminated final segment and returns only `CanonicalEvent[]`, so callers cannot
+   tell a clean file from an interrupted one. Direct probes showed that both a complete valid
+   event missing only its newline and malformed `"{not-json"` return the same empty array.
+   Return explicit tail/interruption status (without treating it as a committed event), while
+   continuing to throw line-located corruption for invalid newline-terminated records in the
+   middle. Test clean EOF, a valid-but-uncommitted tail, an incomplete tail, and middle
+   corruption.
+2. An append I/O failure leaves the writer open with the same expected sequence. In an injected
+   probe, the first append wrote `"{\"partial\""` and rejected; retrying sequence 0 then appended
+   the full record and newline, converting the interrupted tail into committed invalid JSON.
+   Treat any append failure as terminal/poisoned so later appends cannot write behind possibly
+   partial bytes, while still permitting reliable close/cleanup. Add an injected file-I/O seam
+   and lock partial-write, failure propagation, subsequent rejection, and final-prefix
+   readability.
+3. Required lifecycle behavior is implemented but not actually isolated by the tests. The flush
+   test awaits every append before calling `flush`, so it does not prove that flush drains
+   pending work; close draining is tested, but repeated/idempotent close is not. Use the same
+   deterministic I/O seam to prove queued append → flush → sync order, close idempotence, and the
+   middle-corruption behavior required by the forward review.
+
+The current suite passes 59 tests with two intentional live skips; the focused JSONL suite,
+type checking, linting, commit whitespace validation, and the
+[C-JSONL GitHub Actions run](https://github.com/vd1/heated-debate-v2/actions/runs/29704457309)
+are green. Those checks do not cover the reproduced failure modes above. Keep C-JSONL active and
+C-REPLAY blocked until all three findings are resolved and re-reviewed.
+
 ## Round 2 — 2026-07-18, first revision (all resolved)
 
 1. **No real engine executable** (Optuna bridge tested only against a fake) → F-ENGINE-CLI.

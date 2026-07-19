@@ -3,10 +3,15 @@ import { appendFile, mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import type { CanonicalEvent } from "../../src/domain/events";
+import {
+  serializeCanonicalEvent,
+  type CanonicalEvent,
+} from "../../src/domain/events";
 import {
   JsonlEventWriter,
   readCanonicalJsonl,
+  type JsonlEventWriterDependencies,
+  type JsonlWritable,
 } from "../../src/infrastructure/jsonl-events";
 
 const temporaryDirectories: string[] = [];
@@ -63,7 +68,10 @@ describe("JsonlEventWriter", () => {
     const text = await readFile(path, "utf8");
     expect(text.endsWith("\n")).toBe(true);
     expect(text.trimEnd().split("\n")).toHaveLength(2);
-    expect(await readCanonicalJsonl(path)).toEqual(fixture);
+    expect(await readCanonicalJsonl(path)).toEqual({
+      events: fixture,
+      tail: { status: "clean" },
+    });
     await writer.close();
   });
 
@@ -81,7 +89,7 @@ describe("JsonlEventWriter", () => {
     );
     await writer.close();
 
-    expect(await readCanonicalJsonl(path)).toEqual([first]);
+    expect((await readCanonicalJsonl(path)).events).toEqual([first]);
   });
 
   test("rejects a changed run ID without appending it", async () => {
@@ -98,7 +106,7 @@ describe("JsonlEventWriter", () => {
     );
     await writer.close();
 
-    expect(await readCanonicalJsonl(path)).toEqual([first]);
+    expect((await readCanonicalJsonl(path)).events).toEqual([first]);
   });
 
   test("reads the complete prefix of an interrupted final write", async () => {
@@ -109,10 +117,141 @@ describe("JsonlEventWriter", () => {
 
     await writer.append(first);
     await writer.flush();
-    await appendFile(path, '{"schemaVersion":1,"runId":"run-1"');
+    const partial = '{"schemaVersion":1,"runId":"run-1"';
+    await appendFile(path, partial);
 
-    expect(await readCanonicalJsonl(path)).toEqual([first]);
+    expect(await readCanonicalJsonl(path)).toEqual({
+      events: [first],
+      tail: {
+        status: "interrupted",
+        classification: "invalid-json",
+        byteLength: Buffer.byteLength(partial),
+      },
+    });
     await writer.close();
+  });
+
+  test("reports a valid canonical event without a newline as an uncommitted tail", async () => {
+    const path = await temporaryPath();
+    const writer = await JsonlEventWriter.create(path, { secrets: [] });
+    const fixture = runEvents();
+    const first = fixture[0];
+    const second = fixture[1];
+    if (!first || !second) throw new Error("bad fixture");
+    await writer.append(first);
+    await writer.close();
+
+    const tail = serializeCanonicalEvent(second, { secrets: [] });
+    await appendFile(path, tail);
+
+    expect(await readCanonicalJsonl(path)).toEqual({
+      events: [first],
+      tail: {
+        status: "interrupted",
+        classification: "valid-uncommitted-event",
+        byteLength: Buffer.byteLength(tail),
+      },
+    });
+  });
+
+  test("throws line-located errors for newline-committed middle corruption", async () => {
+    const path = await temporaryPath();
+    const writer = await JsonlEventWriter.create(path, { secrets: [] });
+    const first = runEvents()[0];
+    if (!first) throw new Error("bad fixture");
+    await writer.append(first);
+    await writer.close();
+    await appendFile(path, "{not-json}\n");
+
+    expect(await rejectionMessage(readCanonicalJsonl(path))).toContain(
+      "invalid JSONL record at line 2",
+    );
+  });
+
+  test("flush drains a pending append before sync and close is idempotent", async () => {
+    const log: string[] = [];
+    const gate = deferred();
+    const writable: JsonlWritable = {
+      append: async () => {
+        log.push("append:start");
+        await gate.promise;
+        log.push("append:end");
+      },
+      sync: () => {
+        log.push("sync");
+        return Promise.resolve();
+      },
+      close: () => {
+        log.push("close");
+        return Promise.resolve();
+      },
+    };
+    const writer = await JsonlEventWriter.create("unused", { secrets: [] }, dependencies(writable));
+    const first = runEvents()[0];
+    if (!first) throw new Error("bad fixture");
+
+    const append = writer.append(first);
+    const flush = writer.flush();
+    await Promise.resolve();
+    expect(log).toEqual(["append:start"]);
+    gate.resolve();
+    await Promise.all([append, flush]);
+    expect(log).toEqual(["append:start", "append:end", "sync"]);
+
+    const firstClose = writer.close();
+    const secondClose = writer.close();
+    expect(secondClose).toBe(firstClose);
+    await firstClose;
+    expect(log).toEqual(["append:start", "append:end", "sync", "sync", "close"]);
+  });
+
+  test("poisons the writer after a partial append failure but still closes cleanly", async () => {
+    const path = await temporaryPath();
+    const fixture = runEvents();
+    const first = fixture[0];
+    const second = fixture[1];
+    if (!first || !second) throw new Error("bad fixture");
+    const partial = '{"schemaVers';
+    let writes = 0;
+    const log: string[] = [];
+    const writable: JsonlWritable = {
+      append: async (data) => {
+        writes += 1;
+        if (writes === 1) {
+          await appendFile(path, data);
+          return;
+        }
+        await appendFile(path, partial);
+        throw new Error("injected disk failure");
+      },
+      sync: () => {
+        log.push("sync");
+        return Promise.resolve();
+      },
+      close: () => {
+        log.push("close");
+        return Promise.resolve();
+      },
+    };
+    const writer = await JsonlEventWriter.create(path, { secrets: [] }, dependencies(writable));
+
+    await writer.append(first);
+    expect(await rejectionMessage(writer.append(second))).toBe("injected disk failure");
+    expect(await rejectionMessage(writer.append(second))).toBe(
+      "JSONL writer is poisoned by a prior append failure: injected disk failure",
+    );
+    await writer.close();
+
+    expect(writes).toBe(2);
+    expect(log).toEqual(["sync", "close"]);
+    expect(await readCanonicalJsonl(path)).toEqual({
+      events: [first],
+      tail: {
+        status: "interrupted",
+        classification: "invalid-json",
+        byteLength: Buffer.byteLength(partial),
+      },
+    });
   });
 
   test("close drains pending appends and prevents further writes", async () => {
@@ -124,9 +263,28 @@ describe("JsonlEventWriter", () => {
     await writer.close();
     await Promise.all(pending);
 
-    expect(await readCanonicalJsonl(path)).toEqual(fixture);
+    expect((await readCanonicalJsonl(path)).events).toEqual(fixture);
     const first = fixture[0];
     if (!first) throw new Error("bad fixture");
     expect(await rejectionMessage(writer.append(first))).toBe("JSONL writer is closed");
   });
 });
+
+function dependencies(writable: JsonlWritable): JsonlEventWriterDependencies {
+  return {
+    openExclusiveAppend: () => Promise.resolve(writable),
+  };
+}
+
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolvePromise: (() => void) | undefined;
+  const promise = new Promise<void>((resolve) => {
+    resolvePromise = resolve;
+  });
+  return {
+    promise,
+    resolve: () => {
+      resolvePromise?.();
+    },
+  };
+}
