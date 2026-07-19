@@ -1,0 +1,264 @@
+import { describe, expect, test } from "bun:test";
+
+import type {
+  AgentReply,
+  TurnRequest,
+} from "../../src/domain/agent";
+import {
+  parseCanonicalEvent,
+  sanitizeFailure,
+  serializeCanonicalEvent,
+  validateCanonicalSequence,
+  type CanonicalEvent,
+} from "../../src/domain/events";
+
+const REQUEST: TurnRequest = {
+  turnId: "run-1:round-1:proposer",
+  role: { id: "proposer", version: "1", systemPrompt: "Propose" },
+  creativity: {
+    scheduleId: "linear-cooling",
+    scheduleVersion: "1",
+    level: 5,
+    instruction: "Explore.",
+  },
+  context: {
+    policyId: "last-exchange",
+    policyVersion: "1",
+    messages: [{ role: "user", content: "Topic:\nDesign a queue." }],
+  },
+  controls: {
+    model: { providerId: "test", modelId: "model" },
+    thinkingLevel: "high",
+    maxOutputTokens: 128,
+  },
+  capabilities: { toolNames: [] },
+};
+
+const REPLY: AgentReply = {
+  text: "Use a bounded queue.",
+  durationMs: 10,
+  model: { providerId: "test", modelId: "model" },
+  controls: {
+    model: {
+      requested: { providerId: "test", modelId: "model" },
+      forwarded: { providerId: "test", modelId: "model" },
+    },
+    thinkingLevel: { requested: "high", forwarded: "high" },
+    maxOutputTokens: { requested: 128, forwarded: 128 },
+  },
+  usage: { inputTokens: 20, outputTokens: 0 },
+  trace: { attempts: [] },
+};
+
+function events(): CanonicalEvent[] {
+  return [
+    {
+      schemaVersion: 1,
+      runId: "run-1",
+      sequence: 0,
+      type: "run.started",
+      data: { debateId: "run-1", topic: "Design a queue.", roundCount: 1 },
+    },
+    {
+      schemaVersion: 1,
+      runId: "run-1",
+      sequence: 1,
+      type: "turn.requested",
+      data: { roundNumber: 1, request: REQUEST },
+    },
+    {
+      schemaVersion: 1,
+      runId: "run-1",
+      sequence: 2,
+      type: "adapter.attempt",
+      data: {
+        turnId: REQUEST.turnId,
+        attempt: {
+          attempt: 1,
+          status: "succeeded",
+          httpStatus: 200,
+          usage: { inputTokens: 20, outputTokens: 0 },
+          usageEvidence: {
+            explicitlyReported: ["outputTokens"],
+            source: "provider-usage",
+          },
+        },
+      },
+    },
+    {
+      schemaVersion: 1,
+      runId: "run-1",
+      sequence: 3,
+      type: "turn.completed",
+      data: {
+        turnId: REQUEST.turnId,
+        reply: {
+          text: REPLY.text,
+          durationMs: REPLY.durationMs,
+          model: REPLY.model,
+          controls: REPLY.controls,
+        },
+      },
+    },
+    {
+      schemaVersion: 1,
+      runId: "run-1",
+      sequence: 4,
+      type: "run.completed",
+      data: { turnCount: 1 },
+    },
+  ];
+}
+
+describe("canonical event schema v1", () => {
+  test("round-trips every successful-run event without losing absent usage", () => {
+    for (const event of events()) {
+      expect(parseCanonicalEvent(serializeCanonicalEvent(event))).toEqual(event);
+    }
+    const attempt = events()[2];
+    if (attempt?.type !== "adapter.attempt") throw new Error("bad fixture");
+    expect(attempt.data.attempt.usage.cacheReadTokens).toBeUndefined();
+  });
+
+  test("round-trips sanitized failure events", () => {
+    const failure = sanitizeFailure(
+      new Error("request failed with token secret-123"),
+      { code: "provider_error", secrets: ["secret-123"] },
+    );
+    const event: CanonicalEvent = {
+      schemaVersion: 1,
+      runId: "run-1",
+      sequence: 0,
+      type: "turn.failed",
+      data: { turnId: REQUEST.turnId, failure },
+    };
+
+    const serialized = serializeCanonicalEvent(event);
+    expect(serialized).not.toContain("secret-123");
+    expect(serialized).not.toContain("stack");
+    expect(parseCanonicalEvent(serialized)).toEqual({
+      ...event,
+      data: {
+        ...event.data,
+        failure: { code: "provider_error", message: "request failed with token [REDACTED]" },
+      },
+    });
+  });
+
+  test("does not claim to redact free-form user or model text", () => {
+    const event = events()[1];
+    if (event?.type !== "turn.requested") throw new Error("bad fixture");
+    const withSentinel: CanonicalEvent = {
+      ...event,
+      data: {
+        ...event.data,
+        request: {
+          ...event.data.request,
+          context: {
+            ...event.data.request.context,
+            messages: [{ role: "user", content: "User deliberately wrote secret-123" }],
+          },
+        },
+      },
+    };
+
+    expect(serializeCanonicalEvent(withSentinel)).toContain("secret-123");
+  });
+
+  test("rejects unknown schema versions, event types, and fields", () => {
+    const first = events()[0];
+    if (!first) throw new Error("bad fixture");
+    const valid = JSON.parse(serializeCanonicalEvent(first)) as Record<string, unknown>;
+
+    expect(() => parseCanonicalEvent(JSON.stringify({ ...valid, schemaVersion: 2 }))).toThrow(
+      "unsupported schema version: 2",
+    );
+    expect(() => parseCanonicalEvent(JSON.stringify({ ...valid, type: "future.event" }))).toThrow(
+      "unknown event type: future.event",
+    );
+    expect(() => parseCanonicalEvent(JSON.stringify({ ...valid, credentials: "secret" }))).toThrow(
+      "unknown field at event: credentials",
+    );
+    expect(() => parseCanonicalEvent(JSON.stringify({
+      ...valid,
+      data: { ...(valid.data as object), headers: { authorization: "secret" } },
+    }))).toThrow("unknown field at run.started.data: headers");
+  });
+
+  test("rejects contradictory or silently changed control traces", () => {
+    const base = events()[3];
+    if (base?.type !== "turn.completed") throw new Error("bad fixture");
+
+    expectInvalidModelTrace(base, {
+      requested: REPLY.model,
+      forwarded: REPLY.model,
+      unsupported: { reason: "contradiction" },
+    }, "unsupported control cannot be forwarded, adjusted, or provider-verified");
+    expectInvalidModelTrace(base, {
+      requested: REPLY.model,
+      adjusted: { value: { providerId: "test", modelId: "other" }, reason: "changed" },
+      forwarded: REPLY.model,
+    }, "adjusted control must forward the adjusted value");
+    expectInvalidModelTrace(base, {
+      requested: REPLY.model,
+      forwarded: { providerId: "test", modelId: "other" },
+    }, "changed forwarded control requires an adjustment");
+    expectInvalidModelTrace(base, {
+      requested: REPLY.model,
+    }, "supported control must be forwarded");
+  });
+
+  test("rejects an ambiguous zero in attempt usage", () => {
+    const attempt = events()[2];
+    if (attempt?.type !== "adapter.attempt") throw new Error("bad fixture");
+    const invalid: CanonicalEvent = {
+      ...attempt,
+      data: {
+        ...attempt.data,
+        attempt: {
+          ...attempt.data.attempt,
+          usageEvidence: { explicitlyReported: [], source: "no evidence" },
+        },
+      },
+    };
+
+    expect(() => serializeCanonicalEvent(invalid)).toThrow(
+      "zero outputTokens requires explicit reporting evidence",
+    );
+  });
+
+  test("validates one run's monotonic sequence", () => {
+    const fixture = events();
+    const first = fixture[0];
+    const second = fixture[1];
+    if (!first || !second) throw new Error("bad fixture");
+
+    expect(() => {
+      validateCanonicalSequence(fixture);
+    }).not.toThrow();
+    expect(() => {
+      validateCanonicalSequence([first, { ...second, sequence: 2 }]);
+    }).toThrow("expected sequence 1, received 2");
+    expect(() => {
+      validateCanonicalSequence([first, { ...second, runId: "other" }]);
+    }).toThrow("event runId other does not match run-1");
+  });
+});
+
+function expectInvalidModelTrace(
+  event: Extract<CanonicalEvent, { type: "turn.completed" }>,
+  model: AgentReply["controls"]["model"],
+  message: string,
+): void {
+  const invalid: CanonicalEvent = {
+    ...event,
+    data: {
+      ...event.data,
+      reply: {
+        ...event.data.reply,
+        controls: { ...event.data.reply.controls, model },
+      },
+    },
+  };
+  expect(() => serializeCanonicalEvent(invalid)).toThrow(message);
+}

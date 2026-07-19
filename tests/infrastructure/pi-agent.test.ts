@@ -266,6 +266,26 @@ describe("PiAgent", () => {
     await agent.dispose();
   });
 
+  test("does not invent an HTTP status when Pi exposes no response hook", async () => {
+    const fake = scriptedStream({ replies: ["Answer"], statuses: [] });
+    const agent = new PiAgent({
+      model: MODEL,
+      modelStream: fake.stream,
+      usageEvidence: { explicitlyReported: [], source: "test" },
+      now: clock(0, 1),
+    });
+
+    const reply = await agent.reply(REQUEST);
+
+    expect(reply.trace.attempts).toEqual([{
+      attempt: 1,
+      status: "succeeded",
+      usage: { inputTokens: 20, cacheWriteTokens: 3 },
+      usageEvidence: { explicitlyReported: [], source: "test" },
+    }]);
+    await agent.dispose();
+  });
+
   test("reports adjusted and unsupported controls without forwarding them", async () => {
     const fake = scriptedStream({ replies: ["Answer"] });
     const limitedModel: Model<"anthropic-messages"> = {

@@ -350,15 +350,15 @@ function buildTrace(
   evidence: UsageEvidence,
 ): AgentTrace {
   const messageSucceeded = message.stopReason !== "error" && message.stopReason !== "aborted";
-  const observedResponses = responses.length > 0
-    ? responses
-    : [{ status: messageSucceeded ? 200 : 0, headers: {} }];
-  const finalIndex = observedResponses.length - 1;
+  const responseObservations = responses.length > 0
+    ? responses.map((response) => ({ response, observed: true }))
+    : [{ response: { status: 0, headers: {} }, observed: false }];
+  const finalIndex = responseObservations.length - 1;
 
   return {
-    attempts: observedResponses.map((response, index) => {
+    attempts: responseObservations.map(({ response, observed }, index) => {
       const isFinal = index === finalIndex;
-      const httpSucceeded = response.status >= 200 && response.status < 300;
+      const httpSucceeded = !observed || (response.status >= 200 && response.status < 300);
       const status = isFinal && message.stopReason === "aborted"
         ? "aborted" as const
         : isFinal && messageSucceeded && httpSucceeded
@@ -367,7 +367,7 @@ function buildTrace(
       return {
         attempt: index + 1,
         status,
-        ...(response.status === 0 ? {} : { httpStatus: response.status }),
+        ...(observed ? { httpStatus: response.status } : {}),
         usage: isFinal ? usage : {},
         usageEvidence: structuredClone(evidence),
       };
