@@ -14,7 +14,7 @@ Build a transparent debate-protocol laboratory in which protocol parameters can 
 6. Unit tests never contact a model provider. Live tests are explicitly opted in.
 7. Each task should fit one small reviewable commit; split it if it grows.
 8. Do not optimize a parameter until it is represented in the canonical run record.
-9. Task IDs are stable slugs. Never rename existing IDs when inserting or reordering work.
+9. Task IDs are stable slugs. Never rename existing IDs when inserting or reordering work; milestone letters record where a task was born, not its permanent location.
 
 ## Architectural direction
 
@@ -67,7 +67,7 @@ Compare Pi's low-level `Agent` with `AgentSession` only as needed. Choose the sm
 
 ### Task A-AGENT-PORT — domain-owned `AgentPort`
 
-**Red:** Specify that a scripted agent receives a `TurnRequest` and returns normalized text, usage, timing, model identity, and effective controls.
+**Red:** Specify that a scripted agent receives a `TurnRequest` and returns normalized text, timing, model identity, effective controls, and normalized usage containing `inputTokens`, `outputTokens`, `cacheReadTokens`, `cacheWriteTokens`, and `reasoningTokens`. Each token kind is optional: omit unavailable provider data rather than reporting a false zero.
 
 **Green:** Implement only the domain types and `ScriptedAgent`.
 
@@ -119,7 +119,7 @@ Port the 5→1 dial as a pure function. Use table-driven tests for 1, 2, 3, and 
 
 Run one skipped-by-default two-round debate through `PiAgent` using the default model or explicit environment overrides. Verify real conversation retention, streaming completion, effective-controls reporting, and clean disposal under real latency.
 
-**Done when:** The smoke test produces a complete in-memory result or a clear skip/authentication failure and remains outside the required unit suite.
+**Done when:** The shared live-debate harness produces a complete in-memory result or a clear skip/authentication failure and remains outside the required unit suite. C-LIVE-ARTIFACT later reuses and supersedes this path for persisted-run validation rather than creating a second live harness.
 
 ---
 
@@ -127,7 +127,7 @@ Run one skipped-by-default two-round debate through `PiAgent` using the default 
 
 ### Task C-EVENTS — canonical event schema
 
-Define versioned events for run start/end, turn request/completion/failure, and effective controls. Test JSON round trips, schema-version rejection, and a general invariant that canonical events never serialize credentials, authorization headers, or configured secret fields.
+Define versioned events for run start/end, turn request/completion/failure, effective controls, and adapter attempts. Freeze the normalized per-attempt usage fields `inputTokens`, `outputTokens`, `cacheReadTokens`, `cacheWriteTokens`, and `reasoningTokens`, preserving unavailable values as absent rather than zero. Test JSON round trips, schema-version rejection, and a general invariant that canonical events never serialize credentials, authorization headers, or configured secret fields.
 
 ### Task C-JSONL — append-only JSONL writer
 
@@ -147,7 +147,7 @@ Render a human-readable transcript solely from canonical events. Snapshot-test a
 
 ### Task C-FAILURES — failure semantics
 
-Table-test timeout, cancellation, empty output, provider failure, and partial-run closure. Do not call `process.exit` from domain code.
+Table-test timeout, cancellation, empty output, provider failure, per-run token/cost budget exhaustion, and partial-run closure. The domain debate loop owns checks before each new turn and after each adapter attempt so it halts an in-flight run as soon as an observable budget is exhausted. Do not call `process.exit` or perform Git introspection from domain code.
 
 ### Task C-TOOL-POLICY — tool capability policy
 
@@ -167,7 +167,7 @@ Add one provider-independent `WebSearchPort` implementation behind a Pi tool. Co
 
 ### Task D-PRICING — versioned pricing snapshot
 
-Define a versioned model-pricing snapshot with provider/model identity, input/output/cache rates, currency, effective date, and provenance. Include deterministic fixtures and an explicit zero-cost local-model entry. Test usage-to-cost calculation and require run artifacts to identify the exact snapshot or hash used; never recompute historical costs from a mutable current table.
+Define a versioned model-pricing snapshot with provider/model identity, input/output/cache rates, currency, effective date, and provenance. Include deterministic fixtures and an explicit zero-cost local-model entry. Test usage-to-cost calculation and require run artifacts to identify the exact snapshot or hash used; never recompute historical costs from a mutable current table. If a priced token kind is absent from provider usage, monetary cost is `unknown`, not zero, and monetary budget enforcement fails closed unless the study spec explicitly permits token-only accounting.
 
 ### Task D-CONFIG — versioned `ExperimentConfig`
 
@@ -191,7 +191,7 @@ Define a versioned case containing topic, optional source context, evaluation ru
 
 ### Task D-STUDY-SPEC — preregistered study specification
 
-Define a versioned study-spec file containing hypotheses, benchmark and holdout case IDs, fixed and varied parameters, repetitions, evaluator versions, pricing snapshot, budgets, stopping rules, and planned analysis. Test canonical hashing and require every generated run ID to reference the study-spec hash. A real study accepts only a committed, clean-worktree spec unless an explicit non-preregistered development flag is used.
+Define a versioned study-spec file containing hypotheses, benchmark and holdout case IDs, fixed and varied parameters, repetitions, evaluator/rubric version references, pricing snapshot, budgets, stopping rules, planned analysis, and preregistered reliability thresholds such as minimum sample count, maximum judge variance, and maximum ordering-bias effect. Evaluator and rubric IDs are opaque versioned references here and are resolved only when evaluation or study execution begins. Test canonical hashing and require every generated run ID to reference the study-spec hash. Committed/clean-worktree enforcement is an executor/CLI concern, never domain logic; a real study rejects an uncommitted spec unless an explicit non-preregistered development flag is used.
 
 ### Task D-MATRIX — experiment matrix
 
@@ -223,7 +223,7 @@ Implement a Pi-backed judge behind an `EvaluatorPort`. The judge sees only decla
 
 ### Task E-RELIABILITY — opt-in evaluator reliability study
 
-Run repeated and permuted live evaluations to measure variance, ordering bias, model self-preference, and judge disagreement. Keep it skipped by default and enforce the study-spec token/cost/turn guardrails. Persist a versioned canonical reliability artifact containing judge model, prompts, controls, pricing snapshot, sample IDs, raw score vectors, analysis version, and conclusions. Optimization cannot be enabled without an accepted reliability artifact.
+Run repeated and permuted live evaluations to measure variance, ordering bias, model self-preference, and judge disagreement. Keep it skipped by default and enforce the study-spec token/cost/turn guardrails. Persist a versioned canonical reliability artifact containing judge model, prompts, controls, pricing snapshot, sample IDs, raw score vectors, analysis version, conclusions, evaluated threshold results, and status `accepted` or `rejected`. Status is derived deterministically: `accepted` only when every preregistered threshold in the referenced study spec passes; otherwise `rejected`. Optimization requires a matching accepted artifact.
 
 ### Task E-REWARD — reward function
 
@@ -239,11 +239,11 @@ Use a toy objective to prove trial generation, persistence, resume, and best-tri
 
 ### Task F-ENGINE-CLI — real engine JSON entry point
 
-Build the production executable assumed by the optimizer: read one versioned run specification as JSON from stdin, execute the debate and declared evaluators, and emit exactly one versioned reward vector or structured failure as JSON on stdout. Send diagnostics to stderr. Contract-test exit codes, malformed input, interruption, budget exhaustion, artifact paths, and output framing using scripted agents. This is also the minimal human-facing CLI; a richer TUI remains deferred.
+First define and version the JSON-over-stdio interchange schema: one run specification enters on stdin and exactly one reward vector or structured failure exits on stdout. Then build the production executable that implements it, executes the debate and declared evaluators, and sends diagnostics only to stderr. Contract-test schema-version mismatch, exit codes, malformed input, interruption, budget exhaustion, artifact paths, and output framing using scripted agents. Git cleanliness and study-spec commit stamping belong in this CLI/executor layer. This is also the minimal human-facing CLI; a richer TUI remains deferred.
 
 ### Task F-OPTUNA — Optuna bridge
 
-Define and version a JSON-over-stdio interchange schema: one run specification enters on stdin and one reward vector or structured failure exits on stdout. Connect it to Optuna. Test schema-version mismatch, process boundaries, and malformed/missing output with a fake engine executable.
+Consume the F-ENGINE-CLI interchange schema from Optuna rather than redefining it. Test process boundaries and malformed/missing output with a fake schema-conformant engine executable.
 
 ### Task F-STUDY — bounded real study
 

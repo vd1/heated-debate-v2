@@ -17,7 +17,7 @@ interface AgentPort {
 }
 ```
 
-`TurnRequest` carries the explicit debate input, per-turn controls, and capability policy. `AgentReply` carries text and normalized usage/latency metadata; tool activity is emitted into the canonical run trace. Exact types are test-driven rather than fixed by this ADR.
+`TurnRequest` carries the explicit debate input, per-turn controls, and capability policy. `AgentReply` carries text, latency, and normalized usage split into optional input, output, cache-read, cache-write, and reasoning token counts; unavailable provider fields remain absent rather than becoming false zeroes. Tool activity is emitted into the canonical run trace. Exact types are finalized test-first in Task A-AGENT-PORT.
 
 ## Why
 
