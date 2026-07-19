@@ -901,7 +901,7 @@ type checking, linting, commit whitespace validation, and the
 [corrected GitHub Actions run](https://github.com/vd1/heated-debate-v2/actions/runs/29704248259)
 are green. All three findings are closed. C-EVENTS passes and C-JSONL is unblocked.
 
-### C-JSONL (`04e4f13`, corrected by `9638254`) — changes requested
+### C-JSONL (`04e4f13`, corrected by `9638254` and `d29734e`) — pass
 
 The basic writer path is well structured. It opens a new file in exclusive append mode, copies
 the secret configuration, validates and snapshots each event before queueing, and serializes
@@ -963,6 +963,18 @@ type checking, linting, commit whitespace validation, and the
 [correction GitHub Actions run](https://github.com/vd1/heated-debate-v2/actions/runs/29704844194)
 are green. Keep C-JSONL active and C-REPLAY blocked until this final byte-level corruption gap is
 resolved and re-reviewed.
+
+Final re-review of `d29734e`: the byte-level finding is closed. The reader now splits the raw
+buffer on newline bytes and decodes each committed record with a fatal UTF-8 decoder, so invalid
+encoding produces a line-located error rather than altered canonical text. Uncommitted tail
+classification operates on the original bytes, adds an explicit `invalid-utf8` state, and
+reports the exact stored byte length. The committed-corruption and truncated-multibyte
+regressions lock both branches, and both original probes now produce the expected error/status.
+
+The final suite passes 65 tests with two intentional live skips; the focused JSONL suite, type
+checking, linting, commit whitespace validation, and the
+[final GitHub Actions run](https://github.com/vd1/heated-debate-v2/actions/runs/29704961121)
+are green. All C-JSONL findings are closed. C-JSONL passes and C-REPLAY is unblocked.
 
 ## Round 2 — 2026-07-18, first revision (all resolved)
 
