@@ -629,32 +629,32 @@ the required suite is offline, and live authentication/model wiring now has one 
 path. The two adapter carry-forwards are assigned to the schema/failure tasks that need them.
 B-EXCHANGE can start; per the revised plan, B-CONTEXT must still land before B-ROUNDS.
 
-### B-EXCHANGE (`8fe4c2b`) — changes requested
+### B-EXCHANGE (`8fe4c2b`, corrected by `52f3764`) — pass
 
 The primary behavior is correct and well tested: one proposer turn precedes one reviewer turn,
 turn IDs are deterministic, the complete reviewer request contains topic then proposal, controls
 and the empty capability policy stay explicit, and the result keeps topic/proposal/review
 structurally distinct. The implementation adds no roles, rounds, dials, persistence, or Pi
 coupling. The result is recursively frozen, and the required suite, type checking, linting, and
-[GitHub Actions run](https://github.com/vd1/heated-debate-v2/actions/runs/29685610837) are green.
+[corrected GitHub Actions run](https://github.com/vd1/heated-debate-v2/actions/runs/29688465034)
+are green.
 
-One correctness issue prevents the task from satisfying its immutable-snapshot criterion.
-`runExchange` reads mutable `input` fields again after awaiting the proposer, and it does not
-clone the proposal reply until after awaiting the reviewer. A caller can therefore mutate the
-topic/reviewer configuration while the proposer is pending, or an agent can mutate its returned
-proposal object during the reviewer call. The final result is frozen but can disagree with the
-requests that were actually sent. Direct probes reproduced both failures:
+The initial review found one immutable-snapshot defect: `runExchange` read mutable `input` fields
+again after awaiting the proposer and did not clone the proposal reply until after awaiting the
+reviewer. Direct probes reproduced both failures:
 
 - mutating `input.topic` while the proposer was pending produced an original-topic proposer
   request, a mutated-topic reviewer request, and a mutated result topic;
 - mutating the returned proposal during the reviewer call left the reviewer request containing
   the original proposal while `result.proposal.reply.text` recorded the mutated proposal.
 
-Snapshot `exchangeId`, topic, both participant configurations, and controls at function entry.
-Clone each `AgentReply` immediately when its promise resolves, use the proposal snapshot to build
-the reviewer request, and freeze/return those snapshots. Add deferred-agent regression tests that
-mutate inputs and replies across both await boundaries. Under the one-task-at-a-time rule,
-B-EXCHANGE remains active until this fix is green; do not start B-ROLES yet.
+Resolved in `52f3764`: the function now captures exchange ID, topic, systems, agent references,
+and cloned controls before its first await; snapshots each request before dispatch; clones each
+reply at its resolution boundary; and builds the reviewer prompt from the proposal snapshot. The
+new deferred-agent regression test mutates the input identity/topic/reviewer configuration and
+both reply objects across the two awaits, proving the recorded requests and frozen result retain
+the original values. The full suite passes 19 tests with one intentional live skip, and type
+checking and linting remain green. B-ROLES is unblocked.
 
 ## Round 2 — 2026-07-18, first revision (all resolved)
 
