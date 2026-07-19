@@ -699,6 +699,27 @@ intentional live skip; type checking and linting are green, as is the
 No corrective carry-forward is needed. B-ROUNDS is unblocked, but it must obtain every later-turn
 input through this policy rather than assembling additional prompt text itself.
 
+### B-ROUNDS (`62c6911`) — pass
+
+`runDebate` validates a positive integer round count before dispatch, snapshots debate identity,
+topic, roles, and controls before its first await, and runs exchanges sequentially. Round and
+turn IDs are deterministic, each round produces exactly proposer then reviewer, and the frozen
+chronological result contains the structurally distinct exchange snapshots. With no failure,
+the loop therefore dispatches exactly `2 * roundCount` requests.
+
+Only the immediately completed proposal/review pair becomes `PriorExchange` for the next round.
+`runExchange` maps that pair into the existing proposer/reviewer `last-exchange` policy inputs
+and does not assemble context outside the policy. The two-round test asserts all four complete
+context decisions in order; the three-round test proves round-one proposal/review text is absent
+from both round-three requests. Combined with B-CONTEXT's adapter synchronization contract, old
+Pi transcript state cannot add undeclared exchanges.
+
+Invalid zero, negative, and fractional round counts are rejected before either agent is called.
+The task adds no dials, persistence, live calls, or premature failure semantics. The required
+suite passes 29 tests with one intentional live skip; type checking and linting are green, as is
+the [B-ROUNDS GitHub Actions run](https://github.com/vd1/heated-debate-v2/actions/runs/29693263516).
+No corrective carry-forward is needed. B-DIAL is unblocked.
+
 ## Round 2 — 2026-07-18, first revision (all resolved)
 
 1. **No real engine executable** (Optuna bridge tested only against a fake) → F-ENGINE-CLI.
