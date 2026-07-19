@@ -765,7 +765,7 @@ mutation regression, type checking, linting, commit whitespace validation, and t
 [corrected GitHub Actions run](https://github.com/vd1/heated-debate-v2/actions/runs/29694117580)
 are green. Both findings are closed. B-DIAL passes and B-LIVE-DEBATE is unblocked.
 
-### B-LIVE-DEBATE (`dac4d2f`, corrected by `5130a6a`) — changes requested
+### B-LIVE-DEBATE (`dac4d2f`, corrected by `5130a6a` and `6dd2db8`) — pass
 
 The basic smoke path is sound. It is gated by `HEATED_DEBATE_LIVE=1`, defaults to
 `openai-codex/gpt-5.6-sol`, accepts provider/model overrides, constructs separate proposer and
@@ -827,6 +827,19 @@ linting, commit whitespace validation, and the
 [correction GitHub Actions run](https://github.com/vd1/heated-debate-v2/actions/runs/29698277421)
 are green. This re-review did not repeat the opt-in provider calls. Keep B-LIVE-DEBATE active and
 C-EVENTS blocked until the remaining control-trace assertion is corrected and re-reviewed.
+
+Final re-review of `6dd2db8`: finding 1 is closed. Unsupported traces return only after proving
+that forwarding, adjustment, and provider verification are absent. Every supported trace must
+now contain `forwarded`; an unadjusted value must equal `requested`, while an adjusted value must
+equal the recorded adjustment. The same invariant restores proof that the selected override
+model identity was forwarded, without rejecting legitimate unsupported-thinking or
+adjusted-output-limit states.
+
+The final offline suite passes 43 tests with two intentional live skips; type checking, linting,
+commit whitespace validation, and the
+[final GitHub Actions run](https://github.com/vd1/heated-debate-v2/actions/runs/29698392984)
+are green. The opt-in provider calls were not repeated for this assertion-only correction. All
+three findings are closed: B-LIVE-DEBATE and Milestone B pass, and C-EVENTS is unblocked.
 
 ## Round 2 — 2026-07-18, first revision (all resolved)
 
