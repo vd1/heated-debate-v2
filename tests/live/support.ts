@@ -19,27 +19,27 @@ export async function withCancellationTimeout<T>(
 ): Promise<T> {
   const controller = new AbortController();
   const timeoutError = new Error(`${label} timed out after ${String(timeoutMs)}ms`);
-  let timer: ReturnType<typeof setTimeout> | undefined;
+  const state: { timer?: ReturnType<typeof setTimeout> } = {};
   const operation = start(controller.signal);
-  const timeout = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(() => {
+  const operationOutcome = operation.then(
+    (value) => ({ kind: "result" as const, value }),
+    (error: unknown) => ({ kind: "error" as const, error }),
+  );
+  const timeoutOutcome = new Promise<{ kind: "timeout" }>((resolve) => {
+    state.timer = setTimeout(() => {
       controller.abort();
-      reject(timeoutError);
+      resolve({ kind: "timeout" });
     }, timeoutMs);
   });
 
   try {
-    return await Promise.race([operation, timeout]);
-  } catch (error) {
-    if (error !== timeoutError) throw error;
-    try {
-      await operation;
-    } catch {
-      // The timeout remains caller-visible after the cancelled runner settles.
-    }
+    const outcome = await Promise.race([operationOutcome, timeoutOutcome]);
+    if (outcome.kind === "result") return outcome.value;
+    if (outcome.kind === "error") throw outcome.error;
+    await operationOutcome;
     throw timeoutError;
   } finally {
-    clearTimeout(timer);
+    if (state.timer !== undefined) clearTimeout(state.timer);
   }
 }
 
@@ -58,6 +58,6 @@ export async function withTimeout<T>(
   try {
     return await Promise.race([operation, timeout]);
   } finally {
-    clearTimeout(timer);
+    if (timer) clearTimeout(timer);
   }
 }
