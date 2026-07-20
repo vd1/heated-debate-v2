@@ -1,4 +1,10 @@
-import type { AttemptTrace, TurnRequest } from "./agent";
+import type {
+  AttemptTrace,
+  ControlTrace,
+  ModelIdentity,
+  ThinkingLevel,
+  TurnRequest,
+} from "./agent";
 import {
   validateCanonicalSequence,
   type CanonicalEvent,
@@ -91,7 +97,9 @@ export function renderDebateMarkdown(events: readonly CanonicalEvent[]): string 
     lines.push(`Completed ${String(count)} ${count === 1 ? "turn" : "turns"}.`);
   } else if (runOutcome?.type === "run.failed") {
     lines.push(
-      `**Run failed — ${inlineCode(runOutcome.data.failure.code)}:** ${runOutcome.data.failure.message}`,
+      `**Run failed — ${inlineCode(runOutcome.data.failure.code)}**`,
+      "",
+      fencedText(runOutcome.data.failure.message),
     );
   } else {
     lines.push("Incomplete canonical event prefix; no run outcome was recorded.");
@@ -107,7 +115,7 @@ function renderTurn(lines: string[], turn: TranscriptTurn): void {
     : request.capabilities.toolNames.map(inlineCode).join(", ");
   lines.push(
     "",
-    `### ${titleCase(request.role.id)} — ${inlineCode(request.turnId)}`,
+    `### ${headingText(titleCase(request.role.id))} — ${inlineCode(request.turnId)}`,
     "",
     `- Role: ${inlineCode(`${request.role.id}@${request.role.version}`)}`,
     `- Creativity: ${inlineCode(`${request.creativity.scheduleId}@${request.creativity.scheduleVersion}`)}, level ${String(request.creativity.level)}/5`,
@@ -143,15 +151,27 @@ function renderTurn(lines: string[], turn: TranscriptTurn): void {
       "",
       "#### Response",
       "",
-      turn.reply.text,
+      fencedText(turn.reply.text),
       "",
       `- Response model: ${inlineCode(`${turn.reply.model.providerId}/${turn.reply.model.modelId}`)}`,
       `- Duration: ${String(turn.reply.durationMs)} ms`,
+      "",
+      "#### Observed control report",
     );
+    renderControl(lines, "Model", turn.reply.controls.model, formatModel);
+    renderControl(lines, "Thinking level", turn.reply.controls.thinkingLevel, formatThinking);
+    if (turn.reply.controls.temperature !== undefined) {
+      renderControl(lines, "Temperature", turn.reply.controls.temperature, String);
+    }
+    if (turn.reply.controls.maxOutputTokens !== undefined) {
+      renderControl(lines, "Max output tokens", turn.reply.controls.maxOutputTokens, String);
+    }
   } else if (turn.failure) {
     lines.push(
       "",
-      `**Turn failed — ${inlineCode(turn.failure.code)}:** ${turn.failure.message}`,
+      `**Turn failed — ${inlineCode(turn.failure.code)}**`,
+      "",
+      fencedText(turn.failure.message),
     );
   } else {
     lines.push("", "_No turn outcome was recorded._");
@@ -165,8 +185,8 @@ function renderAttempts(lines: string[], attempts: readonly AttemptTrace[]): voi
     "",
     "#### Attempts",
     "",
-    "| # | Status | HTTP | Input | Output | Reasoning |",
-    "| ---: | --- | ---: | ---: | ---: | ---: |",
+    "| # | Status | HTTP | Input | Output | Cache read | Cache write | Reasoning | Explicitly reported | Evidence source |",
+    "| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |",
   );
   for (const attempt of attempts) {
     lines.push([
@@ -175,9 +195,47 @@ function renderAttempts(lines: string[], attempts: readonly AttemptTrace[]): voi
       displayNumber(attempt.httpStatus),
       displayNumber(attempt.usage.inputTokens),
       displayNumber(attempt.usage.outputTokens),
-      `${displayNumber(attempt.usage.reasoningTokens)} |`,
+      displayNumber(attempt.usage.cacheReadTokens),
+      displayNumber(attempt.usage.cacheWriteTokens),
+      displayNumber(attempt.usage.reasoningTokens),
+      escapeTableCell(attempt.usageEvidence.explicitlyReported.join(", ") || "none"),
+      `${escapeTableCell(attempt.usageEvidence.source)} |`,
     ].join(" | "));
   }
+}
+
+function renderControl<T>(
+  lines: string[],
+  label: string,
+  trace: ControlTrace<T>,
+  format: (value: T) => string,
+): void {
+  lines.push(
+    "",
+    `##### ${label}`,
+    "",
+    `- Requested: ${inlineCode(format(trace.requested))}`,
+    `- Forwarded: ${trace.forwarded === undefined ? "_not recorded_" : inlineCode(format(trace.forwarded))}`,
+    `- Adjusted: ${trace.adjusted === undefined ? "_not recorded_" : inlineCode(format(trace.adjusted.value))}`,
+  );
+  if (trace.adjusted !== undefined) {
+    lines.push("- Adjustment reason:", "", fencedText(trace.adjusted.reason));
+  }
+  lines.push(`- Unsupported: ${trace.unsupported === undefined ? "_not recorded_" : "recorded"}`);
+  if (trace.unsupported !== undefined) {
+    lines.push("- Unsupported reason:", "", fencedText(trace.unsupported.reason));
+  }
+  lines.push(
+    `- Provider verified: ${trace.providerVerified === undefined ? "_not recorded_" : inlineCode(format(trace.providerVerified))}`,
+  );
+}
+
+function formatModel(value: ModelIdentity): string {
+  return `${value.providerId}/${value.modelId}`;
+}
+
+function formatThinking(value: ThinkingLevel): string {
+  return value;
 }
 
 function requireTurn(turns: ReadonlyMap<string, TranscriptTurn>, turnId: string): TranscriptTurn {
@@ -194,10 +252,25 @@ function fencedText(value: string): string {
 }
 
 function inlineCode(value: string): string {
-  const runs = value.match(/`+/g) ?? [];
+  const singleLine = value.replaceAll("\r", "\\r").replaceAll("\n", "\\n");
+  const runs = singleLine.match(/`+/g) ?? [];
   const longest = runs.reduce((length, run) => Math.max(length, run.length), 0);
   const fence = "`".repeat(Math.max(1, longest + 1));
-  return `${fence}${value}${fence}`;
+  return `${fence}${singleLine}${fence}`;
+}
+
+function escapeTableCell(value: string): string {
+  return value
+    .replaceAll("\\", "\\\\")
+    .replaceAll("|", "\\|")
+    .replaceAll("\r", "\\r")
+    .replaceAll("\n", "\\n");
+}
+
+function headingText(value: string): string {
+  return value
+    .replaceAll(/[\r\n]+/g, " ")
+    .replaceAll(/([\\`*_{}[\]<>#+.!|])/g, "\\$1");
 }
 
 function displayNumber(value: number | undefined): string {

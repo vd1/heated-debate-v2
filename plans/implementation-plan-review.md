@@ -1154,6 +1154,46 @@ two-round smoke against `openai-codex/gpt-5.6-sol` at high thinking: all four tu
 write/read/replay, per-attempt equality, secret scanning, and disposal passed. C-LIVE-ARTIFACT
 passes and C-MARKDOWN is unblocked.
 
+### C-MARKDOWN (`490d0a8`) — changes requested
+
+The implementation is a pure domain projection over canonical events: it validates each event
+and the run ID/sequence before rendering, deterministically groups turns, includes exact system
+prompts and selected model inputs, represents success/failure/incomplete outcomes, exports only
+a string renderer, and introduces no Markdown read path into replay or evaluation. Its dynamic
+fences safely contain the topic, system prompt, and model-input messages.
+
+Three corrections are required before C-FAILURES:
+
+1. Model replies are not safely delimited. `renderTurn` appends `turn.reply.text` directly to the
+   document, so a reply containing a heading can spoof transcript sections and an unmatched code
+   fence can absorb the response metadata, attempts, and run outcome. This violates the explicit
+   forward-review requirement that reply headings or fences cannot corrupt projection structure.
+   Render reply text inside a dynamically sized literal fence, as already done for the other
+   untrusted text fields, and add an adversarial snapshot containing both headings and backtick
+   runs. Failure messages and any free-form value placed directly in a heading or paragraph
+   should receive equivalent structural protection.
+2. The audit projection omits the observed control report. It renders requested model, thinking,
+   temperature, and token values from `TurnRequest`, but never reads `turn.reply.controls`.
+   Consequently, the fixture's unsupported 4,096-token request appears without its unsupported
+   status or reason—the exact ambiguity the canonical control taxonomy prevents. Render each
+   available control's requested, forwarded, adjusted, unsupported, and provider-verified
+   fields without inferring missing values. The attempt summary should also retain all available
+   normalized usage categories, including cache reads/writes, and identify the recorded usage
+   evidence so a human can distinguish observed values from explicitly reported ones.
+3. The required incomplete-run test is absent. The implementation has a branch for a prefix with
+   no terminal run event, but the suite covers only a completed run, a terminally failed run, and
+   invalid sequencing. Add a valid incomplete canonical-prefix fixture and lock its status plus
+   any requested turn with no outcome. This should remain a projection test, not parse Markdown
+   back into canonical data.
+
+The offline suite passes 84 tests with two intentional live skips; type checking, linting,
+domain/Pi boundary scanning, commit whitespace validation, and the
+[C-MARKDOWN GitHub Actions run](https://github.com/vd1/heated-debate-v2/actions/runs/29738423526)
+are green. The README style gate reports no errors and three line-length warnings, including the
+modified status line. These checks do not exercise the unsafe-reply case, the omitted canonical
+control/usage evidence, or the incomplete-prefix branch. Keep C-MARKDOWN active and C-FAILURES
+blocked until all three findings are corrected and re-reviewed.
+
 ## Round 2 — 2026-07-18, first revision (all resolved)
 
 1. **No real engine executable** (Optuna bridge tested only against a fake) → F-ENGINE-CLI.

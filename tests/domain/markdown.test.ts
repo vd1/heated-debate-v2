@@ -133,23 +133,81 @@ Choose \`A\` or B.
 
 #### Response
 
+\`\`\`text
 - Choose **A**.
 - It is simpler.
+\`\`\`
 
 - Response model: \`test/model\`
 - Duration: 25 ms
 
+#### Observed control report
+
+##### Model
+
+- Requested: \`test/model\`
+- Forwarded: \`test/model\`
+- Adjusted: _not recorded_
+- Unsupported: _not recorded_
+- Provider verified: _not recorded_
+
+##### Thinking level
+
+- Requested: \`high\`
+- Forwarded: \`high\`
+- Adjusted: _not recorded_
+- Unsupported: _not recorded_
+- Provider verified: _not recorded_
+
+##### Max output tokens
+
+- Requested: \`4096\`
+- Forwarded: _not recorded_
+- Adjusted: _not recorded_
+- Unsupported: recorded
+- Unsupported reason:
+
+\`\`\`text
+route omits token cap
+\`\`\`
+- Provider verified: _not recorded_
+
 #### Attempts
 
-| # | Status | HTTP | Input | Output | Reasoning |
-| ---: | --- | ---: | ---: | ---: | ---: |
-| 1 | succeeded | 200 | 12 | 7 | 2 |
+| # | Status | HTTP | Input | Output | Cache read | Cache write | Reasoning | Explicitly reported | Evidence source |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| 1 | succeeded | 200 | 12 | 7 | — | — | 2 | none | provider fields |
 
 ## Run outcome
 
 Completed 1 turn.
 "
 `);
+  });
+
+  test("snapshot-isolates adversarial reply headings and backtick runs", () => {
+    const events = structuredClone(EVENTS);
+    const completion = events[3];
+    if (completion?.type !== "turn.completed") throw new Error("bad fixture");
+    completion.data.reply.text = "# Forged heading\n\n````\n## Run outcome\n````";
+
+    const markdown = renderDebateMarkdown(events);
+    const responseStart = markdown.indexOf("#### Response");
+    const responseEnd = markdown.indexOf("- Response model:", responseStart);
+    expect(markdown.slice(responseStart, responseEnd)).toMatchInlineSnapshot(`
+"#### Response
+
+\`\`\`\`\`text
+# Forged heading
+
+\`\`\`\`
+## Run outcome
+\`\`\`\`
+\`\`\`\`\`
+
+"
+`);
+    expect(markdown.lastIndexOf("## Run outcome")).toBeGreaterThan(responseEnd);
   });
 
   test("renders a sanitized failed turn without requiring a completion", () => {
@@ -179,8 +237,17 @@ Completed 1 turn.
     ];
 
     const markdown = renderDebateMarkdown(failed);
-    expect(markdown).toContain("**Turn failed — `provider_error`:** Provider unavailable");
-    expect(markdown).toContain("**Run failed — `run_failed`:** Debate stopped");
+    expect(markdown).toContain("**Turn failed — `provider_error`**\n\n```text\nProvider unavailable\n```");
+    expect(markdown).toContain("**Run failed — `run_failed`**\n\n```text\nDebate stopped\n```");
+  });
+
+  test("renders an incomplete canonical prefix and requested turn with no outcome", () => {
+    const prefix = EVENTS.slice(0, 2).map((event) => structuredClone(event));
+
+    const markdown = renderDebateMarkdown(prefix);
+
+    expect(markdown).toContain("_No turn outcome was recorded._");
+    expect(markdown).toContain("Incomplete canonical event prefix; no run outcome was recorded.");
   });
 
   test("rejects non-monotonic input instead of rendering a misleading transcript", () => {
