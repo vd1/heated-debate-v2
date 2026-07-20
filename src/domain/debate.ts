@@ -39,6 +39,7 @@ export interface DebateBudget {
 export type DebateFailureCode =
   | "cancelled"
   | "timeout"
+  | "run_timeout"
   | "empty_output"
   | "provider_failure"
   | "turn_budget_exhausted"
@@ -80,7 +81,9 @@ export interface RunDebateInput {
   reviewer: ExchangeParticipant;
   recording?: DebateRecording;
   signal?: AbortSignal;
+  signalFailureCode?: "cancelled" | "run_timeout";
   turnTimeoutMs?: number;
+  wholeRunTimeoutMs?: number;
   budget?: DebateBudget;
 }
 
@@ -93,12 +96,14 @@ export interface DebateResult {
   readonly debateId: string;
   readonly topic: string;
   readonly rounds: readonly DebateRound[];
+  readonly controls: Extract<CanonicalRunControls, { evidence: "recorded" }>;
 }
 
 export async function runDebate(input: RunDebateInput): Promise<DebateResult> {
   validateLimits(input);
   const proposerAgent = input.proposer.agent;
   const reviewerAgent = input.reviewer.agent;
+  const runControls = canonicalRunControls(input);
   const scheduler = new DebateScheduler({
     debateId: input.debateId,
     topic: input.topic,
@@ -122,7 +127,7 @@ export async function runDebate(input: RunDebateInput): Promise<DebateResult> {
     for (const attempt of trace.attempts) {
       if (input.recording) {
         await emit({
-          schemaVersion: 1,
+          schemaVersion: 2,
           runId: input.recording.runId,
           sequence,
           type: "adapter.attempt",
@@ -142,7 +147,7 @@ export async function runDebate(input: RunDebateInput): Promise<DebateResult> {
       });
       if (failure.turnId !== undefined) {
         await emit({
-          schemaVersion: 1,
+          schemaVersion: 2,
           runId: input.recording.runId,
           sequence,
           type: "turn.failed",
@@ -150,7 +155,7 @@ export async function runDebate(input: RunDebateInput): Promise<DebateResult> {
         }, false);
       }
       await emit({
-        schemaVersion: 1,
+        schemaVersion: 2,
         runId: input.recording.runId,
         sequence,
         type: "run.failed",
@@ -166,7 +171,7 @@ export async function runDebate(input: RunDebateInput): Promise<DebateResult> {
   try {
     if (input.recording) {
       await emit({
-        schemaVersion: 1,
+        schemaVersion: 2,
         runId: input.recording.runId,
         sequence,
         type: "run.started",
@@ -174,7 +179,7 @@ export async function runDebate(input: RunDebateInput): Promise<DebateResult> {
           debateId: input.debateId,
           topic: input.topic,
           roundCount: input.roundCount,
-          controls: canonicalRunControls(input),
+          controls: structuredClone(runControls),
         },
       }, true);
     }
@@ -182,19 +187,22 @@ export async function runDebate(input: RunDebateInput): Promise<DebateResult> {
     for (let turn = scheduler.nextTurn(); turn !== undefined; turn = scheduler.nextTurn()) {
       if (input.signal?.aborted) {
         await endWithFailure(new DebateRunFailure({
-          code: "cancelled",
-          message: "debate was cancelled",
+          code: input.signalFailureCode ?? "cancelled",
+          message: input.signalFailureCode === "run_timeout"
+            ? "whole-run deadline exceeded"
+            : "debate was cancelled",
           observedUsage,
         }));
       }
-      if (input.budget && observedTokenLowerBound(observedUsage) >= input.budget.maxTokens) {
+      if (runControls.budget
+        && observedTokenLowerBound(observedUsage) >= runControls.budget.maxTokens) {
         await endWithFailure(new DebateRunFailure({
           code: "token_budget_exhausted",
           message: `token budget exhausted before dispatch ${String(dispatchedTurns + 1)}`,
           observedUsage,
         }));
       }
-      if (input.budget && dispatchedTurns >= input.budget.maxTurns) {
+      if (runControls.budget && dispatchedTurns >= runControls.budget.maxTurns) {
         await endWithFailure(new DebateRunFailure({
           code: "turn_budget_exhausted",
           message: `turn budget exhausted before dispatch ${String(dispatchedTurns + 1)}`,
@@ -204,7 +212,7 @@ export async function runDebate(input: RunDebateInput): Promise<DebateResult> {
 
       if (input.recording) {
         await emit({
-          schemaVersion: 1,
+          schemaVersion: 2,
           runId: input.recording.runId,
           sequence,
           type: "turn.requested",
@@ -220,7 +228,8 @@ export async function runDebate(input: RunDebateInput): Promise<DebateResult> {
         agent,
         structuredClone(turn.request),
         input.signal,
-        input.turnTimeoutMs,
+        runControls.turnTimeoutMs ?? undefined,
+        input.signalFailureCode ?? "cancelled",
       ).catch(async (error: unknown) => {
         const normalized = normalizeDispatchFailure(error, turn.request.turnId, observedUsage);
         await emitAttempts(turn.request.turnId, normalized.trace);
@@ -234,7 +243,8 @@ export async function runDebate(input: RunDebateInput): Promise<DebateResult> {
       });
 
       await emitAttempts(turn.request.turnId, reply.trace);
-      if (input.budget && observedTokenLowerBound(observedUsage) > input.budget.maxTokens) {
+      if (runControls.budget
+        && observedTokenLowerBound(observedUsage) > runControls.budget.maxTokens) {
         await endWithFailure(new DebateRunFailure({
           code: "token_budget_exhausted",
           message: `observed token budget exceeded after ${turn.request.turnId}`,
@@ -262,7 +272,7 @@ export async function runDebate(input: RunDebateInput): Promise<DebateResult> {
           controls: structuredClone(reply.controls),
         };
         await emit({
-          schemaVersion: 1,
+          schemaVersion: 2,
           runId: input.recording.runId,
           sequence,
           type: "turn.completed",
@@ -271,10 +281,14 @@ export async function runDebate(input: RunDebateInput): Promise<DebateResult> {
       }
     }
 
-    const result = scheduler.result();
+    const scheduledResult = scheduler.result();
+    const result: DebateResult = Object.freeze({
+      ...scheduledResult,
+      controls: structuredClone(runControls),
+    });
     if (input.recording) {
       await emit({
-        schemaVersion: 1,
+        schemaVersion: 2,
         runId: input.recording.runId,
         sequence,
         type: "run.completed",
@@ -308,7 +322,7 @@ export async function runDebate(input: RunDebateInput): Promise<DebateResult> {
 
 class DispatchInterruption extends Error {
   constructor(
-    readonly kind: "cancelled" | "timeout",
+    readonly kind: "cancelled" | "timeout" | "run_timeout",
     message: string,
     readonly trace: AgentTrace,
   ) {
@@ -321,23 +335,24 @@ async function dispatchReply(
   request: Parameters<AgentPort["reply"]>[0],
   externalSignal: AbortSignal | undefined,
   timeoutMs: number | undefined,
+  externalFailureCode: "cancelled" | "run_timeout",
 ): Promise<AgentReply> {
   if (externalSignal?.aborted) {
-    throw new DispatchInterruption("cancelled", "debate was cancelled", { attempts: [] });
+    throw dispatchInterruption(externalFailureCode, timeoutMs, { attempts: [] });
   }
   const local = new AbortController();
   const signal = externalSignal === undefined
     ? local.signal
     : AbortSignal.any([externalSignal, local.signal]);
   let timer: ReturnType<typeof setTimeout> | undefined;
-  let interruptionKind: "cancelled" | "timeout" | undefined;
+  let interruptionKind: "cancelled" | "timeout" | "run_timeout" | undefined;
   let partialTrace: AgentTrace = { attempts: [] };
   let removeExternalListener: (() => void) | undefined;
   let rejectHardInterruption: ((error: DispatchInterruption) => void) | undefined;
   const hardInterruption = new Promise<never>((_resolve, reject) => {
     rejectHardInterruption = reject;
   });
-  const interrupt = (kind: "cancelled" | "timeout"): void => {
+  const interrupt = (kind: "cancelled" | "timeout" | "run_timeout"): void => {
     if (interruptionKind !== undefined) return;
     interruptionKind = kind;
     local.abort();
@@ -347,7 +362,7 @@ async function dispatchReply(
   };
   if (externalSignal) {
     const onAbort = (): void => {
-      interrupt("cancelled");
+      interrupt(externalFailureCode);
     };
     externalSignal.addEventListener("abort", onAbort, { once: true });
     removeExternalListener = () => {
@@ -382,13 +397,17 @@ async function dispatchReply(
 }
 
 function dispatchInterruption(
-  kind: "cancelled" | "timeout",
+  kind: "cancelled" | "timeout" | "run_timeout",
   timeoutMs: number | undefined,
   trace: AgentTrace,
 ): DispatchInterruption {
   return new DispatchInterruption(
     kind,
-    kind === "timeout" ? `turn timed out after ${String(timeoutMs)}ms` : "debate was cancelled",
+    kind === "timeout"
+      ? `turn timed out after ${String(timeoutMs)}ms`
+      : kind === "run_timeout"
+        ? "whole-run deadline exceeded"
+        : "debate was cancelled",
     trace,
   );
 }
@@ -449,19 +468,33 @@ function observedTokenLowerBound(usage: BudgetObservedUsage): number {
     + (usage.cacheWriteTokens ?? 0);
 }
 
-function canonicalRunControls(input: RunDebateInput): CanonicalRunControls {
-  return {
+function canonicalRunControls(
+  input: RunDebateInput,
+): Extract<CanonicalRunControls, { evidence: "recorded" }> {
+  const budget = input.budget === undefined
+    ? null
+    : Object.freeze(structuredClone(input.budget));
+  return Object.freeze({
     policyId: "run-controls",
     policyVersion: "1",
+    evidence: "recorded",
     turnTimeoutMs: input.turnTimeoutMs ?? null,
-    budget: input.budget === undefined ? null : structuredClone(input.budget),
-  };
+    wholeRunTimeoutMs: input.wholeRunTimeoutMs ?? null,
+    budget,
+  });
 }
 
 function validateLimits(input: RunDebateInput): void {
+  if (input.signalFailureCode === "run_timeout" && input.wholeRunTimeoutMs === undefined) {
+    throw new Error("run_timeout cancellation requires wholeRunTimeoutMs");
+  }
   if (input.turnTimeoutMs !== undefined
     && (!Number.isFinite(input.turnTimeoutMs) || input.turnTimeoutMs <= 0)) {
     throw new Error("turnTimeoutMs must be a finite positive number");
+  }
+  if (input.wholeRunTimeoutMs !== undefined
+    && (!Number.isFinite(input.wholeRunTimeoutMs) || input.wholeRunTimeoutMs <= 0)) {
+    throw new Error("wholeRunTimeoutMs must be a finite positive number");
   }
   if (input.budget) {
     if (!Number.isInteger(input.budget.maxTurns) || input.budget.maxTurns < 0) {

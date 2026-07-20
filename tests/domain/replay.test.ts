@@ -1,7 +1,11 @@
 import { describe, expect, test } from "bun:test";
 
 import type { RequestedControls, TurnRequest } from "../../src/domain/agent";
-import type { CanonicalEvent, CanonicalTurnReply } from "../../src/domain/events";
+import {
+  parseCanonicalEvent,
+  type CanonicalEvent,
+  type CanonicalTurnReply,
+} from "../../src/domain/events";
 import {
   replayCanonicalRun,
   ReplayDriftError,
@@ -126,7 +130,7 @@ function reply(text: string): CanonicalTurnReply {
 function recordedRun(): CanonicalEvent[] {
   return [
     {
-      schemaVersion: 1,
+      schemaVersion: 2,
       runId: "run-1",
       sequence: 0,
       type: "run.started",
@@ -137,41 +141,43 @@ function recordedRun(): CanonicalEvent[] {
         controls: {
           policyId: "run-controls",
           policyVersion: "1",
+          evidence: "recorded",
           turnTimeoutMs: null,
+          wholeRunTimeoutMs: null,
           budget: null,
         },
       },
     },
     {
-      schemaVersion: 1,
+      schemaVersion: 2,
       runId: "run-1",
       sequence: 1,
       type: "turn.requested",
       data: { roundNumber: 1, request: PROPOSAL_REQUEST },
     },
     {
-      schemaVersion: 1,
+      schemaVersion: 2,
       runId: "run-1",
       sequence: 2,
       type: "turn.completed",
       data: { turnId: PROPOSAL_REQUEST.turnId, reply: reply("Recorded proposal") },
     },
     {
-      schemaVersion: 1,
+      schemaVersion: 2,
       runId: "run-1",
       sequence: 3,
       type: "turn.requested",
       data: { roundNumber: 1, request: REVIEW_REQUEST },
     },
     {
-      schemaVersion: 1,
+      schemaVersion: 2,
       runId: "run-1",
       sequence: 4,
       type: "turn.completed",
       data: { turnId: REVIEW_REQUEST.turnId, reply: reply("Recorded review") },
     },
     {
-      schemaVersion: 1,
+      schemaVersion: 2,
       runId: "run-1",
       sequence: 5,
       type: "run.completed",
@@ -188,35 +194,35 @@ function recordedTwoRoundRun(): CanonicalEvent[] {
     { ...start, data: { ...start.data, roundCount: 2 } },
     ...firstRound.slice(1),
     {
-      schemaVersion: 1,
+      schemaVersion: 2,
       runId: "run-1",
       sequence: 5,
       type: "turn.requested",
       data: { roundNumber: 2, request: SECOND_PROPOSAL_REQUEST },
     },
     {
-      schemaVersion: 1,
+      schemaVersion: 2,
       runId: "run-1",
       sequence: 6,
       type: "turn.completed",
       data: { turnId: SECOND_PROPOSAL_REQUEST.turnId, reply: reply("Second proposal") },
     },
     {
-      schemaVersion: 1,
+      schemaVersion: 2,
       runId: "run-1",
       sequence: 7,
       type: "turn.requested",
       data: { roundNumber: 2, request: SECOND_REVIEW_REQUEST },
     },
     {
-      schemaVersion: 1,
+      schemaVersion: 2,
       runId: "run-1",
       sequence: 8,
       type: "turn.completed",
       data: { turnId: SECOND_REVIEW_REQUEST.turnId, reply: reply("Second review") },
     },
     {
-      schemaVersion: 1,
+      schemaVersion: 2,
       runId: "run-1",
       sequence: 9,
       type: "run.completed",
@@ -235,6 +241,25 @@ describe("replayCanonicalRun", () => {
 
     expect(result.requests).toEqual([PROPOSAL_REQUEST, REVIEW_REQUEST]);
     expect(Object.isFrozen(result.requests)).toBe(true);
+  });
+
+  test("replays migrated schema-v1 artifacts without inventing run-control evidence", async () => {
+    const historical = recordedRun().map((event) => {
+      const raw = structuredClone(event) as unknown as Record<string, unknown>;
+      raw.schemaVersion = 1;
+      if (raw.type === "run.started") {
+        const data = raw.data as Record<string, unknown>;
+        delete data.controls;
+      }
+      return parseCanonicalEvent(JSON.stringify(raw));
+    });
+
+    const result = await replayCanonicalRun({
+      events: historical,
+      configuration: CONFIGURATION,
+    });
+
+    expect(result.requests).toEqual([PROPOSAL_REQUEST, REVIEW_REQUEST]);
   });
 
   test("reconstructs ordered prior-exchange context across two rounds", async () => {
@@ -462,7 +487,7 @@ describe("replayCanonicalRun", () => {
     const completion = events[2];
     if (completion?.type !== "turn.completed") throw new Error("bad fixture");
     events[2] = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       runId: "run-1",
       sequence: 2,
       type: "adapter.attempt",
@@ -493,7 +518,7 @@ describe("replayCanonicalRun", () => {
   test("explicitly rejects turn failure, run failure, and a missing terminal event", async () => {
     const turnFailure = recordedRun();
     turnFailure[2] = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       runId: "run-1",
       sequence: 2,
       type: "turn.failed",
@@ -512,7 +537,7 @@ describe("replayCanonicalRun", () => {
     const runFailure: CanonicalEvent[] = [
       start,
       {
-        schemaVersion: 1,
+        schemaVersion: 2,
         runId: "run-1",
         sequence: 1,
         type: "run.failed",

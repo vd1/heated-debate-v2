@@ -25,7 +25,7 @@ afterEach(async () => {
 function runEvents(): CanonicalEvent[] {
   return [
     {
-      schemaVersion: 1,
+      schemaVersion: 2,
       runId: "run-1",
       sequence: 0,
       type: "run.started",
@@ -36,13 +36,15 @@ function runEvents(): CanonicalEvent[] {
         controls: {
           policyId: "run-controls",
           policyVersion: "1",
+          evidence: "recorded",
           turnTimeoutMs: null,
+          wholeRunTimeoutMs: null,
           budget: null,
         },
       },
     },
     {
-      schemaVersion: 1,
+      schemaVersion: 2,
       runId: "run-1",
       sequence: 1,
       type: "run.completed",

@@ -70,16 +70,30 @@ export function renderDebateMarkdown(events: readonly CanonicalEvent[]): string 
     }
   }
 
+  const runControls = start.data.controls;
+  const runControlLines = runControls.evidence === "unrecorded"
+    ? [
+        "- Run control evidence: _unrecorded in historical schema v1_",
+        "- Turn timeout: _not recorded_",
+        "- Whole-run timeout: _not recorded_",
+        "- Turn budget: _not recorded_",
+        "- Token budget: _not recorded_",
+      ]
+    : [
+        "- Run control evidence: recorded",
+        `- Turn timeout: ${runControls.turnTimeoutMs === null ? "_not configured_" : `${String(runControls.turnTimeoutMs)} ms`}`,
+        `- Whole-run timeout: ${runControls.wholeRunTimeoutMs === null ? "_not configured_" : `${String(runControls.wholeRunTimeoutMs)} ms`}`,
+        `- Turn budget: ${runControls.budget === null ? "_not configured_" : String(runControls.budget.maxTurns)}`,
+        `- Token budget: ${runControls.budget === null ? "_not configured_" : String(runControls.budget.maxTokens)}`,
+      ];
   const lines: string[] = [
     "# Debate Transcript",
     "",
     `- Artifact run: ${inlineCode(start.runId)}`,
     `- Debate ID: ${inlineCode(start.data.debateId)}`,
     `- Planned rounds: ${String(start.data.roundCount)}`,
-    `- Run controls: ${inlineCode(`${start.data.controls.policyId}@${start.data.controls.policyVersion}`)}`,
-    `- Turn timeout: ${start.data.controls.turnTimeoutMs === null ? "_not configured_" : `${String(start.data.controls.turnTimeoutMs)} ms`}`,
-    `- Turn budget: ${start.data.controls.budget === null ? "_not configured_" : String(start.data.controls.budget.maxTurns)}`,
-    `- Token budget: ${start.data.controls.budget === null ? "_not configured_" : String(start.data.controls.budget.maxTokens)}`,
+    `- Run controls: ${inlineCode(`${runControls.policyId}@${runControls.policyVersion}`)}`,
+    ...runControlLines,
     "",
     "## Topic",
     "",

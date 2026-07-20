@@ -53,7 +53,7 @@ const REPLY: AgentReply = {
 function events(): CanonicalEvent[] {
   return [
     {
-      schemaVersion: 1,
+      schemaVersion: 2,
       runId: "run-1",
       sequence: 0,
       type: "run.started",
@@ -64,20 +64,22 @@ function events(): CanonicalEvent[] {
         controls: {
           policyId: "run-controls",
           policyVersion: "1",
+          evidence: "recorded",
           turnTimeoutMs: null,
+          wholeRunTimeoutMs: null,
           budget: null,
         },
       },
     },
     {
-      schemaVersion: 1,
+      schemaVersion: 2,
       runId: "run-1",
       sequence: 1,
       type: "turn.requested",
       data: { roundNumber: 1, request: REQUEST },
     },
     {
-      schemaVersion: 1,
+      schemaVersion: 2,
       runId: "run-1",
       sequence: 2,
       type: "adapter.attempt",
@@ -96,7 +98,7 @@ function events(): CanonicalEvent[] {
       },
     },
     {
-      schemaVersion: 1,
+      schemaVersion: 2,
       runId: "run-1",
       sequence: 3,
       type: "turn.completed",
@@ -111,7 +113,7 @@ function events(): CanonicalEvent[] {
       },
     },
     {
-      schemaVersion: 1,
+      schemaVersion: 2,
       runId: "run-1",
       sequence: 4,
       type: "run.completed",
@@ -120,7 +122,7 @@ function events(): CanonicalEvent[] {
   ];
 }
 
-describe("canonical event schema v1", () => {
+describe("canonical event schema v2", () => {
   test("round-trips every successful-run event without losing absent usage", () => {
     for (const event of events()) {
       expect(parseCanonicalEvent(serializeCanonicalEvent(event, { secrets: [] }))).toEqual(event);
@@ -137,14 +139,14 @@ describe("canonical event schema v1", () => {
     );
     const failureEvents: CanonicalEvent[] = [
       {
-        schemaVersion: 1,
+        schemaVersion: 2,
         runId: "run-1",
         sequence: 0,
         type: "turn.failed",
         data: { turnId: REQUEST.turnId, failure },
       },
       {
-        schemaVersion: 1,
+        schemaVersion: 2,
         runId: "run-1",
         sequence: 0,
         type: "run.failed",
@@ -162,7 +164,7 @@ describe("canonical event schema v1", () => {
 
   test("redacts configured secrets from a directly constructed failure", () => {
     const event: CanonicalEvent = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       runId: "run-1",
       sequence: 0,
       type: "run.failed",
@@ -201,13 +203,37 @@ describe("canonical event schema v1", () => {
     expect(serializeCanonicalEvent(withSentinel, { secrets: ["secret-123"] })).toContain("secret-123");
   });
 
+  test("migrates a historical schema-v1 run start without inventing absent controls", () => {
+    const historical = JSON.stringify({
+      schemaVersion: 1,
+      runId: "historical-artifact",
+      sequence: 0,
+      type: "run.started",
+      data: { debateId: "debate-1", topic: "Historical", roundCount: 1 },
+    });
+
+    const migrated = parseCanonicalEvent(historical);
+
+    expect(migrated.schemaVersion).toBe(2);
+    expect(migrated.type).toBe("run.started");
+    if (migrated.type !== "run.started") throw new Error("migration failed");
+    expect(migrated.data.controls).toEqual({
+      policyId: "run-controls",
+      policyVersion: "1",
+      evidence: "unrecorded",
+    });
+    expect(JSON.parse(serializeCanonicalEvent(migrated, { secrets: [] }))).toMatchObject({
+      schemaVersion: 2,
+    });
+  });
+
   test("rejects unknown schema versions, event types, and fields", () => {
     const first = events()[0];
     if (!first) throw new Error("bad fixture");
     const valid = JSON.parse(serializeCanonicalEvent(first, { secrets: [] })) as Record<string, unknown>;
 
-    expect(() => parseCanonicalEvent(JSON.stringify({ ...valid, schemaVersion: 2 }))).toThrow(
-      "unsupported schema version: 2",
+    expect(() => parseCanonicalEvent(JSON.stringify({ ...valid, schemaVersion: 3 }))).toThrow(
+      "unsupported schema version: 3",
     );
     expect(() => parseCanonicalEvent(JSON.stringify({ ...valid, type: "future.event" }))).toThrow(
       "unknown event type: future.event",
@@ -240,7 +266,7 @@ describe("canonical event schema v1", () => {
     })).toThrow("event must be a plain object");
   });
 
-  test("rejects creativity identities outside canonical schema v1", () => {
+  test("rejects creativity identities outside canonical schema v2", () => {
     const requested = events()[1];
     if (requested?.type !== "turn.requested") throw new Error("bad fixture");
     const serialized = serializeCanonicalEvent(requested, { secrets: [] });

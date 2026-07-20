@@ -8,6 +8,7 @@ import {
   type AgentTrace,
   type TurnRequest,
 } from "../../src/domain/agent";
+import { projectDebateEvents } from "../../src/domain/debate-events";
 import {
   DebateRunFailure,
   runDebate,
@@ -206,7 +207,9 @@ describe("runDebate failure semantics", () => {
     expect(started.data.controls).toEqual({
       policyId: "run-controls",
       policyVersion: "1",
+      evidence: "recorded",
       turnTimeoutMs: 25,
+      wholeRunTimeoutMs: null,
       budget: { maxTurns: 2, maxTokens: 100 },
     });
 
@@ -221,8 +224,40 @@ describe("runDebate failure semantics", () => {
     expect(absentStart.data.controls).toEqual({
       policyId: "run-controls",
       policyVersion: "1",
+      evidence: "recorded",
       turnTimeoutMs: null,
+      wholeRunTimeoutMs: null,
       budget: null,
+    });
+  });
+
+  test("snapshots run controls once for enforcement and post-hoc projection", async () => {
+    const mutableBudget = { maxTurns: 2, maxTokens: 100 };
+    const oneToken = usageTrace({ outputTokens: 1 });
+    const proposer = new ScenarioAgent(() => {
+      mutableBudget.maxTokens = 0;
+      return Promise.resolve(reply("Proposal", oneToken));
+    });
+    const reviewer = new ScenarioAgent(() => Promise.resolve(reply("Review", oneToken)));
+    const sink = new MemorySink();
+
+    const result = await runDebate(debateInput(proposer, reviewer, sink, {
+      turnTimeoutMs: 321,
+      budget: mutableBudget,
+    }));
+    const projected = projectDebateEvents(result, "post-hoc-artifact");
+    const start = projected[0];
+    if (start?.type !== "run.started") throw new Error("missing projected run start");
+
+    expect(proposer.calls).toBe(1);
+    expect(reviewer.calls).toBe(1);
+    expect(start.data.controls).toEqual({
+      policyId: "run-controls",
+      policyVersion: "1",
+      evidence: "recorded",
+      turnTimeoutMs: 321,
+      wholeRunTimeoutMs: null,
+      budget: { maxTurns: 2, maxTokens: 100 },
     });
   });
 

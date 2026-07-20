@@ -181,6 +181,23 @@ test("whole-debate timeout cancels and awaits the runner before closing resource
       "turn.failed",
       "run.failed",
     ]);
+    const started = persisted.events[0];
+    if (started?.type !== "run.started") throw new Error("missing run start");
+    expect(started.data.controls).toEqual({
+      policyId: "run-controls",
+      policyVersion: "1",
+      evidence: "recorded",
+      turnTimeoutMs: 60_000,
+      wholeRunTimeoutMs: 1_000,
+      budget: null,
+    });
+    const failures = persisted.events.filter(
+      (event) => event.type === "turn.failed" || event.type === "run.failed",
+    );
+    expect(failures.map((event) => event.data.failure.code)).toEqual([
+      "run_timeout",
+      "run_timeout",
+    ]);
     expect(proposer.disposeCalls).toBe(1);
     expect(reviewer.disposeCalls).toBe(1);
     await new Promise((resolve) => setTimeout(resolve, 10));

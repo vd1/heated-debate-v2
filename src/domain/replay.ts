@@ -8,6 +8,7 @@ import type { DeepReadonly } from "./exchange";
 import {
   validateCanonicalSequence,
   type CanonicalEvent,
+  type CanonicalRunControls,
   type CanonicalTurnReply,
 } from "./events";
 import type { RoleDefinition } from "./roles";
@@ -25,6 +26,7 @@ export interface ReplayConfiguration {
   proposer: ReplayParticipantConfiguration;
   reviewer: ReplayParticipantConfiguration;
   turnTimeoutMs?: number;
+  wholeRunTimeoutMs?: number;
   budget?: DebateBudget;
 }
 
@@ -73,15 +75,22 @@ function replayCanonicalRunSync(input: ReplayCanonicalRunInput): ReplayResult {
     debateId: trace.debateId,
     topic: trace.topic,
     roundCount: trace.roundCount,
-    turnTimeoutMs: trace.turnTimeoutMs,
-    budget: trace.budget,
   }, {
     debateId: configuration.debateId,
     topic: configuration.topic,
     roundCount: configuration.roundCount,
-    turnTimeoutMs: configuration.turnTimeoutMs ?? null,
-    budget: configuration.budget ?? null,
   });
+  if (trace.controls.evidence === "recorded") {
+    assertNoDrift(trace.runId, {
+      turnTimeoutMs: trace.controls.turnTimeoutMs,
+      wholeRunTimeoutMs: trace.controls.wholeRunTimeoutMs,
+      budget: trace.controls.budget,
+    }, {
+      turnTimeoutMs: configuration.turnTimeoutMs ?? null,
+      wholeRunTimeoutMs: configuration.wholeRunTimeoutMs ?? null,
+      budget: configuration.budget ?? null,
+    });
+  }
 
   const scheduler = new DebateScheduler(configuration);
   const reconstructed: DeepReadonly<TurnRequest>[] = [];
@@ -111,8 +120,7 @@ function readSuccessfulTrace(events: readonly CanonicalEvent[]): {
   debateId: string;
   topic: string;
   roundCount: number;
-  turnTimeoutMs: number | null;
-  budget: { maxTurns: number; maxTokens: number } | null;
+  controls: CanonicalRunControls;
   turns: RecordedTurn[];
 } {
   const first = events[0];
@@ -183,8 +191,7 @@ function readSuccessfulTrace(events: readonly CanonicalEvent[]): {
     debateId: first.data.debateId,
     topic: first.data.topic,
     roundCount: first.data.roundCount,
-    turnTimeoutMs: first.data.controls.turnTimeoutMs,
-    budget: structuredClone(first.data.controls.budget),
+    controls: structuredClone(first.data.controls),
     turns,
   };
 }

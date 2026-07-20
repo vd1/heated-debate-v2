@@ -16,14 +16,22 @@ import type { ContextDecision } from "./context";
 import type { CreativitySelection } from "./dial";
 import type { RoleDefinition } from "./roles";
 
-export const CANONICAL_SCHEMA_VERSION = 1 as const;
+export const CANONICAL_SCHEMA_VERSION = 2 as const;
 
-export interface CanonicalRunControls {
-  policyId: "run-controls";
-  policyVersion: "1";
-  turnTimeoutMs: number | null;
-  budget: { maxTurns: number; maxTokens: number } | null;
-}
+export type CanonicalRunControls =
+  | {
+      policyId: "run-controls";
+      policyVersion: "1";
+      evidence: "recorded";
+      turnTimeoutMs: number | null;
+      wholeRunTimeoutMs: number | null;
+      budget: { maxTurns: number; maxTokens: number } | null;
+    }
+  | {
+      policyId: "run-controls";
+      policyVersion: "1";
+      evidence: "unrecorded";
+    };
 
 export interface SanitizedFailure {
   code: string;
@@ -118,7 +126,8 @@ export function serializeCanonicalEvent(
 }
 
 export function parseCanonicalEvent(serialized: string): CanonicalEvent {
-  const value: unknown = JSON.parse(serialized);
+  const parsed: unknown = JSON.parse(serialized);
+  const value = migrateHistoricalEvent(parsed);
   assertCanonicalEvent(value);
   return value;
 }
@@ -148,6 +157,34 @@ export function sanitizeFailure(
     options.secrets ?? [],
   );
   return { code: redactSecrets(options.code, options.secrets ?? []), message };
+}
+
+function migrateHistoricalEvent(value: unknown): unknown {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return value;
+  const event = value as Record<string, unknown>;
+  if (event.schemaVersion !== 1) return value;
+  const migrated = structuredClone(event);
+  migrated.schemaVersion = CANONICAL_SCHEMA_VERSION;
+  if (migrated.type === "run.started"
+    && typeof migrated.data === "object"
+    && migrated.data !== null
+    && !Array.isArray(migrated.data)) {
+    const data = migrated.data as Record<string, unknown>;
+    if (!hasOwn(data, "controls")) {
+      data.controls = {
+        policyId: "run-controls",
+        policyVersion: "1",
+        evidence: "unrecorded",
+      } satisfies CanonicalRunControls;
+    } else if (typeof data.controls === "object"
+      && data.controls !== null
+      && !Array.isArray(data.controls)) {
+      const controls = data.controls as Record<string, unknown>;
+      if (!hasOwn(controls, "evidence")) controls.evidence = "recorded";
+      if (!hasOwn(controls, "wholeRunTimeoutMs")) controls.wholeRunTimeoutMs = null;
+    }
+  }
+  return migrated;
 }
 
 function redactFailureSecrets(event: CanonicalEvent, secrets: readonly string[]): void {
@@ -213,17 +250,32 @@ function validateRunStarted(value: unknown): void {
 
 function validateRunControls(value: unknown): asserts value is CanonicalRunControls {
   const controls = assertRecord(value, "run.started.data.controls");
-  assertExactFields(
-    controls,
-    ["policyId", "policyVersion", "turnTimeoutMs", "budget"],
-    [],
-    "run.started.data.controls",
-  );
   if (controls.policyId !== "run-controls" || controls.policyVersion !== "1") {
     throw new Error("canonical run controls must be run-controls@1");
   }
+  if (controls.evidence === "unrecorded") {
+    assertExactFields(
+      controls,
+      ["policyId", "policyVersion", "evidence"],
+      [],
+      "run.started.data.controls",
+    );
+    return;
+  }
+  if (controls.evidence !== "recorded") {
+    throw new Error("run control evidence must be recorded or unrecorded");
+  }
+  assertExactFields(
+    controls,
+    ["policyId", "policyVersion", "evidence", "turnTimeoutMs", "wholeRunTimeoutMs", "budget"],
+    [],
+    "run.started.data.controls",
+  );
   if (controls.turnTimeoutMs !== null) {
     assertPositiveNumber(controls.turnTimeoutMs, "run.started.data.controls.turnTimeoutMs");
+  }
+  if (controls.wholeRunTimeoutMs !== null) {
+    assertPositiveNumber(controls.wholeRunTimeoutMs, "run.started.data.controls.wholeRunTimeoutMs");
   }
   if (controls.budget !== null) {
     const budget = assertRecord(controls.budget, "run.started.data.controls.budget");

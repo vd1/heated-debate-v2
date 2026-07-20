@@ -1219,7 +1219,7 @@ tests, type checking, linting, domain/Pi boundary scan, commit whitespace valida
 are green. Style gates report no errors or warnings for both modified Markdown files.
 C-MARKDOWN passes and C-FAILURES is unblocked.
 
-### C-FAILURES (`31bcfee`) — changes requested
+### C-FAILURES (`31bcfee`, corrections `89f6a6b` through `b998a92`) — changes requested
 
 The implementation establishes the right basic boundaries. `AgentPort.reply` accepts a standard
 `AbortSignal`, `AgentFailure` carries a normalized partial attempt trace, and Pi maps terminal
@@ -1274,6 +1274,55 @@ cover the reproduced exact/cache token-budget defects, does not assert canonical
 the new controls, and exercises injected agent interruption rather than the harness's outer
 timeout. Keep C-FAILURES active and C-TOOL-POLICY blocked until all three findings are corrected
 and re-reviewed.
+
+Re-review of `89f6a6b` through `b998a92`: the three original findings are behaviorally closed.
+Token accounting now sums input, output, cache-read, and cache-write observations across attempts
+without adding reasoning subsets again; zero, exact-boundary, final-turn, cache, retry, and absent
+usage cases are covered. `run.started` now carries validated, versioned per-turn timeout and
+turn/token budget fields, including explicit absence, and replay and Markdown consume those
+fields. The harness drives its whole-debate test timeout through an abort signal, awaits
+`runDebate` settlement before closing the writer, and proves one clean terminal failure prefix
+with exactly-once agent disposal.
+
+Three canonical-contract corrections remain before C-TOOL-POLICY:
+
+1. The correction changes the meaning of canonical schema v1 in place. `run.started.data.controls`
+   is now required, but `CANONICAL_SCHEMA_VERSION` remains `1`. A serialized schema-v1
+   `run.started` event produced before C-FAILURES is consequently rejected with `missing field at
+   run.started.data: controls`. The nested `run-controls@1` identity does not version the changed
+   outer event shape. Introduce a new outer schema version and an explicit compatibility or
+   migration path for existing v1 artifacts; do not turn missing historical evidence into an
+   assertion that controls were absent. Add a regression using an actual pre-correction v1
+   fixture.
+2. There is no single authoritative run-control snapshot. `canonicalRunControls(input)` clones
+   the budget for `run.started`, but the loop continues to enforce `input.budget` and
+   `input.turnTimeoutMs` directly. A probe mutated `budget.maxTokens` from 100 to zero inside the
+   proposer call: the artifact retained 100 while the run failed for token exhaustion under
+   zero. The post-hoc `projectDebateEvents` path has the converse defect: `DebateResult` carries
+   no controls, so a run executed with `turnTimeoutMs: 321` and a non-null budget was projected
+   as explicit `null` for both. Validate and snapshot controls once before the start event, use
+   that immutable value for all enforcement, and carry or require the same value for every
+   canonical projection. Cover caller mutation and non-null post-hoc projection.
+3. The whole-debate timeout is still not represented honestly in the artifact it governs. The
+   live harness enforces `timeoutMs` outside `runDebate`; `run.started` records only the per-turn
+   timeout, and a whole-debate deadline produces canonical `cancelled` failures while the harness
+   reports `live debate timed out`. The record therefore cannot distinguish its 180-second smoke
+   deadline from user cancellation, even though that deadline determines the terminal outcome.
+   Represent the test-only whole-run bound distinctly from the per-turn bound in canonical
+   controls and terminal failure semantics, then assert both the configured threshold and
+   timeout scope in the offline harness regression.
+
+The correction history also does not follow the repository's strict TDD/green-commit rule:
+`89f6a6b` lands production schema and budget changes without tests, `647b9ca` repairs the affected
+consumers and fixtures, and `a6eb238` adds the focused regressions afterward. Keep the next
+correction cycle test-first and green at each commit.
+
+The corrected offline suite passes 103 tests with two intentional live skips. Type checking,
+linting, domain/Pi boundary scanning, commit whitespace validation, and the
+[correction GitHub Actions run](https://github.com/vd1/heated-debate-v2/actions/runs/29748581021)
+are green. Those checks do not exercise prior schema-v1 input, mutation after control recording,
+post-hoc projection of non-null controls, or canonical identification of a whole-debate
+deadline. C-FAILURES remains active and C-TOOL-POLICY remains blocked.
 
 ## Round 2 — 2026-07-18, first revision (all resolved)
 

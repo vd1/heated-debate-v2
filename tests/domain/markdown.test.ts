@@ -1,11 +1,14 @@
 import { describe, expect, test } from "bun:test";
 
-import type { CanonicalEvent } from "../../src/domain/events";
+import {
+  parseCanonicalEvent,
+  type CanonicalEvent,
+} from "../../src/domain/events";
 import { renderDebateMarkdown } from "../../src/domain/markdown";
 
 const EVENTS: CanonicalEvent[] = [
   {
-    schemaVersion: 1,
+    schemaVersion: 2,
     runId: "artifact-1",
     sequence: 0,
     type: "run.started",
@@ -16,13 +19,15 @@ const EVENTS: CanonicalEvent[] = [
       controls: {
         policyId: "run-controls",
         policyVersion: "1",
+        evidence: "recorded",
         turnTimeoutMs: 30_000,
+        wholeRunTimeoutMs: 120_000,
         budget: { maxTurns: 2, maxTokens: 10_000 },
       },
     },
   },
   {
-    schemaVersion: 1,
+    schemaVersion: 2,
     runId: "artifact-1",
     sequence: 1,
     type: "turn.requested",
@@ -52,7 +57,7 @@ const EVENTS: CanonicalEvent[] = [
     },
   },
   {
-    schemaVersion: 1,
+    schemaVersion: 2,
     runId: "artifact-1",
     sequence: 2,
     type: "adapter.attempt",
@@ -68,7 +73,7 @@ const EVENTS: CanonicalEvent[] = [
     },
   },
   {
-    schemaVersion: 1,
+    schemaVersion: 2,
     runId: "artifact-1",
     sequence: 3,
     type: "turn.completed",
@@ -93,7 +98,7 @@ const EVENTS: CanonicalEvent[] = [
     },
   },
   {
-    schemaVersion: 1,
+    schemaVersion: 2,
     runId: "artifact-1",
     sequence: 4,
     type: "run.completed",
@@ -110,7 +115,9 @@ describe("renderDebateMarkdown", () => {
 - Debate ID: \`debate-1\`
 - Planned rounds: 1
 - Run controls: \`run-controls@1\`
+- Run control evidence: recorded
 - Turn timeout: 30000 ms
+- Whole-run timeout: 120000 ms
 - Turn budget: 2
 - Token budget: 10000
 
@@ -224,6 +231,22 @@ Completed 1 turn.
     expect(markdown.lastIndexOf("## Run outcome")).toBeGreaterThan(responseEnd);
   });
 
+  test("renders migrated historical controls as unrecorded rather than absent", () => {
+    const historical = parseCanonicalEvent(JSON.stringify({
+      schemaVersion: 1,
+      runId: "historical",
+      sequence: 0,
+      type: "run.started",
+      data: { debateId: "debate-1", topic: "Historical", roundCount: 1 },
+    }));
+
+    const markdown = renderDebateMarkdown([historical]);
+
+    expect(markdown).toContain("Run control evidence: _unrecorded in historical schema v1_");
+    expect(markdown).toContain("Turn timeout: _not recorded_");
+    expect(markdown).not.toContain("Turn timeout: _not configured_");
+  });
+
   test("renders a sanitized failed turn without requiring a completion", () => {
     const start = EVENTS[0];
     const request = EVENTS[1];
@@ -232,7 +255,7 @@ Completed 1 turn.
       start,
       request,
       {
-        schemaVersion: 1,
+        schemaVersion: 2,
         runId: "artifact-1",
         sequence: 2,
         type: "turn.failed",
@@ -242,7 +265,7 @@ Completed 1 turn.
         },
       },
       {
-        schemaVersion: 1,
+        schemaVersion: 2,
         runId: "artifact-1",
         sequence: 3,
         type: "run.failed",

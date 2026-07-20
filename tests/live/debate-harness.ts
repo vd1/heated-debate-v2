@@ -51,6 +51,7 @@ export interface LiveDebateHarnessOptions {
 export async function runLiveDebateHarness(
   options: LiveDebateHarnessOptions = {},
 ): Promise<LiveDebateHarnessResult> {
+  const wholeRunTimeoutMs = options.timeoutMs ?? LIVE_DEBATE_TIMEOUT_MS;
   const controls: RequestedControls = {
     model: LIVE_MODEL,
     thinkingLevel: "high",
@@ -63,6 +64,7 @@ export async function runLiveDebateHarness(
     proposer: { role: PROPOSER_ROLE, controls },
     reviewer: { role: REVIEWER_ROLE, controls },
     turnTimeoutMs: LIVE_TURN_TIMEOUT_MS,
+    wholeRunTimeoutMs,
   };
   let proposer: LiveHarnessAgent | undefined;
   let reviewer: LiveHarnessAgent | undefined;
@@ -91,6 +93,7 @@ export async function runLiveDebateHarness(
         proposer: { ...configuration.proposer, agent: runProposer },
         reviewer: { ...configuration.reviewer, agent: runReviewer },
         signal,
+        signalFailureCode: "run_timeout",
         ...(artifactWriter === undefined || options.artifact === undefined
           ? {}
           : {
@@ -109,7 +112,7 @@ export async function runLiveDebateHarness(
               },
             }),
       }),
-      options.timeoutMs ?? LIVE_DEBATE_TIMEOUT_MS,
+      wholeRunTimeoutMs,
       "live debate",
     );
     if (options.artifact) {

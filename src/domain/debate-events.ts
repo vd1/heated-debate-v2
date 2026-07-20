@@ -18,7 +18,7 @@ export function projectDebateEvents(
   };
 
   append({
-    schemaVersion: 1,
+    schemaVersion: 2,
     runId: artifactRunId,
     sequence,
     type: "run.started",
@@ -26,19 +26,14 @@ export function projectDebateEvents(
       debateId: result.debateId,
       topic: result.topic,
       roundCount: result.rounds.length,
-      controls: {
-        policyId: "run-controls",
-        policyVersion: "1",
-        turnTimeoutMs: null,
-        budget: null,
-      },
+      controls: structuredClone(result.controls),
     },
   });
 
   for (const round of result.rounds) {
     for (const turn of [round.exchange.proposal, round.exchange.review]) {
       append({
-        schemaVersion: 1,
+        schemaVersion: 2,
         runId: artifactRunId,
         sequence,
         type: "turn.requested",
@@ -49,7 +44,7 @@ export function projectDebateEvents(
       });
       for (const attempt of turn.reply.trace.attempts) {
         append({
-          schemaVersion: 1,
+          schemaVersion: 2,
           runId: artifactRunId,
           sequence,
           type: "adapter.attempt",
@@ -66,7 +61,7 @@ export function projectDebateEvents(
         controls: structuredClone(turn.reply.controls),
       };
       append({
-        schemaVersion: 1,
+        schemaVersion: 2,
         runId: artifactRunId,
         sequence,
         type: "turn.completed",
@@ -76,7 +71,7 @@ export function projectDebateEvents(
   }
 
   append({
-    schemaVersion: 1,
+    schemaVersion: 2,
     runId: artifactRunId,
     sequence,
     type: "run.completed",
