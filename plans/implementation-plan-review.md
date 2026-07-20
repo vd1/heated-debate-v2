@@ -1043,7 +1043,7 @@ validation, and the
 [corrected GitHub Actions run](https://github.com/vd1/heated-debate-v2/actions/runs/29705631666)
 are green. C-REPLAY passes and C-LIVE-ARTIFACT is unblocked.
 
-### C-LIVE-ARTIFACT (`05af69c`) — changes requested
+### C-LIVE-ARTIFACT (`05af69c`, corrections `ea1763b` and `c308710`) — changes requested
 
 The implementation correctly extends the existing live-debate harness rather than creating a
 second provider path. It retains the explicit opt-in gate, default model, two rounds, high
@@ -1091,6 +1091,44 @@ are green. I also ran the opt-in four-turn smoke against the default model: writ
 secret scanning, and cleanup passed in 90.8 seconds, but that run exposed the ineffective output
 cap above. Keep C-LIVE-ARTIFACT active and C-MARKDOWN blocked until both findings are resolved
 and re-reviewed.
+
+Re-review of `ea1763b` and `c308710`: finding 1 is closed. `runDebate` now accepts a domain event
+sink and emits and flushes `run.started`, each request before dispatch, each attempt/completion
+batch, and the terminal completion at their actual execution boundaries. The live harness
+creates the writer before calling the runner and closes it alongside agent cleanup. The
+gated-reviewer regression observes a clean committed prefix through the second
+`turn.requested`, injects an interruption, and proves that the same prefix remains readable
+afterward.
+
+Finding 2 is only partially closed. The adapter now correctly reports the Codex provider token
+control as `unsupported`, and the payload regression proves that it does not claim to forward a
+field omitted by the pinned Codex route. The selected live request is 4,096, and the repeated
+default-model smoke completed with four reported output usages of 1,036, 1,230, 1,054, and 1,112
+tokens.
+
+However, the client mechanism reuses that token count as a 4,096-byte ceiling over observable
+text/thinking/tool-call deltas. Bytes and tokens are different units, and hidden reasoning—the
+same usage category recorded as part of total output tokens—is explicitly not observable to
+this limiter. The final `outputTokens <= 4_096` assertion detects an overage only after the
+provider has already generated and charged it; it does not enforce the chosen 4,096-token
+per-turn budget. The derived byte control is also represented only in an unsupported-reason
+string, rather than as a separately named and structured client control in the canonical run
+record.
+
+Retain the useful byte safety guard, but do not present it as the selected token cap. Establish a
+provider or client mechanism that actually bounds total output, including hidden reasoning, at
+4,096 tokens. If the default Codex subscription route cannot support that, explicitly revise the
+accepted live-bound contract instead of silently changing units. Any separate observable-byte
+limit must have its own name, unit, requested/applied status, and canonical representation.
+
+The corrected offline suite passes 82 tests with two intentional live skips; the 38 focused
+harness, adapter, debate, replay, and JSONL tests, type checking, linting, domain/Pi boundary
+scan, and commit whitespace validation are green. CI passes for both the
+[persistence correction](https://github.com/vd1/heated-debate-v2/actions/runs/29706707583) and
+[4,096 update](https://github.com/vd1/heated-debate-v2/actions/runs/29733118120). The opt-in
+four-turn smoke also passed write/read/replay, per-attempt equality, secret scanning, cleanup,
+and its post-run usage assertion in 92.9 seconds. Keep C-LIVE-ARTIFACT active and C-MARKDOWN
+blocked until the remaining token-bound mismatch is resolved and re-reviewed.
 
 ## Round 2 — 2026-07-18, first revision (all resolved)
 

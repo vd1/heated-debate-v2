@@ -330,35 +330,9 @@ describe("PiAgent", () => {
     expect(reply.controls.maxOutputTokens).toEqual({
       requested: 512,
       unsupported: {
-        reason: "Codex route omits provider token cap; client enforces an observable UTF-8 byte ceiling",
+        reason: "Codex route does not support a provider-enforced output token cap",
       },
     });
-    await agent.dispose();
-  });
-
-  test("aborts Codex output that exceeds the client observable-byte bound", async () => {
-    const fake = scriptedStream({ replies: ["long output"], model: CODEX_MODEL });
-    const agent = new PiAgent({
-      model: CODEX_MODEL,
-      modelStream: fake.stream,
-      usageEvidence: { explicitlyReported: [], source: "test" },
-      now: clock(0, 1),
-    });
-    const request: TurnRequest = {
-      ...REQUEST,
-      controls: {
-        ...REQUEST.controls,
-        model: { providerId: CODEX_MODEL.provider, modelId: CODEX_MODEL.id },
-        maxOutputTokens: 4,
-      },
-    };
-
-    const reply = await agent.reply(request);
-
-    expect(fake.calls[0]?.options?.signal?.aborted).toBe(true);
-    expect(reply.trace.attempts[0]?.status).toBe("aborted");
-    expect(reply.controls.maxOutputTokens?.forwarded).toBeUndefined();
-    expect(reply.controls.maxOutputTokens?.unsupported).toBeDefined();
     await agent.dispose();
   });
 

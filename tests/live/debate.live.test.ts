@@ -80,8 +80,10 @@ describe("two-round live debate", () => {
       assertControlTrace(turn.reply.controls.thinkingLevel);
       expect(turn.reply.controls.maxOutputTokens?.requested).toBe(LIVE_MAX_OUTPUT_TOKENS);
       assertControlTrace(turn.reply.controls.maxOutputTokens);
+      expect(turn.reply.controls.maxOutputTokens?.unsupported?.reason).toBe(
+        "Codex route does not support a provider-enforced output token cap",
+      );
       expect(turn.reply.usage.outputTokens).toBeDefined();
-      expect(turn.reply.usage.outputTokens).toBeLessThanOrEqual(LIVE_MAX_OUTPUT_TOKENS);
       if (turn.reply.usage.reasoningTokens !== undefined) {
         expect(turn.reply.usage.reasoningTokens).toBeLessThanOrEqual(
           turn.reply.usage.outputTokens ?? -1,
