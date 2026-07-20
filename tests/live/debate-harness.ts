@@ -16,6 +16,7 @@ import {
   LIVE_DEBATE_TIMEOUT_MS,
   LIVE_MAX_OUTPUT_TOKENS,
   LIVE_MODEL,
+  LIVE_TURN_TIMEOUT_MS,
   withTimeout,
 } from "./support";
 
@@ -84,11 +85,13 @@ export async function runLiveDebateHarness(
         ...configuration,
         proposer: { ...configuration.proposer, agent: proposer },
         reviewer: { ...configuration.reviewer, agent: reviewer },
+        turnTimeoutMs: LIVE_TURN_TIMEOUT_MS,
         ...(artifactWriter === undefined || options.artifact === undefined
           ? {}
           : {
               recording: {
                 runId: options.artifact.runId,
+                failureSecrets: options.artifact.secrets,
                 sink: {
                   append: async (event) => {
                     await artifactWriter?.append(event);

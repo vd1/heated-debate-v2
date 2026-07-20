@@ -90,8 +90,26 @@ export interface AgentReply {
   trace: AgentTrace;
 }
 
+export interface AgentReplyOptions {
+  signal?: AbortSignal;
+}
+
+export type AgentFailureCode = "cancelled" | "provider_failure";
+
+export class AgentFailure extends Error {
+  readonly name = "AgentFailure";
+  readonly code: AgentFailureCode;
+  readonly trace: AgentTrace;
+
+  constructor(input: { code: AgentFailureCode; message: string; trace: AgentTrace }) {
+    super(input.message);
+    this.code = input.code;
+    this.trace = structuredClone(input.trace);
+  }
+}
+
 export interface AgentPort {
-  reply(request: TurnRequest): Promise<AgentReply>;
+  reply(request: TurnRequest, options?: AgentReplyOptions): Promise<AgentReply>;
   dispose(): Promise<void>;
 }
 
@@ -142,8 +160,15 @@ export class ScriptedAgent implements AgentPort {
     return this.isDisposed;
   }
 
-  reply(request: TurnRequest): Promise<AgentReply> {
+  reply(request: TurnRequest, options: AgentReplyOptions = {}): Promise<AgentReply> {
     if (this.isDisposed) return Promise.reject(new Error("scripted agent is disposed"));
+    if (options.signal?.aborted) {
+      return Promise.reject(new AgentFailure({
+        code: "cancelled",
+        message: "scripted agent reply was cancelled",
+        trace: { attempts: [] },
+      }));
+    }
 
     const scripted = this.script[this.nextReplyIndex];
     if (!scripted) return Promise.reject(new Error("scripted agent has no reply remaining"));

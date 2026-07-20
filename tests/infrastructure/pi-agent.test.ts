@@ -12,6 +12,7 @@ import {
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 
 import {
+  AgentFailure,
   ScriptedAgent,
   type AgentReply,
   type ModelIdentity,
@@ -416,6 +417,44 @@ describe("PiAgent", () => {
     expect(agent.messageCount).toBe(0);
   });
 
+  test("normalizes provider errors with partial response attempts", async () => {
+    const stream: ModelStream = (_model, _context, options) => {
+      const events = createAssistantMessageEventStream();
+      const message = {
+        ...assistantMessage(""),
+        stopReason: "error" as const,
+        errorMessage: "provider failed",
+      };
+      queueMicrotask(() => {
+        void (async () => {
+          await options?.onResponse?.({ status: 503, headers: {} }, MODEL);
+          events.push({ type: "error", reason: "error", error: message });
+          events.end();
+        })();
+      });
+      return events;
+    };
+    const agent = new PiAgent({
+      model: MODEL,
+      modelStream: stream,
+      usageEvidence: { explicitlyReported: [], source: "test" },
+      now: clock(0, 1),
+    });
+
+    const error = await rejectionError(agent.reply(REQUEST));
+
+    expect(error).toBeInstanceOf(AgentFailure);
+    expect((error as AgentFailure).code).toBe("provider_failure");
+    expect((error as AgentFailure).trace.attempts).toEqual([{
+      attempt: 1,
+      status: "failed",
+      httpStatus: 503,
+      usage: { inputTokens: 20, cacheWriteTokens: 3 },
+      usageEvidence: { explicitlyReported: [], source: "test" },
+    }]);
+    await agent.dispose();
+  });
+
   test("disposal aborts an active low-level Agent turn", async () => {
     let markStarted: (() => void) | undefined;
     const started = new Promise<void>((resolve) => {
@@ -442,12 +481,49 @@ describe("PiAgent", () => {
     const pendingReply = agent.reply(REQUEST);
     await started;
     const pendingDisposal = agent.dispose();
-    const reply = await pendingReply;
+    const error = await rejectionError(pendingReply);
     await pendingDisposal;
 
-    expect(reply.trace.attempts[0]?.status).toBe("aborted");
+    expect(error).toBeInstanceOf(AgentFailure);
+    expect((error as AgentFailure).code).toBe("cancelled");
+    expect((error as AgentFailure).trace.attempts[0]?.status).toBe("aborted");
     expect(agent.disposed).toBe(true);
     expect(agent.messageCount).toBe(0);
+  });
+
+  test("AbortSignal cancels an active reply without serving as cleanup", async () => {
+    let markStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const stream: ModelStream = (_model, _context, options) => {
+      const events = createAssistantMessageEventStream();
+      const message = assistantMessage("");
+      markStarted?.();
+      options?.signal?.addEventListener("abort", () => {
+        const aborted = { ...message, stopReason: "aborted" as const, errorMessage: "aborted" };
+        events.push({ type: "error", reason: "aborted", error: aborted });
+        events.end();
+      }, { once: true });
+      return events;
+    };
+    const agent = new PiAgent({
+      model: MODEL,
+      modelStream: stream,
+      usageEvidence: { explicitlyReported: [], source: "test" },
+      now: clock(0, 1),
+    });
+    const controller = new AbortController();
+
+    const pending = agent.reply(REQUEST, { signal: controller.signal });
+    await started;
+    controller.abort();
+    const signalError = await rejectionError(pending);
+
+    expect(signalError).toBeInstanceOf(AgentFailure);
+    expect((signalError as AgentFailure).code).toBe("cancelled");
+    expect(agent.disposed).toBe(false);
+    await agent.dispose();
   });
 
   test("composes with offline ModelRuntime authentication", async () => {
@@ -460,3 +536,12 @@ describe("PiAgent", () => {
     expect(streamFromModelRuntime(runtime)).toBeFunction();
   });
 });
+
+async function rejectionError(promise: Promise<unknown>): Promise<Error> {
+  try {
+    await promise;
+  } catch (error) {
+    return error instanceof Error ? error : new Error(String(error));
+  }
+  throw new Error("expected promise to reject");
+}

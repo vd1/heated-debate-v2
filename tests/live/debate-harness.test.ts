@@ -170,7 +170,14 @@ test("live harness commits a readable prefix between turns and retains it on int
     expect(await rejectionMessage(running)).toBe("injected interruption");
 
     const afterInterruption = await readCanonicalJsonl(path);
-    expect(afterInterruption).toEqual(betweenTurns);
+    expect(afterInterruption.tail).toEqual({ status: "clean" });
+    expect(afterInterruption.events.slice(0, betweenTurns.events.length)).toEqual(
+      betweenTurns.events,
+    );
+    expect(afterInterruption.events.slice(betweenTurns.events.length).map((event) => event.type)).toEqual([
+      "turn.failed",
+      "run.failed",
+    ]);
     expect(proposer.disposed).toBe(true);
     expect(reviewer.disposed).toBe(true);
   } finally {

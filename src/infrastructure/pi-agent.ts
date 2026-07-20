@@ -16,9 +16,11 @@ import {
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 
 import {
+  AgentFailure,
   normalizeUsage,
   type AgentPort,
   type AgentReply,
+  type AgentReplyOptions,
   type AgentTrace,
   type ControlReport,
   type ControlTrace,
@@ -138,11 +140,18 @@ export class PiAgent implements AgentPort {
     return this.agent.state.messages.length;
   }
 
-  reply(request: TurnRequest): Promise<AgentReply> {
+  reply(request: TurnRequest, options: AgentReplyOptions = {}): Promise<AgentReply> {
     if (this.isDisposed) return Promise.reject(new Error("Pi agent is disposed"));
     if (this.activeReply) return Promise.reject(new Error("Pi agent is already processing a turn"));
+    if (options.signal?.aborted) {
+      return Promise.reject(new AgentFailure({
+        code: "cancelled",
+        message: "Pi agent reply was cancelled",
+        trace: { attempts: [] },
+      }));
+    }
 
-    const operation = this.runReply(request);
+    const operation = this.runReply(request, options);
     this.activeReply = operation;
     void operation.then(
       () => {
@@ -171,7 +180,7 @@ export class PiAgent implements AgentPort {
     this.isDisposed = true;
   }
 
-  private async runReply(request: TurnRequest): Promise<AgentReply> {
+  private async runReply(request: TurnRequest, options: AgentReplyOptions): Promise<AgentReply> {
     const controls = resolveControls(this.model, request.controls);
     const tools = request.capabilities.toolNames.map((name) => {
       const tool = this.toolsByName.get(name);
@@ -188,11 +197,26 @@ export class PiAgent implements AgentPort {
     this.activeResponses = [];
     const startedAt = this.now();
     this.agent.streamFn = this.wrapControls(this.baseStream, controls);
+    const onAbort = (): void => {
+      this.agent.abort();
+    };
+    options.signal?.addEventListener("abort", onAbort, { once: true });
     try {
       await this.agent.prompt(prompt);
     } catch (error) {
+      const responses = this.activeResponses;
       this.activeResponses = undefined;
-      throw error;
+      throw new AgentFailure({
+        code: options.signal?.aborted ? "cancelled" : "provider_failure",
+        message: toError(error).message,
+        trace: buildFailureTrace(
+          responses,
+          this.usageEvidence,
+          options.signal?.aborted ? "aborted" : "failed",
+        ),
+      });
+    } finally {
+      options.signal?.removeEventListener("abort", onAbort);
     }
     const durationMs = Math.max(0, this.now() - startedAt);
     const responses = this.activeResponses;
@@ -202,6 +226,14 @@ export class PiAgent implements AgentPort {
     if (!message) throw new Error("Pi Agent completed without an assistant message");
 
     const usage = normalizeUsage(toUsageObservation(message, this.usageEvidence));
+    const trace = buildTrace(responses, message, usage, this.usageEvidence);
+    if (message.stopReason === "error" || message.stopReason === "aborted") {
+      throw new AgentFailure({
+        code: message.stopReason === "aborted" ? "cancelled" : "provider_failure",
+        message: message.errorMessage ?? `provider stopped with ${message.stopReason}`,
+        trace,
+      });
+    }
     const model = responseModelIdentity(message);
     const report = withVerifiedModel(controls.report, providerVerifiedModelIdentity(message));
 
@@ -214,7 +246,7 @@ export class PiAgent implements AgentPort {
       model,
       controls: report,
       usage,
-      trace: buildTrace(responses, message, usage, this.usageEvidence),
+      trace,
     };
   }
 
@@ -351,6 +383,25 @@ function toUsageObservation(message: AssistantMessage, evidence: UsageEvidence):
   };
 }
 
+function buildFailureTrace(
+  responses: readonly ProviderResponse[],
+  evidence: UsageEvidence,
+  finalStatus: "failed" | "aborted",
+): AgentTrace {
+  const observations = responses.length > 0
+    ? responses.map((response) => ({ response, observed: true }))
+    : [{ response: { status: 0, headers: {} }, observed: false }];
+  return {
+    attempts: observations.map(({ response, observed }, index) => ({
+      attempt: index + 1,
+      status: index === observations.length - 1 ? finalStatus : "failed",
+      ...(observed ? { httpStatus: response.status } : {}),
+      usage: {},
+      usageEvidence: structuredClone(evidence),
+    })),
+  };
+}
+
 function buildTrace(
   responses: readonly ProviderResponse[],
   message: AssistantMessage,
@@ -425,6 +476,10 @@ function toAgentMessage(message: ModelInputMessage, model: Model<Api>): AgentMes
 
 function modelIdentity(model: Model<Api>): ModelIdentity {
   return { providerId: model.provider, modelId: model.id };
+}
+
+function toError(value: unknown): Error {
+  return value instanceof Error ? value : new Error(String(value));
 }
 
 function sameModel(left: ModelIdentity, right: ModelIdentity): boolean {
