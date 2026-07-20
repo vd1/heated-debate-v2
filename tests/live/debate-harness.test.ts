@@ -166,12 +166,12 @@ test("whole-debate timeout cancels and awaits the runner before closing resource
 
   try {
     const error = await rejectionMessage(runLiveDebateHarness({
-      timeoutMs: 5,
+      timeoutMs: 1_000,
       roundCount: 1,
       createAgent: (role) => Promise.resolve(role === "proposer" ? proposer : reviewer),
       artifact: { path, runId: "artifact-timeout", secrets: [] },
     }));
-    expect(error).toBe("live debate timed out after 5ms");
+    expect(error).toBe("live debate timed out after 1000ms");
 
     const persisted = await readCanonicalJsonl(path);
     expect(persisted.tail).toEqual({ status: "clean" });
