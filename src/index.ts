@@ -4,6 +4,7 @@ export * from "./domain/debate";
 export * from "./domain/debate-events";
 export * from "./domain/dial";
 export * from "./domain/events";
+export * from "./domain/markdown";
 export * from "./domain/exchange";
 export * from "./domain/replay";
 export * from "./domain/roles";
