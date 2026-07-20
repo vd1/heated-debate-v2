@@ -1219,6 +1219,62 @@ tests, type checking, linting, domain/Pi boundary scan, commit whitespace valida
 are green. Style gates report no errors or warnings for both modified Markdown files.
 C-MARKDOWN passes and C-FAILURES is unblocked.
 
+### C-FAILURES (`31bcfee`) — changes requested
+
+The implementation establishes the right basic boundaries. `AgentPort.reply` accepts a standard
+`AbortSignal`, `AgentFailure` carries a normalized partial attempt trace, and Pi maps terminal
+errors/aborts and exposed response hooks without inventing HTTP statuses or hidden retries.
+`runDebate` normalizes provider failure, cancellation, timeout, and whitespace-only output;
+emits attempts before turn/run failure; sanitizes configured secrets; emits one terminal event
+for the covered domain rows; and disposes both distinct agents after success or failure. The ADR
+honestly documents that provider/transport retries hidden before Pi's hooks cannot be counted or
+stopped individually.
+
+Three corrections are required before C-TOOL-POLICY:
+
+1. Token-budget accounting and the pre-dispatch boundary are incorrect. `addObservedUsage` keeps
+   only uncached input and output, and `observedTokenLowerBound` sums only those two fields. In
+   Pi's normalized usage, cache-read and cache-write counts are separate portions of input and
+   its total token count includes input, output, cache read, and cache write; only reasoning is
+   already a subset of output. The current test supplies 400 observed cache tokens across two
+   attempts but deliberately ignores them and happens to fail on 12 uncached tokens. A focused
+   probe with one input, one output, and 100 cache-read tokens completed against a ten-token
+   budget. The loop also checks token usage only after a reply. A second probe used exactly ten
+   observed tokens in the proposer turn: the reviewer was still dispatched and only then failed
+   over budget. Check token exhaustion before every dispatch,
+   count every observed non-overlapping token category exactly once, preserve absent categories,
+   and retain the post-attempt overage check. Add regressions for a zero budget, exact exhaustion
+   before a non-final turn, exact use on the final turn, cache usage, retries, and reasoning
+   subsets.
+2. The enforced timeout and turn/token budgets are absent from the canonical run record.
+   `run.started` still contains only debate ID, topic, and round count; no event records
+   `turnTimeoutMs`, `maxTurns`, or `maxTokens`. A persisted `turn_budget_exhausted`,
+   `token_budget_exhausted`, or timeout run therefore cannot show the requested threshold that
+   produced its outcome, and two runs with different enforcement policies are canonically
+   indistinguishable until they happen to diverge. Record these domain controls in a validated,
+   versioned canonical shape before dispatch, including explicit absence, without waiting for
+   D-CONFIG or adding its monetary scope. Update event validation, fixtures, Markdown audit
+   projection, and replay/config drift checks as appropriate.
+3. The live artifact harness's 180-second whole-debate timeout still uses a non-cancelling
+   `Promise.race`. When it wins, `runDebate` continues in the background while the harness closes
+   the JSONL writer and disposes the same agents. The runner can then attempt to append attempts
+   and terminal failures to a closed writer, defeating the new terminal-event and partial-run
+   closure guarantees. Drive the whole-debate deadline through the new `AbortSignal` contract,
+   await runner settlement before closing the writer, and keep the per-turn and whole-run test
+   bounds distinct. Add an offline mid-turn whole-debate-timeout regression proving a clean
+   readable artifact ending in exactly one `turn.failed` and one `run.failed`, followed by
+   writer closure and idempotent agent cleanup.
+
+The offline suite passes 97 tests with two intentional live skips; type checking, linting,
+domain/Pi boundary scanning, commit whitespace validation, and the
+[C-FAILURES GitHub Actions run](https://github.com/vd1/heated-debate-v2/actions/runs/29745706059)
+are green. Style gates report no errors for the modified Markdown, with 16 line-length warnings
+in ADR-0001, including the newly added retry-observability paragraph. The green suite does not
+cover the reproduced exact/cache token-budget defects, does not assert canonical persistence of
+the new controls, and exercises injected agent interruption rather than the harness's outer
+timeout. Keep C-FAILURES active and C-TOOL-POLICY blocked until all three findings are corrected
+and re-reviewed.
+
 ## Round 2 — 2026-07-18, first revision (all resolved)
 
 1. **No real engine executable** (Optuna bridge tested only against a fake) → F-ENGINE-CLI.
