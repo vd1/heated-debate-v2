@@ -347,6 +347,17 @@ describe("replayCanonicalRun", () => {
         configuration: { ...CONFIGURATION, roundCount: 2 },
         path: "roundCount",
       },
+      {
+        configuration: { ...CONFIGURATION, turnTimeoutMs: 1_000 },
+        path: "turnTimeoutMs",
+      },
+      {
+        configuration: {
+          ...CONFIGURATION,
+          budget: { maxTurns: 2, maxTokens: 100 },
+        },
+        path: "budget",
+      },
     ];
 
     for (const driftCase of cases) {

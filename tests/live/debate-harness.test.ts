@@ -3,9 +3,11 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import type {
-  AgentReply,
-  TurnRequest,
+import {
+  AgentFailure,
+  type AgentReply,
+  type AgentReplyOptions,
+  type TurnRequest,
 } from "../../src/domain/agent";
 import { readCanonicalJsonl } from "../../src/infrastructure/jsonl-events";
 import {
@@ -29,6 +31,7 @@ class LifecycleAgent implements LiveHarnessAgent {
 
 class SuccessfulLifecycleAgent implements LiveHarnessAgent {
   disposed = false;
+  disposeCalls = 0;
   readonly messageCount = 0;
 
   constructor(private readonly text: string) {}
@@ -66,6 +69,7 @@ class SuccessfulLifecycleAgent implements LiveHarnessAgent {
   }
 
   dispose(): Promise<void> {
+    this.disposeCalls += 1;
     this.disposed = true;
     return Promise.resolve();
   }
@@ -91,6 +95,20 @@ test("live harness disposes the proposer if reviewer acquisition fails", async (
   expect((error as Error).message).toBe("reviewer creation failed");
   expect(proposer.disposed).toBe(true);
 });
+
+class WholeTimeoutAgent extends SuccessfulLifecycleAgent {
+  override reply(_request: TurnRequest, options: AgentReplyOptions = {}): Promise<AgentReply> {
+    return new Promise((_resolve, reject) => {
+      options.signal?.addEventListener("abort", () => {
+        reject(new AgentFailure({
+          code: "cancelled",
+          message: "whole-run cancellation",
+          trace: { attempts: [] },
+        }));
+      }, { once: true });
+    });
+  }
+}
 
 class GatedReviewerAgent extends SuccessfulLifecycleAgent {
   readonly entered: Promise<void>;
@@ -135,6 +153,38 @@ test("live harness persists and closes a canonical artifact with offline agents"
     expect(persisted.events.at(-1)?.type).toBe("run.completed");
     expect(proposer.disposed).toBe(true);
     expect(reviewer.disposed).toBe(true);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("whole-debate timeout cancels and awaits the runner before closing resources", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "heated-debate-harness-timeout-"));
+  const path = join(directory, "run.jsonl");
+  const proposer = new WholeTimeoutAgent("unused");
+  const reviewer = new SuccessfulLifecycleAgent("unused");
+
+  try {
+    const error = await rejectionMessage(runLiveDebateHarness({
+      timeoutMs: 5,
+      roundCount: 1,
+      createAgent: (role) => Promise.resolve(role === "proposer" ? proposer : reviewer),
+      artifact: { path, runId: "artifact-timeout", secrets: [] },
+    }));
+    expect(error).toBe("live debate timed out after 5ms");
+
+    const persisted = await readCanonicalJsonl(path);
+    expect(persisted.tail).toEqual({ status: "clean" });
+    expect(persisted.events.map((event) => event.type)).toEqual([
+      "run.started",
+      "turn.requested",
+      "turn.failed",
+      "run.failed",
+    ]);
+    expect(proposer.disposeCalls).toBe(1);
+    expect(reviewer.disposeCalls).toBe(1);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(await readCanonicalJsonl(path)).toEqual(persisted);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

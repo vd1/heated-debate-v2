@@ -109,6 +109,10 @@ describe("renderDebateMarkdown", () => {
 - Artifact run: \`artifact-1\`
 - Debate ID: \`debate-1\`
 - Planned rounds: 1
+- Run controls: \`run-controls@1\`
+- Turn timeout: 30000 ms
+- Turn budget: 2
+- Token budget: 10000
 
 ## Topic
 

@@ -17,7 +17,7 @@ import {
   LIVE_MAX_OUTPUT_TOKENS,
   LIVE_MODEL,
   LIVE_TURN_TIMEOUT_MS,
-  withTimeout,
+  withCancellationTimeout,
 } from "./support";
 
 export interface LiveDebateHarnessResult {
@@ -62,6 +62,7 @@ export async function runLiveDebateHarness(
     roundCount: options.roundCount ?? 2,
     proposer: { role: PROPOSER_ROLE, controls },
     reviewer: { role: REVIEWER_ROLE, controls },
+    turnTimeoutMs: LIVE_TURN_TIMEOUT_MS,
   };
   let proposer: LiveHarnessAgent | undefined;
   let reviewer: LiveHarnessAgent | undefined;
@@ -69,6 +70,7 @@ export async function runLiveDebateHarness(
   let artifactResult: LiveDebateHarnessResult["artifact"];
   let artifactWriter: JsonlEventWriter | undefined;
   let artifactEventCount = 0;
+  let runnerOwnsAgents = false;
   let runError: unknown;
 
   try {
@@ -80,12 +82,15 @@ export async function runLiveDebateHarness(
         secrets: options.artifact.secrets,
       });
     }
-    result = await withTimeout(
-      runDebate({
+    const runProposer = proposer;
+    const runReviewer = reviewer;
+    runnerOwnsAgents = true;
+    result = await withCancellationTimeout(
+      (signal) => runDebate({
         ...configuration,
-        proposer: { ...configuration.proposer, agent: proposer },
-        reviewer: { ...configuration.reviewer, agent: reviewer },
-        turnTimeoutMs: LIVE_TURN_TIMEOUT_MS,
+        proposer: { ...configuration.proposer, agent: runProposer },
+        reviewer: { ...configuration.reviewer, agent: runReviewer },
+        signal,
         ...(artifactWriter === undefined || options.artifact === undefined
           ? {}
           : {
@@ -126,7 +131,7 @@ export async function runLiveDebateHarness(
       cleanupErrors.push(error);
     }
   }
-  for (const agent of [reviewer, proposer]) {
+  for (const agent of runnerOwnsAgents ? [] : [reviewer, proposer]) {
     if (!agent) continue;
     try {
       await agent.dispose();

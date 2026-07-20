@@ -12,6 +12,37 @@ export const LIVE_MODEL: ModelIdentity = Object.freeze({
   modelId: process.env.HEATED_DEBATE_MODEL ?? "gpt-5.6-sol",
 });
 
+export async function withCancellationTimeout<T>(
+  start: (signal: AbortSignal) => Promise<T>,
+  timeoutMs: number,
+  label: string,
+): Promise<T> {
+  const controller = new AbortController();
+  const timeoutError = new Error(`${label} timed out after ${String(timeoutMs)}ms`);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const operation = start(controller.signal);
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      reject(timeoutError);
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([operation, timeout]);
+  } catch (error) {
+    if (error !== timeoutError) throw error;
+    try {
+      await operation;
+    } catch {
+      // The timeout remains caller-visible after the cancelled runner settles.
+    }
+    throw timeoutError;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function withTimeout<T>(
   operation: Promise<T>,
   timeoutMs: number,
@@ -27,6 +58,6 @@ export async function withTimeout<T>(
   try {
     return await Promise.race([operation, timeout]);
   } finally {
-    if (timer) clearTimeout(timer);
+    clearTimeout(timer);
   }
 }

@@ -191,6 +191,110 @@ describe("runDebate failure semantics", () => {
     expect(sink.events.filter((event) => event.type === "turn.requested")).toHaveLength(1);
   });
 
+  test("records versioned timeout and budget controls with explicit absence", async () => {
+    const proposer = new ScenarioAgent(() => Promise.resolve(reply("Proposal")));
+    const reviewer = new ScenarioAgent(() => Promise.resolve(reply("Review")));
+    const sink = new MemorySink();
+
+    await runDebate(debateInput(proposer, reviewer, sink, {
+      turnTimeoutMs: 25,
+      budget: { maxTurns: 2, maxTokens: 100 },
+    }));
+
+    const started = sink.events[0];
+    if (started?.type !== "run.started") throw new Error("missing run start");
+    expect(started.data.controls).toEqual({
+      policyId: "run-controls",
+      policyVersion: "1",
+      turnTimeoutMs: 25,
+      budget: { maxTurns: 2, maxTokens: 100 },
+    });
+
+    const absentSink = new MemorySink();
+    await runDebate(debateInput(
+      new ScenarioAgent(() => Promise.resolve(reply("Proposal"))),
+      new ScenarioAgent(() => Promise.resolve(reply("Review"))),
+      absentSink,
+    ));
+    const absentStart = absentSink.events[0];
+    if (absentStart?.type !== "run.started") throw new Error("missing run start");
+    expect(absentStart.data.controls).toEqual({
+      policyId: "run-controls",
+      policyVersion: "1",
+      turnTimeoutMs: null,
+      budget: null,
+    });
+  });
+
+  test("zero token budget prevents the first dispatch", async () => {
+    const proposer = new ScenarioAgent(() => Promise.resolve(reply("unused")));
+    const reviewer = new ScenarioAgent(() => Promise.resolve(reply("unused")));
+    const sink = new MemorySink();
+
+    const error = await debateError(debateInput(proposer, reviewer, sink, {
+      budget: { maxTurns: 2, maxTokens: 0 },
+    }));
+
+    expect(error.code).toBe("token_budget_exhausted");
+    expect(proposer.calls).toBe(0);
+    expect(reviewer.calls).toBe(0);
+  });
+
+  test("exact token exhaustion prevents a non-final dispatch", async () => {
+    const exact = usageTrace({ inputTokens: 6, outputTokens: 4 });
+    const proposer = new ScenarioAgent(() => Promise.resolve(reply("Proposal", exact)));
+    const reviewer = new ScenarioAgent(() => Promise.resolve(reply("unused")));
+    const sink = new MemorySink();
+
+    const error = await debateError(debateInput(proposer, reviewer, sink, {
+      budget: { maxTurns: 2, maxTokens: 10 },
+    }));
+
+    expect(error.code).toBe("token_budget_exhausted");
+    expect(proposer.calls).toBe(1);
+    expect(reviewer.calls).toBe(0);
+  });
+
+  test("exact token use on the final turn completes", async () => {
+    const five = usageTrace({ inputTokens: 3, outputTokens: 2 });
+    const proposer = new ScenarioAgent(() => Promise.resolve(reply("Proposal", five)));
+    const reviewer = new ScenarioAgent(() => Promise.resolve(reply("Review", five)));
+    const sink = new MemorySink();
+
+    await runDebate(debateInput(proposer, reviewer, sink, {
+      budget: { maxTurns: 2, maxTokens: 10 },
+    }));
+
+    expect(proposer.calls).toBe(1);
+    expect(reviewer.calls).toBe(1);
+    expect(sink.events.at(-1)?.type).toBe("run.completed");
+  });
+
+  test("counts cache reads and writes toward token exhaustion", async () => {
+    const cached = usageTrace({
+      inputTokens: 1,
+      outputTokens: 1,
+      cacheReadTokens: 100,
+      cacheWriteTokens: 2,
+    });
+    const proposer = new ScenarioAgent(() => Promise.resolve(reply("Proposal", cached)));
+    const reviewer = new ScenarioAgent(() => Promise.resolve(reply("unused")));
+    const sink = new MemorySink();
+
+    const error = await debateError(debateInput(proposer, reviewer, sink, {
+      budget: { maxTurns: 2, maxTokens: 10 },
+    }));
+
+    expect(error.code).toBe("token_budget_exhausted");
+    expect(error.observedUsage).toEqual({
+      inputTokens: 1,
+      outputTokens: 1,
+      cacheReadTokens: 100,
+      cacheWriteTokens: 2,
+    });
+    expect(reviewer.calls).toBe(0);
+  });
+
   test("sums retry usage once, excludes reasoning subsets, and stops after observable overage", async () => {
     const trace: AgentTrace = {
       attempts: [
@@ -280,7 +384,7 @@ describe("runDebate failure semantics", () => {
     const sink = new MemorySink();
 
     await runDebate(debateInput(proposer, reviewer, sink, {
-      budget: { maxTurns: 2, maxTokens: 0 },
+      budget: { maxTurns: 2, maxTokens: 1 },
     }));
 
     const attempts = sink.events.filter((event) => event.type === "adapter.attempt");
@@ -288,6 +392,17 @@ describe("runDebate failure semantics", () => {
     expect(sink.events.at(-1)?.type).toBe("run.completed");
   });
 });
+
+function usageTrace(usage: AgentTrace["attempts"][number]["usage"]): AgentTrace {
+  return {
+    attempts: [{
+      attempt: 1,
+      status: "succeeded",
+      usage,
+      usageEvidence: { explicitlyReported: [], source: "test usage" },
+    }],
+  };
+}
 
 function waitForAbort(signal: AbortSignal | undefined): Promise<AgentReply> {
   return new Promise((_resolve, reject) => {
