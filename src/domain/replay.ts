@@ -3,6 +3,7 @@ import type {
   RequestedControls,
   TurnRequest,
 } from "./agent";
+import type { DebateBudget } from "./debate";
 import type { DeepReadonly } from "./exchange";
 import {
   validateCanonicalSequence,
@@ -23,6 +24,8 @@ export interface ReplayConfiguration {
   roundCount: number;
   proposer: ReplayParticipantConfiguration;
   reviewer: ReplayParticipantConfiguration;
+  turnTimeoutMs?: number;
+  budget?: DebateBudget;
 }
 
 export interface ReplayCanonicalRunInput {
@@ -70,10 +73,14 @@ function replayCanonicalRunSync(input: ReplayCanonicalRunInput): ReplayResult {
     debateId: trace.debateId,
     topic: trace.topic,
     roundCount: trace.roundCount,
+    turnTimeoutMs: trace.turnTimeoutMs,
+    budget: trace.budget,
   }, {
     debateId: configuration.debateId,
     topic: configuration.topic,
     roundCount: configuration.roundCount,
+    turnTimeoutMs: configuration.turnTimeoutMs ?? null,
+    budget: configuration.budget ?? null,
   });
 
   const scheduler = new DebateScheduler(configuration);
@@ -104,6 +111,8 @@ function readSuccessfulTrace(events: readonly CanonicalEvent[]): {
   debateId: string;
   topic: string;
   roundCount: number;
+  turnTimeoutMs: number | null;
+  budget: { maxTurns: number; maxTokens: number } | null;
   turns: RecordedTurn[];
 } {
   const first = events[0];
@@ -174,6 +183,8 @@ function readSuccessfulTrace(events: readonly CanonicalEvent[]): {
     debateId: first.data.debateId,
     topic: first.data.topic,
     roundCount: first.data.roundCount,
+    turnTimeoutMs: first.data.controls.turnTimeoutMs,
+    budget: structuredClone(first.data.controls.budget),
     turns,
   };
 }

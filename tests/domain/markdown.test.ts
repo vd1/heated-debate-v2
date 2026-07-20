@@ -9,7 +9,17 @@ const EVENTS: CanonicalEvent[] = [
     runId: "artifact-1",
     sequence: 0,
     type: "run.started",
-    data: { debateId: "debate-1", topic: "Choose `A` or B.", roundCount: 1 },
+    data: {
+      debateId: "debate-1",
+      topic: "Choose `A` or B.",
+      roundCount: 1,
+      controls: {
+        policyId: "run-controls",
+        policyVersion: "1",
+        turnTimeoutMs: 30_000,
+        budget: { maxTurns: 2, maxTokens: 10_000 },
+      },
+    },
   },
   {
     schemaVersion: 1,

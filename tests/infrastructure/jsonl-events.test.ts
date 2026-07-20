@@ -29,7 +29,17 @@ function runEvents(): CanonicalEvent[] {
       runId: "run-1",
       sequence: 0,
       type: "run.started",
-      data: { debateId: "run-1", topic: "Test JSONL", roundCount: 1 },
+      data: {
+        debateId: "run-1",
+        topic: "Test JSONL",
+        roundCount: 1,
+        controls: {
+          policyId: "run-controls",
+          policyVersion: "1",
+          turnTimeoutMs: null,
+          budget: null,
+        },
+      },
     },
     {
       schemaVersion: 1,

@@ -229,11 +229,16 @@ describe("runDebate failure semantics", () => {
     const sink = new MemorySink();
 
     const error = await debateError(debateInput(proposer, reviewer, sink, {
-      budget: { maxTurns: 2, maxTokens: 10 },
+      budget: { maxTurns: 2, maxTokens: 411 },
     }));
 
     expect(error.code).toBe("token_budget_exhausted");
-    expect(error.observedUsage).toEqual({ inputTokens: 7, outputTokens: 5 });
+    expect(error.observedUsage).toEqual({
+      inputTokens: 7,
+      outputTokens: 5,
+      cacheReadTokens: 200,
+      cacheWriteTokens: 200,
+    });
     expect(reviewer.calls).toBe(0);
     expect(sink.events.filter((event) => event.type === "adapter.attempt")).toHaveLength(2);
     expect(sink.events.at(-1)?.type).toBe("run.failed");
