@@ -1154,7 +1154,7 @@ two-round smoke against `openai-codex/gpt-5.6-sol` at high thinking: all four tu
 write/read/replay, per-attempt equality, secret scanning, and disposal passed. C-LIVE-ARTIFACT
 passes and C-MARKDOWN is unblocked.
 
-### C-MARKDOWN (`490d0a8`) — changes requested
+### C-MARKDOWN (`490d0a8`, correction `3862fb1`) — pass
 
 The implementation is a pure domain projection over canonical events: it validates each event
 and the run ID/sequence before rendering, deterministically groups turns, includes exact system
@@ -1193,6 +1193,31 @@ are green. The README style gate reports no errors and three line-length warning
 modified status line. These checks do not exercise the unsafe-reply case, the omitted canonical
 control/usage evidence, or the incomplete-prefix branch. Keep C-MARKDOWN active and C-FAILURES
 blocked until all three findings are corrected and re-reviewed.
+
+Re-review of `3862fb1`: all three findings are closed. Model replies, turn/run failure messages,
+control reasons, prompts, topics, and exact model inputs now use dynamically sized literal
+fences; free-form role headings are flattened and escaped, and inline identifiers cannot inject
+new lines. The adversarial regression places a forged heading and a four-backtick run in a
+reply, locks the five-backtick containing fence, and proves the real run-outcome section remains
+outside it.
+
+Each completed turn now renders the canonical observed control report for model, thinking,
+temperature, and max-output-token controls when present. Requested, forwarded, adjusted,
+unsupported, and provider-verified states remain distinct, absent states are explicitly
+unrecorded, and adjustment/unsupported reasons are structurally contained. Attempt summaries
+include every normalized usage category, distinguish absent values, preserve explicitly
+reported categories and evidence source, and escape table delimiters. No value is promoted to a
+stronger evidence status.
+
+The new incomplete-prefix regression projects a valid `run.started` plus `turn.requested`
+prefix, shows that the turn has no recorded outcome, and states that the run has no terminal
+event. Markdown remains a one-way projection: replay and evaluation have no Markdown read path.
+
+The corrected suite passes 86 tests with two intentional live skips; the five focused Markdown
+tests, type checking, linting, domain/Pi boundary scan, commit whitespace validation, and the
+[corrected C-MARKDOWN GitHub Actions run](https://github.com/vd1/heated-debate-v2/actions/runs/29741761912)
+are green. Style gates report no errors or warnings for both modified Markdown files.
+C-MARKDOWN passes and C-FAILURES is unblocked.
 
 ## Round 2 — 2026-07-18, first revision (all resolved)
 
