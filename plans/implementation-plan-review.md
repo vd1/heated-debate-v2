@@ -1043,7 +1043,7 @@ validation, and the
 [corrected GitHub Actions run](https://github.com/vd1/heated-debate-v2/actions/runs/29705631666)
 are green. C-REPLAY passes and C-LIVE-ARTIFACT is unblocked.
 
-### C-LIVE-ARTIFACT (`05af69c`, corrections `ea1763b` and `c308710`) — changes requested
+### C-LIVE-ARTIFACT (`05af69c`, corrections `ea1763b`, `c308710`, and `1b6cc55`) — pass
 
 The implementation correctly extends the existing live-debate harness rather than creating a
 second provider path. It retains the explicit opt-in gate, default model, two rounds, high
@@ -1129,6 +1129,30 @@ scan, and commit whitespace validation are green. CI passes for both the
 four-turn smoke also passed write/read/replay, per-attempt equality, secret scanning, cleanup,
 and its post-run usage assertion in 92.9 seconds. Keep C-LIVE-ARTIFACT active and C-MARKDOWN
 blocked until the remaining token-bound mismatch is resolved and re-reviewed.
+
+Final re-review of `1b6cc55`: the revised honest contract closes the remaining finding. The
+observable-byte limiter and the post-generation token-overage assertion are gone. On the
+required Codex route, `maxOutputTokens: 4_096` is retained as an auditable request and reported
+only as unsupported; its trace contains no forwarded, adjusted, or provider-verified cap. The
+adapter does not pass `maxTokens` to the stream on this route, and reported output/reasoning
+usage remains observation rather than evidence of enforcement. ADR-0001 records both the live
+provider probes and the requirement to use a different provider route for a true total-output
+token limit that includes hidden reasoning.
+
+The C-LIVE-ARTIFACT smoke is bounded by its two-round protocol and configurable 180-second
+whole-debate test timeout, not by truncating an agent response. The separate 60-second timeout
+applies only to the one-turn provider-connectivity smoke. Neither timeout establishes the
+eventual production debate budget; cancellation and run-budget semantics remain assigned to
+C-FAILURES and later configuration work.
+
+The final offline suite passes 81 tests with two intentional live skips; type checking, linting,
+commit whitespace validation, and the
+[final GitHub Actions run](https://github.com/vd1/heated-debate-v2/actions/runs/29736852756)
+are green for the exact reviewed commit. I independently repeated the opt-in persisted
+two-round smoke against `openai-codex/gpt-5.6-sol` at high thinking: all four turns completed in
+103.3 seconds, the canonical control traces matched the revised contract, and artifact
+write/read/replay, per-attempt equality, secret scanning, and disposal passed. C-LIVE-ARTIFACT
+passes and C-MARKDOWN is unblocked.
 
 ## Round 2 — 2026-07-18, first revision (all resolved)
 
