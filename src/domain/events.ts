@@ -18,6 +18,13 @@ import type { RoleDefinition } from "./roles";
 
 export const CANONICAL_SCHEMA_VERSION = 1 as const;
 
+export interface CanonicalRunControls {
+  policyId: "run-controls";
+  policyVersion: "1";
+  turnTimeoutMs: number | null;
+  budget: { maxTurns: number; maxTokens: number } | null;
+}
+
 export interface SanitizedFailure {
   code: string;
   message: string;
@@ -37,7 +44,12 @@ interface EventEnvelope {
 export type CanonicalEvent =
   | (EventEnvelope & {
       type: "run.started";
-      data: { debateId: string; topic: string; roundCount: number };
+      data: {
+        debateId: string;
+        topic: string;
+        roundCount: number;
+        controls: CanonicalRunControls;
+      };
     })
   | (EventEnvelope & {
       type: "turn.requested";
@@ -192,10 +204,38 @@ export function assertCanonicalEvent(value: unknown): asserts value is Canonical
 
 function validateRunStarted(value: unknown): void {
   const data = assertRecord(value, "run.started.data");
-  assertExactFields(data, ["debateId", "topic", "roundCount"], [], "run.started.data");
+  assertExactFields(data, ["debateId", "topic", "roundCount", "controls"], [], "run.started.data");
   assertNonEmptyString(data.debateId, "run.started.data.debateId");
   assertString(data.topic, "run.started.data.topic");
   assertPositiveInteger(data.roundCount, "run.started.data.roundCount");
+  validateRunControls(data.controls);
+}
+
+function validateRunControls(value: unknown): asserts value is CanonicalRunControls {
+  const controls = assertRecord(value, "run.started.data.controls");
+  assertExactFields(
+    controls,
+    ["policyId", "policyVersion", "turnTimeoutMs", "budget"],
+    [],
+    "run.started.data.controls",
+  );
+  if (controls.policyId !== "run-controls" || controls.policyVersion !== "1") {
+    throw new Error("canonical run controls must be run-controls@1");
+  }
+  if (controls.turnTimeoutMs !== null) {
+    assertPositiveNumber(controls.turnTimeoutMs, "run.started.data.controls.turnTimeoutMs");
+  }
+  if (controls.budget !== null) {
+    const budget = assertRecord(controls.budget, "run.started.data.controls.budget");
+    assertExactFields(
+      budget,
+      ["maxTurns", "maxTokens"],
+      [],
+      "run.started.data.controls.budget",
+    );
+    assertNonNegativeInteger(budget.maxTurns, "run.started.data.controls.budget.maxTurns");
+    assertNonNegativeNumber(budget.maxTokens, "run.started.data.controls.budget.maxTokens");
+  }
 }
 
 function validateTurnRequested(value: unknown): void {
@@ -505,6 +545,12 @@ function assertNonEmptyString(value: unknown, path: string): asserts value is st
 function assertNonNegativeNumber(value: unknown, path: string): asserts value is number {
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
     throw new Error(`${path} must be a finite non-negative number`);
+  }
+}
+
+function assertPositiveNumber(value: unknown, path: string): asserts value is number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    throw new Error(`${path} must be a finite positive number`);
   }
 }
 

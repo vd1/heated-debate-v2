@@ -8,6 +8,7 @@ import {
 import {
   sanitizeFailure,
   type CanonicalEvent,
+  type CanonicalRunControls,
   type CanonicalTurnReply,
 } from "./events";
 import type { ExchangeParticipant, ExchangeResult } from "./exchange";
@@ -43,20 +44,25 @@ export type DebateFailureCode =
   | "turn_budget_exhausted"
   | "token_budget_exhausted";
 
+type BudgetObservedUsage = Pick<
+  NormalizedUsage,
+  "inputTokens" | "outputTokens" | "cacheReadTokens" | "cacheWriteTokens"
+>;
+
 export class DebateRunFailure extends Error {
   readonly name = "DebateRunFailure";
   readonly code: DebateFailureCode;
   readonly turnId: string | undefined;
   readonly trace: AgentTrace;
   /** Observed lower-bound usage; unavailable kinds remain absent. */
-  readonly observedUsage: Pick<NormalizedUsage, "inputTokens" | "outputTokens">;
+  readonly observedUsage: BudgetObservedUsage;
 
   constructor(input: {
     code: DebateFailureCode;
     message: string;
     turnId?: string;
     trace?: AgentTrace;
-    observedUsage?: Pick<NormalizedUsage, "inputTokens" | "outputTokens">;
+    observedUsage?: BudgetObservedUsage;
   }) {
     super(input.message);
     this.code = input.code;
@@ -103,7 +109,7 @@ export async function runDebate(input: RunDebateInput): Promise<DebateResult> {
   let sequence = 0;
   let terminalEmitted = false;
   let dispatchedTurns = 0;
-  const observedUsage: Pick<NormalizedUsage, "inputTokens" | "outputTokens"> = {};
+  const observedUsage: BudgetObservedUsage = {};
 
   const emit = async (event: CanonicalEvent, flush: boolean): Promise<void> => {
     if (!input.recording) return;
@@ -168,6 +174,7 @@ export async function runDebate(input: RunDebateInput): Promise<DebateResult> {
           debateId: input.debateId,
           topic: input.topic,
           roundCount: input.roundCount,
+          controls: canonicalRunControls(input),
         },
       }, true);
     }
@@ -177,6 +184,13 @@ export async function runDebate(input: RunDebateInput): Promise<DebateResult> {
         await endWithFailure(new DebateRunFailure({
           code: "cancelled",
           message: "debate was cancelled",
+          observedUsage,
+        }));
+      }
+      if (input.budget && observedTokenLowerBound(observedUsage) >= input.budget.maxTokens) {
+        await endWithFailure(new DebateRunFailure({
+          code: "token_budget_exhausted",
+          message: `token budget exhausted before dispatch ${String(dispatchedTurns + 1)}`,
           observedUsage,
         }));
       }
@@ -382,7 +396,7 @@ function dispatchInterruption(
 function normalizeDispatchFailure(
   error: unknown,
   turnId: string,
-  observedUsage: Pick<NormalizedUsage, "inputTokens" | "outputTokens">,
+  observedUsage: BudgetObservedUsage,
 ): DebateRunFailure {
   if (error instanceof DispatchInterruption) {
     return new DebateRunFailure({
@@ -411,7 +425,7 @@ function normalizeDispatchFailure(
 }
 
 function addObservedUsage(
-  total: Pick<NormalizedUsage, "inputTokens" | "outputTokens">,
+  total: BudgetObservedUsage,
   usage: NormalizedUsage,
 ): void {
   if (usage.inputTokens !== undefined) {
@@ -420,12 +434,28 @@ function addObservedUsage(
   if (usage.outputTokens !== undefined) {
     total.outputTokens = (total.outputTokens ?? 0) + usage.outputTokens;
   }
+  if (usage.cacheReadTokens !== undefined) {
+    total.cacheReadTokens = (total.cacheReadTokens ?? 0) + usage.cacheReadTokens;
+  }
+  if (usage.cacheWriteTokens !== undefined) {
+    total.cacheWriteTokens = (total.cacheWriteTokens ?? 0) + usage.cacheWriteTokens;
+  }
 }
 
-function observedTokenLowerBound(
-  usage: Pick<NormalizedUsage, "inputTokens" | "outputTokens">,
-): number {
-  return (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0);
+function observedTokenLowerBound(usage: BudgetObservedUsage): number {
+  return (usage.inputTokens ?? 0)
+    + (usage.outputTokens ?? 0)
+    + (usage.cacheReadTokens ?? 0)
+    + (usage.cacheWriteTokens ?? 0);
+}
+
+function canonicalRunControls(input: RunDebateInput): CanonicalRunControls {
+  return {
+    policyId: "run-controls",
+    policyVersion: "1",
+    turnTimeoutMs: input.turnTimeoutMs ?? null,
+    budget: input.budget === undefined ? null : structuredClone(input.budget),
+  };
 }
 
 function validateLimits(input: RunDebateInput): void {

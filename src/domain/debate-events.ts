@@ -26,6 +26,12 @@ export function projectDebateEvents(
       debateId: result.debateId,
       topic: result.topic,
       roundCount: result.rounds.length,
+      controls: {
+        policyId: "run-controls",
+        policyVersion: "1",
+        turnTimeoutMs: null,
+        budget: null,
+      },
     },
   });
 
