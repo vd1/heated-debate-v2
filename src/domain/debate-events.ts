@@ -55,6 +55,18 @@ export function projectDebateEvents(
           },
         });
       }
+      for (const record of turn.reply.toolCalls) {
+        append({
+          schemaVersion: CANONICAL_SCHEMA_VERSION,
+          runId: artifactRunId,
+          sequence,
+          type: "turn.tool_call",
+          data: {
+            turnId: turn.request.turnId,
+            record: structuredClone(record),
+          },
+        });
+      }
       const reply: CanonicalTurnReply = {
         text: turn.reply.text,
         durationMs: turn.reply.durationMs,

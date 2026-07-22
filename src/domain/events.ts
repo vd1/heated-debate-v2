@@ -15,12 +15,13 @@ import type {
 import type { ContextDecision } from "./context";
 import type { CreativitySelection } from "./dial";
 import type { RoleDefinition } from "./roles";
+import type { ToolCallRecord } from "./tool-loop";
 import {
   assertToolCapabilityPolicy,
   type UnrecordedToolCapabilityPolicy,
 } from "./tool-policy";
 
-export const CANONICAL_SCHEMA_VERSION = 3 as const;
+export const CANONICAL_SCHEMA_VERSION = 4 as const;
 
 export type CanonicalRunControls =
   | {
@@ -72,6 +73,10 @@ export type CanonicalEvent =
       data: { turnId: string; attempt: AttemptTrace };
     })
   | (EventEnvelope & {
+      type: "turn.tool_call";
+      data: { turnId: string; record: ToolCallRecord };
+    })
+  | (EventEnvelope & {
       type: "turn.completed";
       data: { turnId: string; reply: CanonicalTurnReply };
     })
@@ -92,6 +97,7 @@ const EVENT_TYPES = new Set<CanonicalEvent["type"]>([
   "run.started",
   "turn.requested",
   "adapter.attempt",
+  "turn.tool_call",
   "turn.completed",
   "turn.failed",
   "run.completed",
@@ -166,9 +172,12 @@ export function sanitizeFailure(
 function migrateHistoricalEvent(value: unknown): unknown {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return value;
   const event = value as Record<string, unknown>;
-  if (event.schemaVersion !== 1 && event.schemaVersion !== 2) return value;
+  if (event.schemaVersion !== 1 && event.schemaVersion !== 2 && event.schemaVersion !== 3) {
+    return value;
+  }
   const migrated = structuredClone(event);
   migrated.schemaVersion = CANONICAL_SCHEMA_VERSION;
+  if (event.schemaVersion === 3) return migrated;
   if (migrated.type === "run.started"
     && typeof migrated.data === "object"
     && migrated.data !== null
@@ -252,6 +261,9 @@ export function assertCanonicalEvent(value: unknown): asserts value is Canonical
     case "adapter.attempt":
       validateAdapterAttempt(event.data);
       break;
+    case "turn.tool_call":
+      validateTurnToolCall(event.data);
+      break;
     case "turn.completed":
       validateTurnCompleted(event.data);
       break;
@@ -330,6 +342,108 @@ function validateAdapterAttempt(value: unknown): void {
   assertExactFields(data, ["turnId", "attempt"], [], "adapter.attempt.data");
   assertNonEmptyString(data.turnId, "adapter.attempt.data.turnId");
   validateAttempt(data.attempt);
+}
+
+const TOOL_DENIAL_REASONS = new Set([
+  "tool_not_allowed",
+  "schema_version_not_allowed",
+  "aggregate_call_limit_exhausted",
+  "tool_call_limit_exhausted",
+]);
+
+function validateTurnToolCall(value: unknown): void {
+  const data = assertRecord(value, "turn.tool_call.data");
+  assertExactFields(data, ["turnId", "record"], [], "turn.tool_call.data");
+  assertNonEmptyString(data.turnId, "turn.tool_call.data.turnId");
+  validateToolCallRecord(data.record);
+}
+
+export function validateToolCallRecord(value: unknown): asserts value is ToolCallRecord {
+  const record = assertRecord(value, "record");
+  assertExactFields(
+    record,
+    ["callId", "ordinal", "toolId", "schemaVersion", "arguments", "disposition", "outcome", "durationMs"],
+    [],
+    "record",
+  );
+  assertNonEmptyString(record.callId, "record.callId");
+  assertPositiveInteger(record.ordinal, "record.ordinal");
+  assertNonEmptyString(record.toolId, "record.toolId");
+  assertNonEmptyString(record.schemaVersion, "record.schemaVersion");
+  assertJsonValue(record.arguments, "record.arguments");
+  assertNonNegativeNumber(record.durationMs, "record.durationMs");
+
+  const disposition = assertRecord(record.disposition, "record.disposition");
+  if (disposition.status === "accepted") {
+    assertExactFields(disposition, ["status"], [], "record.disposition");
+    if (record.outcome === null) {
+      throw new Error("accepted tool call must record an outcome");
+    }
+    validateToolCallOutcome(record.outcome);
+    return;
+  }
+  if (disposition.status !== "denied") {
+    throw new Error("record.disposition.status must be accepted or denied");
+  }
+  assertExactFields(disposition, ["status", "reason"], [], "record.disposition");
+  if (typeof disposition.reason !== "string" || !TOOL_DENIAL_REASONS.has(disposition.reason)) {
+    throw new Error("record.disposition.reason is invalid");
+  }
+  if (record.outcome !== null) {
+    throw new Error("denied tool call cannot record an outcome");
+  }
+}
+
+function validateToolCallOutcome(value: unknown): void {
+  const outcome = assertRecord(value, "record.outcome");
+  if (outcome.status === "succeeded") {
+    assertExactFields(
+      outcome,
+      ["status", "output", "outputBytes", "truncation"],
+      [],
+      "record.outcome",
+    );
+    assertString(outcome.output, "record.outcome.output");
+    assertNonNegativeInteger(outcome.outputBytes, "record.outcome.outputBytes");
+    if (outcome.truncation === null) return;
+    const truncation = assertRecord(outcome.truncation, "record.outcome.truncation");
+    assertExactFields(truncation, ["originalBytes", "retainedBytes"], [], "record.outcome.truncation");
+    assertNonNegativeInteger(truncation.originalBytes, "record.outcome.truncation.originalBytes");
+    assertNonNegativeInteger(truncation.retainedBytes, "record.outcome.truncation.retainedBytes");
+    if (truncation.retainedBytes >= truncation.originalBytes) {
+      throw new Error("truncation must retain fewer bytes than the original");
+    }
+    if (outcome.outputBytes !== truncation.retainedBytes) {
+      throw new Error("truncated output bytes must equal retained bytes");
+    }
+    return;
+  }
+  if (outcome.status !== "failed") {
+    throw new Error("record.outcome.status must be succeeded or failed");
+  }
+  assertExactFields(outcome, ["status", "error"], [], "record.outcome");
+  validateFailure(outcome.error, "record.outcome.error");
+}
+
+function assertJsonValue(value: unknown, path: string): void {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new Error(`${path} must be a JSON value`);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) assertJsonValue(item, path);
+    return;
+  }
+  if (typeof value === "object") {
+    const prototype: unknown = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) {
+      throw new Error(`${path} must be a JSON value`);
+    }
+    for (const item of Object.values(value)) assertJsonValue(item, path);
+    return;
+  }
+  throw new Error(`${path} must be a JSON value`);
 }
 
 function validateTurnCompleted(value: unknown): void {

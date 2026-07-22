@@ -16,6 +16,7 @@ class FixedAgent implements AgentPort {
   constructor(
     private readonly text: string,
     private readonly attempts: AgentReply["trace"]["attempts"],
+    private readonly toolCalls: AgentReply["toolCalls"] = [],
   ) {}
 
   reply(request: TurnRequest): Promise<AgentReply> {
@@ -33,6 +34,7 @@ class FixedAgent implements AgentPort {
       },
       usage: { inputTokens: 10, outputTokens: 4 },
       trace: { attempts: structuredClone(this.attempts) },
+      toolCalls: structuredClone(this.toolCalls),
     });
   }
 
@@ -118,5 +120,70 @@ describe("projectDebateEvents", () => {
       },
     });
     expect(replay.requests).toEqual(requests.map((event) => event.data.request));
+  });
+
+  test("projects tool call records between attempts and completion for their turn", async () => {
+    const proposerToolCalls: AgentReply["toolCalls"] = [
+      {
+        callId: "debate-1:round-1:proposer:call-1",
+        ordinal: 1,
+        toolId: "web-search",
+        schemaVersion: "1",
+        arguments: { query: "queues" },
+        disposition: { status: "accepted" },
+        outcome: {
+          status: "succeeded",
+          output: "results",
+          outputBytes: 7,
+          truncation: null,
+        },
+        durationMs: 25,
+      },
+      {
+        callId: "debate-1:round-1:proposer:call-2",
+        ordinal: 2,
+        toolId: "filesystem",
+        schemaVersion: "1",
+        arguments: { path: "/tmp" },
+        disposition: { status: "denied", reason: "tool_not_allowed" },
+        outcome: null,
+        durationMs: 0,
+      },
+    ];
+    const result = await runDebate({
+      debateId: "debate-1",
+      topic: "Project tool calls.",
+      roundCount: 1,
+      proposer: {
+        agent: new FixedAgent("Proposal", [{ ...SUCCEEDED_ATTEMPT, attempt: 1 }], proposerToolCalls),
+        role: PROPOSER_ROLE,
+        controls: CONTROLS,
+      },
+      reviewer: {
+        agent: new FixedAgent("Review", [{ ...SUCCEEDED_ATTEMPT, attempt: 1 }]),
+        role: REVIEWER_ROLE,
+        controls: CONTROLS,
+      },
+    });
+
+    const events = projectDebateEvents(result, "artifact-run-10");
+
+    expect(events.map((event) => event.type)).toEqual([
+      "run.started",
+      "turn.requested",
+      "adapter.attempt",
+      "turn.tool_call",
+      "turn.tool_call",
+      "turn.completed",
+      "turn.requested",
+      "adapter.attempt",
+      "turn.completed",
+      "run.completed",
+    ]);
+    const toolCallEvents = events.filter((event) => event.type === "turn.tool_call");
+    expect(toolCallEvents.map((event) => event.data.record)).toEqual([...proposerToolCalls]);
+    expect(toolCallEvents.every(
+      (event) => event.data.turnId === "debate-1:round-1:proposer",
+    )).toBe(true);
   });
 });

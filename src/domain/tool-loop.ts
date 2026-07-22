@@ -213,6 +213,42 @@ export function createToolDispatcher(options: ToolDispatcherOptions): ToolDispat
   };
 }
 
+export type ToolLoopStep =
+  | { kind: "tool_call"; request: ToolCallRequest }
+  | { kind: "final"; text: string };
+
+export interface ToolLoopDriver {
+  nextStep(lastRecord: ToolCallRecord | undefined): Promise<ToolLoopStep>;
+}
+
+export interface RunToolLoopInput {
+  driver: ToolLoopDriver;
+  dispatcher: ToolDispatcher;
+  signal?: AbortSignal;
+}
+
+export interface ToolLoopResult {
+  finalText: string;
+  records: readonly ToolCallRecord[];
+}
+
+export async function runToolLoop(input: RunToolLoopInput): Promise<ToolLoopResult> {
+  let lastRecord: ToolCallRecord | undefined;
+  for (;;) {
+    const step = await input.driver.nextStep(lastRecord);
+    if (step.kind === "final") {
+      return Object.freeze({
+        finalText: step.text,
+        records: input.dispatcher.trace(),
+      });
+    }
+    lastRecord = await input.dispatcher.dispatch(
+      step.request,
+      input.signal === undefined ? {} : { signal: input.signal },
+    );
+  }
+}
+
 function executorKey(toolId: string, schemaVersion: string): string {
   return JSON.stringify([toolId, schemaVersion]);
 }

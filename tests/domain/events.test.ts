@@ -52,12 +52,13 @@ const REPLY: AgentReply = {
   },
   usage: { inputTokens: 20, outputTokens: 0 },
   trace: { attempts: [] },
+  toolCalls: [],
 };
 
 function events(): CanonicalEvent[] {
   return [
     {
-      schemaVersion: 3,
+      schemaVersion: 4,
       runId: "run-1",
       sequence: 0,
       type: "run.started",
@@ -76,14 +77,14 @@ function events(): CanonicalEvent[] {
       },
     },
     {
-      schemaVersion: 3,
+      schemaVersion: 4,
       runId: "run-1",
       sequence: 1,
       type: "turn.requested",
       data: { roundNumber: 1, request: REQUEST },
     },
     {
-      schemaVersion: 3,
+      schemaVersion: 4,
       runId: "run-1",
       sequence: 2,
       type: "adapter.attempt",
@@ -102,7 +103,7 @@ function events(): CanonicalEvent[] {
       },
     },
     {
-      schemaVersion: 3,
+      schemaVersion: 4,
       runId: "run-1",
       sequence: 3,
       type: "turn.completed",
@@ -117,7 +118,7 @@ function events(): CanonicalEvent[] {
       },
     },
     {
-      schemaVersion: 3,
+      schemaVersion: 4,
       runId: "run-1",
       sequence: 4,
       type: "run.completed",
@@ -143,14 +144,14 @@ describe("canonical event schema v3", () => {
     );
     const failureEvents: CanonicalEvent[] = [
       {
-        schemaVersion: 3,
+        schemaVersion: 4,
         runId: "run-1",
         sequence: 0,
         type: "turn.failed",
         data: { turnId: REQUEST.turnId, failure },
       },
       {
-        schemaVersion: 3,
+        schemaVersion: 4,
         runId: "run-1",
         sequence: 0,
         type: "run.failed",
@@ -168,7 +169,7 @@ describe("canonical event schema v3", () => {
 
   test("redacts configured secrets from a directly constructed failure", () => {
     const event: CanonicalEvent = {
-      schemaVersion: 3,
+      schemaVersion: 4,
       runId: "run-1",
       sequence: 0,
       type: "run.failed",
@@ -218,7 +219,7 @@ describe("canonical event schema v3", () => {
 
     const migrated = parseCanonicalEvent(historical);
 
-    expect(migrated.schemaVersion).toBe(3);
+    expect(migrated.schemaVersion).toBe(4);
     expect(migrated.type).toBe("run.started");
     if (migrated.type !== "run.started") throw new Error("migration failed");
     expect(migrated.data.controls).toEqual({
@@ -227,7 +228,7 @@ describe("canonical event schema v3", () => {
       evidence: "unrecorded",
     });
     expect(JSON.parse(serializeCanonicalEvent(migrated, { secrets: [] }))).toMatchObject({
-      schemaVersion: 3,
+      schemaVersion: 4,
     });
   });
 
@@ -241,7 +242,7 @@ describe("canonical event schema v3", () => {
 
     const migrated = parseCanonicalEvent(JSON.stringify(historical));
 
-    expect(migrated.schemaVersion).toBe(3);
+    expect(migrated.schemaVersion).toBe(4);
     expect(migrated.type).toBe("turn.requested");
     if (migrated.type !== "turn.requested") throw new Error("migration failed");
     expect(migrated.data.request.capabilities).toEqual({
@@ -257,8 +258,8 @@ describe("canonical event schema v3", () => {
     if (!first) throw new Error("bad fixture");
     const valid = JSON.parse(serializeCanonicalEvent(first, { secrets: [] })) as Record<string, unknown>;
 
-    expect(() => parseCanonicalEvent(JSON.stringify({ ...valid, schemaVersion: 4 }))).toThrow(
-      "unsupported schema version: 4",
+    expect(() => parseCanonicalEvent(JSON.stringify({ ...valid, schemaVersion: 5 }))).toThrow(
+      "unsupported schema version: 5",
     );
     expect(() => parseCanonicalEvent(JSON.stringify({ ...valid, type: "future.event" }))).toThrow(
       "unknown event type: future.event",
@@ -408,3 +409,121 @@ function expectInvalidModelTrace(
   };
   expect(() => serializeCanonicalEvent(invalid, { secrets: [] })).toThrow(message);
 }
+
+describe("canonical tool call events", () => {
+  const toolCallEvent = (): CanonicalEvent => ({
+    schemaVersion: 4,
+    runId: "run-1",
+    sequence: 2,
+    type: "turn.tool_call",
+    data: {
+      turnId: REQUEST.turnId,
+      record: {
+        callId: "run-1:round-1:proposer:call-1",
+        ordinal: 1,
+        toolId: "web-search",
+        schemaVersion: "1",
+        arguments: { query: "bounded queues" },
+        disposition: { status: "accepted" },
+        outcome: {
+          status: "succeeded",
+          output: "queue results",
+          outputBytes: 13,
+          truncation: null,
+        },
+        durationMs: 40,
+      },
+    },
+  });
+
+  test("round-trips accepted, truncated, failed, and denied tool call records", () => {
+    const accepted = toolCallEvent();
+
+    const truncated = structuredClone(accepted);
+    if (truncated.type !== "turn.tool_call") throw new Error("bad fixture");
+    truncated.data.record.outcome = {
+      status: "succeeded",
+      output: "partial",
+      outputBytes: 7,
+      truncation: { originalBytes: 32, retainedBytes: 7 },
+    };
+
+    const failed = structuredClone(accepted);
+    if (failed.type !== "turn.tool_call") throw new Error("bad fixture");
+    failed.data.record.outcome = {
+      status: "failed",
+      error: { code: "timeout", message: "tool call timed out after 20ms" },
+    };
+
+    const denied = structuredClone(accepted);
+    if (denied.type !== "turn.tool_call") throw new Error("bad fixture");
+    denied.data.record.disposition = { status: "denied", reason: "tool_not_allowed" };
+    denied.data.record.outcome = null;
+
+    for (const event of [accepted, truncated, failed, denied]) {
+      expect(parseCanonicalEvent(serializeCanonicalEvent(event, { secrets: [] }))).toEqual(event);
+    }
+  });
+
+  test("rejects structurally inconsistent tool call records", () => {
+    const cases: Array<{ mutate: (record: Record<string, unknown>) => void; message: string }> = [
+      {
+        mutate: (record) => { record.outcome = null; },
+        message: "accepted tool call must record an outcome",
+      },
+      {
+        mutate: (record) => {
+          record.disposition = { status: "denied", reason: "tool_not_allowed" };
+        },
+        message: "denied tool call cannot record an outcome",
+      },
+      {
+        mutate: (record) => {
+          record.outcome = {
+            status: "succeeded",
+            output: "partial",
+            outputBytes: 7,
+            truncation: { originalBytes: 7, retainedBytes: 7 },
+          };
+        },
+        message: "truncation must retain fewer bytes than the original",
+      },
+      {
+        mutate: (record) => {
+          record.outcome = {
+            status: "succeeded",
+            output: "partial",
+            outputBytes: 9,
+            truncation: { originalBytes: 32, retainedBytes: 7 },
+          };
+        },
+        message: "truncated output bytes must equal retained bytes",
+      },
+      {
+        mutate: (record) => { record.arguments = { query: undefined }; },
+        message: "record.arguments must be a JSON value",
+      },
+      {
+        mutate: (record) => { record.durationMs = -1; },
+        message: "record.durationMs",
+      },
+    ];
+
+    for (const invalid of cases) {
+      const event = toolCallEvent();
+      if (event.type !== "turn.tool_call") throw new Error("bad fixture");
+      invalid.mutate(event.data.record as unknown as Record<string, unknown>);
+      expect(() => serializeCanonicalEvent(event, { secrets: [] })).toThrow(invalid.message);
+    }
+  });
+
+  test("migrates schema-v3 events forward without inventing tool call evidence", () => {
+    const historical = structuredClone(events()[0]) as unknown as Record<string, unknown>;
+    historical.schemaVersion = 3;
+
+    const migrated = parseCanonicalEvent(JSON.stringify(historical));
+
+    expect(migrated.schemaVersion).toBe(4);
+    expect(migrated.type).toBe("run.started");
+  });
+});

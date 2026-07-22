@@ -13,7 +13,18 @@ import {
 } from "./events";
 import type { RoleDefinition } from "./roles";
 import { DebateScheduler } from "./scheduler";
-import type { ToolCapabilityPolicy } from "./tool-policy";
+import {
+  runToolLoop,
+  type ToolCallRecord,
+  type ToolDispatcher,
+  type ToolLoopDriver,
+  type ToolLoopResult,
+} from "./tool-loop";
+import {
+  authorizeToolCall,
+  createToolCallAccounting,
+  type ToolCapabilityPolicy,
+} from "./tool-policy";
 
 export interface ReplayParticipantConfiguration {
   role: RoleDefinition;
@@ -58,6 +69,7 @@ interface RecordedTurn {
   roundNumber: number;
   request: TurnRequest;
   reply: CanonicalTurnReply;
+  toolCalls: readonly ToolCallRecord[];
 }
 
 export function replayCanonicalRun(input: ReplayCanonicalRunInput): Promise<ReplayResult> {
@@ -107,7 +119,7 @@ function replayCanonicalRunSync(input: ReplayCanonicalRunInput): ReplayResult {
     assertNoDrift(recorded.request.turnId, recorded.roundNumber, replayed.roundNumber, "roundNumber");
     assertTurnRequestNoDrift(recorded.request, replayed.request);
     reconstructed.push(replayed.request);
-    scheduler.acceptReply(toReplayReply(recorded.reply));
+    scheduler.acceptReply(toReplayReply(recorded.reply, recorded.toolCalls));
   }
   if (scheduler.nextTurn() !== undefined) {
     throw new Error(`recorded ${String(trace.turns.length)} turns but scheduler has more turns`);
@@ -159,7 +171,11 @@ function readSuccessfulTrace(events: readonly CanonicalEvent[]): {
     throw new Error("canonical replay requires a terminal run.completed event");
   }
   const turns: RecordedTurn[] = [];
-  let active: { roundNumber: number; request: TurnRequest } | undefined;
+  let active: {
+    roundNumber: number;
+    request: TurnRequest;
+    toolCalls: ToolCallRecord[];
+  } | undefined;
   const seenTurnIds = new Set<string>();
 
   for (const event of events.slice(1, -1)) {
@@ -173,6 +189,7 @@ function readSuccessfulTrace(events: readonly CanonicalEvent[]): {
         active = {
           roundNumber: event.data.roundNumber,
           request: structuredClone(event.data.request),
+          toolCalls: [],
         };
         break;
       case "adapter.attempt":
@@ -180,6 +197,20 @@ function readSuccessfulTrace(events: readonly CanonicalEvent[]): {
           throw new Error(`attempt does not match active turn ${event.data.turnId}`);
         }
         break;
+      case "turn.tool_call": {
+        if (!active || active.request.turnId !== event.data.turnId) {
+          throw new Error(`tool call does not match active turn ${event.data.turnId}`);
+        }
+        const expectedOrdinal = active.toolCalls.length + 1;
+        if (event.data.record.ordinal !== expectedOrdinal) {
+          throw new Error(
+            `tool call ${event.data.record.callId} has ordinal `
+            + `${String(event.data.record.ordinal)} but ${String(expectedOrdinal)} was expected`,
+          );
+        }
+        active.toolCalls.push(structuredClone(event.data.record));
+        break;
+      }
       case "turn.completed":
         if (!active || active.request.turnId !== event.data.turnId) {
           throw new Error(`completion does not match active turn ${event.data.turnId}`);
@@ -222,11 +253,15 @@ function readSuccessfulTrace(events: readonly CanonicalEvent[]): {
   };
 }
 
-function toReplayReply(reply: CanonicalTurnReply): AgentReply {
+function toReplayReply(
+  reply: CanonicalTurnReply,
+  toolCalls: readonly ToolCallRecord[],
+): AgentReply {
   return {
     ...structuredClone(reply),
     usage: {},
     trace: { attempts: [] },
+    toolCalls: structuredClone(toolCalls),
   };
 }
 
@@ -277,3 +312,65 @@ function findMismatch(
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
+
+export interface ReplayToolLoopInput {
+  driver: ToolLoopDriver;
+  policy: ToolCapabilityPolicy;
+  records: readonly ToolCallRecord[];
+}
+
+export async function replayToolLoop(input: ReplayToolLoopInput): Promise<ToolLoopResult> {
+  let position = 0;
+  let accounting = createToolCallAccounting(input.policy);
+  const replayed: ToolCallRecord[] = [];
+
+  const dispatcher: ToolDispatcher = {
+    dispatch: (request) => {
+      const recorded = input.records[position];
+      if (!recorded) {
+        throw new Error(
+          `replay has no recorded tool call for replayed dispatch ${String(position + 1)}`,
+        );
+      }
+      position += 1;
+      assertNoDrift(recorded.callId, recorded.toolId, request.toolId, "toolId");
+      assertNoDrift(
+        recorded.callId,
+        recorded.schemaVersion,
+        request.schemaVersion,
+        "schemaVersion",
+      );
+      assertNoDrift(recorded.callId, recorded.arguments, request.arguments, "arguments");
+
+      const authorization = authorizeToolCall(input.policy, accounting, {
+        toolId: recorded.toolId,
+        schemaVersion: recorded.schemaVersion,
+      });
+      accounting = authorization.accounting;
+      const replayedDisposition = authorization.decision.status === "accepted"
+        ? { status: "accepted" }
+        : { status: "denied", reason: authorization.decision.reason };
+      assertNoDrift(
+        recorded.callId,
+        recorded.disposition,
+        replayedDisposition,
+        "disposition",
+      );
+
+      const record = structuredClone(recorded);
+      replayed.push(record);
+      return Promise.resolve(record);
+    },
+    trace: () => Object.freeze([...replayed]),
+    accounting: () => accounting,
+  };
+
+  const result = await runToolLoop({ driver: input.driver, dispatcher });
+  if (position !== input.records.length) {
+    throw new Error(
+      `replay consumed ${String(position)} of ${String(input.records.length)} recorded tool calls`,
+    );
+  }
+  return result;
+}
+

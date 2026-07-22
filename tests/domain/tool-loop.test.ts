@@ -2,7 +2,10 @@ import { describe, expect, test } from "bun:test";
 
 import {
   createToolDispatcher,
+  runToolLoop,
+  type ToolCallRecord,
   type ToolExecutor,
+  type ToolLoopStep,
 } from "../../src/domain/tool-loop";
 import {
   resolveToolPolicy,
@@ -429,5 +432,80 @@ describe("tool dispatcher", () => {
       outputBytes: 10,
       truncation: null,
     });
+  });
+});
+
+describe("tool loop", () => {
+  test("feeds each result back at its exact position until the final response", async () => {
+    const observed: Array<ToolCallRecord | undefined> = [];
+    const steps: ToolLoopStep[] = [
+      {
+        kind: "tool_call",
+        request: { toolId: "calculator", schemaVersion: "2", arguments: { a: 1, b: 2 } },
+      },
+      {
+        kind: "tool_call",
+        request: { toolId: "filesystem", schemaVersion: "1", arguments: { path: "/tmp" } },
+      },
+      { kind: "final", text: "The sum is 3 and the file tool was denied." },
+    ];
+    let step = 0;
+    const driver = {
+      nextStep: (lastRecord: ToolCallRecord | undefined): Promise<ToolLoopStep> => {
+        observed.push(lastRecord);
+        const next = steps[step];
+        step += 1;
+        if (!next) throw new Error("scripted driver has no step remaining");
+        return Promise.resolve(next);
+      },
+    };
+    const dispatcher = createToolDispatcher({
+      dispatchId: "debate-1:round-1:proposer",
+      policy: policy(),
+      executors: [CALCULATOR],
+      now: fakeClock(11_000, 11_010, 11_020, 11_020),
+    });
+
+    const result = await runToolLoop({ driver, dispatcher });
+
+    expect(result.finalText).toBe("The sum is 3 and the file tool was denied.");
+    expect(result.records).toHaveLength(2);
+    expect(result.records[0]?.callId).toBe("debate-1:round-1:proposer:call-1");
+    expect(result.records[0]?.outcome).toEqual({
+      status: "succeeded",
+      output: '{"sum":3}',
+      outputBytes: 9,
+      truncation: null,
+    });
+    expect(result.records[1]?.disposition).toEqual({
+      status: "denied",
+      reason: "tool_not_allowed",
+    });
+    expect(result.records).toEqual(dispatcher.trace());
+
+    expect(observed).toHaveLength(3);
+    expect(observed[0]).toBeUndefined();
+    expect(observed[1]).toEqual(result.records[0]);
+    expect(observed[2]).toEqual(result.records[1]);
+  });
+
+  test("returns an immediate final response with an empty trace", async () => {
+    const dispatcher = createToolDispatcher({
+      dispatchId: "debate-1:round-1:proposer",
+      policy: policy(),
+      executors: [CALCULATOR],
+      now: fakeClock(12_000),
+    });
+
+    const result = await runToolLoop({
+      driver: {
+        nextStep: () => Promise.resolve({ kind: "final", text: "No tools needed." }),
+      },
+      dispatcher,
+    });
+
+    expect(result.finalText).toBe("No tools needed.");
+    expect(result.records).toEqual([]);
+    expect(dispatcher.accounting().aggregate.consumedCalls).toBe(0);
   });
 });

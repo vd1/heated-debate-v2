@@ -58,6 +58,7 @@ function reply(text: string, controls: RequestedControls): AgentReply {
     },
     usage: { inputTokens: 10, outputTokens: 5 },
     trace: { attempts: [] },
+    toolCalls: [],
   };
 }
 

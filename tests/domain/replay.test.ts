@@ -8,11 +8,17 @@ import {
 } from "../../src/domain/events";
 import {
   replayCanonicalRun,
+  replayToolLoop,
   ReplayDriftError,
   type ReplayConfiguration,
 } from "../../src/domain/replay";
 import type { RoleDefinition } from "../../src/domain/roles";
-import { createDenyAllToolPolicy } from "../../src/domain/tool-policy";
+import type {
+  ToolCallRecord,
+  ToolLoopDriver,
+  ToolLoopStep,
+} from "../../src/domain/tool-loop";
+import { createDenyAllToolPolicy, resolveToolPolicy } from "../../src/domain/tool-policy";
 
 const PROPOSER: RoleDefinition = {
   id: "proposer",
@@ -139,7 +145,7 @@ function reply(text: string): CanonicalTurnReply {
 function recordedRun(): CanonicalEvent[] {
   return [
     {
-      schemaVersion: 3,
+      schemaVersion: 4,
       runId: "run-1",
       sequence: 0,
       type: "run.started",
@@ -158,35 +164,35 @@ function recordedRun(): CanonicalEvent[] {
       },
     },
     {
-      schemaVersion: 3,
+      schemaVersion: 4,
       runId: "run-1",
       sequence: 1,
       type: "turn.requested",
       data: { roundNumber: 1, request: PROPOSAL_REQUEST },
     },
     {
-      schemaVersion: 3,
+      schemaVersion: 4,
       runId: "run-1",
       sequence: 2,
       type: "turn.completed",
       data: { turnId: PROPOSAL_REQUEST.turnId, reply: reply("Recorded proposal") },
     },
     {
-      schemaVersion: 3,
+      schemaVersion: 4,
       runId: "run-1",
       sequence: 3,
       type: "turn.requested",
       data: { roundNumber: 1, request: REVIEW_REQUEST },
     },
     {
-      schemaVersion: 3,
+      schemaVersion: 4,
       runId: "run-1",
       sequence: 4,
       type: "turn.completed",
       data: { turnId: REVIEW_REQUEST.turnId, reply: reply("Recorded review") },
     },
     {
-      schemaVersion: 3,
+      schemaVersion: 4,
       runId: "run-1",
       sequence: 5,
       type: "run.completed",
@@ -203,35 +209,35 @@ function recordedTwoRoundRun(): CanonicalEvent[] {
     { ...start, data: { ...start.data, roundCount: 2 } },
     ...firstRound.slice(1),
     {
-      schemaVersion: 3,
+      schemaVersion: 4,
       runId: "run-1",
       sequence: 5,
       type: "turn.requested",
       data: { roundNumber: 2, request: SECOND_PROPOSAL_REQUEST },
     },
     {
-      schemaVersion: 3,
+      schemaVersion: 4,
       runId: "run-1",
       sequence: 6,
       type: "turn.completed",
       data: { turnId: SECOND_PROPOSAL_REQUEST.turnId, reply: reply("Second proposal") },
     },
     {
-      schemaVersion: 3,
+      schemaVersion: 4,
       runId: "run-1",
       sequence: 7,
       type: "turn.requested",
       data: { roundNumber: 2, request: SECOND_REVIEW_REQUEST },
     },
     {
-      schemaVersion: 3,
+      schemaVersion: 4,
       runId: "run-1",
       sequence: 8,
       type: "turn.completed",
       data: { turnId: SECOND_REVIEW_REQUEST.turnId, reply: reply("Second review") },
     },
     {
-      schemaVersion: 3,
+      schemaVersion: 4,
       runId: "run-1",
       sequence: 9,
       type: "run.completed",
@@ -523,7 +529,7 @@ describe("replayCanonicalRun", () => {
     const completion = events[2];
     if (completion?.type !== "turn.completed") throw new Error("bad fixture");
     events[2] = {
-      schemaVersion: 3,
+      schemaVersion: 4,
       runId: "run-1",
       sequence: 2,
       type: "adapter.attempt",
@@ -554,7 +560,7 @@ describe("replayCanonicalRun", () => {
   test("explicitly rejects turn failure, run failure, and a missing terminal event", async () => {
     const turnFailure = recordedRun();
     turnFailure[2] = {
-      schemaVersion: 3,
+      schemaVersion: 4,
       runId: "run-1",
       sequence: 2,
       type: "turn.failed",
@@ -573,7 +579,7 @@ describe("replayCanonicalRun", () => {
     const runFailure: CanonicalEvent[] = [
       start,
       {
-        schemaVersion: 3,
+        schemaVersion: 4,
         runId: "run-1",
         sequence: 1,
         type: "run.failed",
@@ -625,3 +631,180 @@ async function rejectionMessage(promise: Promise<unknown>): Promise<string> {
   }
   throw new Error("expected promise to reject");
 }
+
+describe("replayCanonicalRun tool call records", () => {
+  const toolRecord = (ordinal: number): CanonicalEvent => ({
+    schemaVersion: 4,
+    runId: "run-1",
+    sequence: 0,
+    type: "turn.tool_call",
+    data: {
+      turnId: PROPOSAL_REQUEST.turnId,
+      record: {
+        callId: `${PROPOSAL_REQUEST.turnId}:call-${String(ordinal)}`,
+        ordinal,
+        toolId: "web-search",
+        schemaVersion: "1",
+        arguments: { query: `queues ${String(ordinal)}` },
+        disposition: { status: "accepted" },
+        outcome: {
+          status: "succeeded",
+          output: "results",
+          outputBytes: 7,
+          truncation: null,
+        },
+        durationMs: 5,
+      },
+    },
+  });
+
+  function withToolCalls(...ordinals: number[]): CanonicalEvent[] {
+    const events = recordedRun();
+    events.splice(2, 0, ...ordinals.map((ordinal) => toolRecord(ordinal)));
+    return events.map((event, sequence) => ({ ...event, sequence }));
+  }
+
+  test("replays a recorded run containing ordered tool call records", async () => {
+    const result = await replayCanonicalRun({
+      events: withToolCalls(1, 2),
+      configuration: CONFIGURATION,
+    });
+
+    expect(result.requests).toEqual([PROPOSAL_REQUEST, REVIEW_REQUEST]);
+  });
+
+  test("rejects a tool call recorded outside its requested turn", async () => {
+    const events = recordedRun();
+    const orphan = toolRecord(1);
+    if (orphan.type !== "turn.tool_call") throw new Error("bad fixture");
+    orphan.data = { ...orphan.data, turnId: "run-1:round-9:proposer" };
+    events.splice(2, 0, orphan);
+    const resequenced = events.map((event, sequence) => ({ ...event, sequence }));
+
+    expect(await rejectionMessage(replayCanonicalRun({
+      events: resequenced,
+      configuration: CONFIGURATION,
+    }))).toBe("tool call does not match active turn run-1:round-9:proposer");
+  });
+
+  test("rejects non-consecutive recorded tool call ordinals", async () => {
+    expect(await rejectionMessage(replayCanonicalRun({
+      events: withToolCalls(1, 3),
+      configuration: CONFIGURATION,
+    }))).toBe(
+      "tool call run-1:round-1:proposer:call-3 has ordinal 3 but 2 was expected",
+    );
+  });
+});
+
+describe("replayToolLoop", () => {
+  const TOOL_POLICY = resolveToolPolicy({
+    policyId: "debate-tools",
+    policyVersion: "1",
+    evidence: "recorded",
+    role: { id: "proposer", version: "1" },
+    phase: "proposal",
+    allowedTools: [{ toolId: "web-search", schemaVersion: "1", maxCalls: 2 }],
+    aggregateCallLimit: 2,
+    callTimeoutMs: 5_000,
+    maxResultBytes: 16_384,
+    deniedCallCharge: "none",
+  }, { role: { id: "proposer", version: "1" }, phase: "proposal" });
+
+  const recordedCall = (ordinal: number): ToolCallRecord => ({
+    callId: `run-1:round-1:proposer:call-${String(ordinal)}`,
+    ordinal,
+    toolId: "web-search",
+    schemaVersion: "1",
+    arguments: { query: `queues ${String(ordinal)}` },
+    disposition: { status: "accepted" },
+    outcome: {
+      status: "succeeded",
+      output: `results ${String(ordinal)}`,
+      outputBytes: 9,
+      truncation: null,
+    },
+    durationMs: 5,
+  });
+
+  function scriptedDriver(steps: ToolLoopStep[]): {
+    driver: ToolLoopDriver;
+    observed: Array<ToolCallRecord | undefined>;
+  } {
+    const observed: Array<ToolCallRecord | undefined> = [];
+    let index = 0;
+    return {
+      observed,
+      driver: {
+        nextStep: (lastRecord) => {
+          observed.push(lastRecord);
+          const step = steps[index];
+          index += 1;
+          if (!step) throw new Error("scripted driver has no step remaining");
+          return Promise.resolve(step);
+        },
+      },
+    };
+  }
+
+  test("feeds recorded results back positionally without executing tools", async () => {
+    const records = [recordedCall(1), recordedCall(2)];
+    const { driver, observed } = scriptedDriver([
+      { kind: "tool_call", request: { toolId: "web-search", schemaVersion: "1", arguments: { query: "queues 1" } } },
+      { kind: "tool_call", request: { toolId: "web-search", schemaVersion: "1", arguments: { query: "queues 2" } } },
+      { kind: "final", text: "Recorded proposal" },
+    ]);
+
+    const result = await replayToolLoop({
+      driver,
+      policy: TOOL_POLICY,
+      records,
+    });
+
+    expect(result.finalText).toBe("Recorded proposal");
+    expect(result.records).toEqual(records);
+    expect(observed[1]).toEqual(records[0]);
+    expect(observed[2]).toEqual(records[1]);
+  });
+
+  test("detects argument drift against the recorded call", async () => {
+    const { driver } = scriptedDriver([
+      { kind: "tool_call", request: { toolId: "web-search", schemaVersion: "1", arguments: { query: "different" } } },
+      { kind: "final", text: "Recorded proposal" },
+    ]);
+
+    expect(await rejectionMessage(replayToolLoop({
+      driver,
+      policy: TOOL_POLICY,
+      records: [recordedCall(1)],
+    }))).toBe("replay drift for run-1:round-1:proposer:call-1 at arguments.query");
+  });
+
+  test("rejects a replay that leaves recorded tool calls unconsumed", async () => {
+    const { driver } = scriptedDriver([{ kind: "final", text: "Recorded proposal" }]);
+
+    expect(await rejectionMessage(replayToolLoop({
+      driver,
+      policy: TOOL_POLICY,
+      records: [recordedCall(1)],
+    }))).toBe("replay consumed 0 of 1 recorded tool calls");
+  });
+
+  test("detects recorded dispositions the policy would not reproduce", async () => {
+    const denied: ToolCallRecord = {
+      ...recordedCall(1),
+      disposition: { status: "denied", reason: "tool_not_allowed" },
+      outcome: null,
+    };
+    const { driver } = scriptedDriver([
+      { kind: "tool_call", request: { toolId: "web-search", schemaVersion: "1", arguments: { query: "queues 1" } } },
+      { kind: "final", text: "Recorded proposal" },
+    ]);
+
+    expect(await rejectionMessage(replayToolLoop({
+      driver,
+      policy: TOOL_POLICY,
+      records: [denied],
+    }))).toBe("replay drift for run-1:round-1:proposer:call-1 at disposition.reason");
+  });
+});

@@ -65,6 +65,7 @@ class SuccessfulLifecycleAgent implements LiveHarnessAgent {
           usageEvidence: { explicitlyReported: [], source: "test" },
         }],
       },
+      toolCalls: [],
     });
   }
 

@@ -36,6 +36,7 @@ function scriptedReply(text: string, controls: RequestedControls): ScriptedReply
     },
     usage: {},
     trace: { attempts: [] },
+    toolCalls: [],
   };
   return {
     ...reply,

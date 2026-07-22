@@ -105,6 +105,7 @@ describe("ScriptedAgent", () => {
         reasoningTokens: 0,
       },
       trace: { attempts: [] },
+      toolCalls: [],
     });
 
     await agent.dispose();

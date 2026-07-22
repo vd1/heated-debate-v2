@@ -34,6 +34,7 @@ function reply(text: string, trace: AgentTrace = { attempts: [] }): AgentReply {
     },
     usage: {},
     trace,
+    toolCalls: [],
   };
 }
 

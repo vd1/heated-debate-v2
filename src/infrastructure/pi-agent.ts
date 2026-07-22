@@ -270,6 +270,7 @@ export class PiAgent implements AgentPort {
       controls: report,
       usage,
       trace,
+      toolCalls: [],
     };
   }
 

@@ -5,6 +5,7 @@ import {
   type AgentTrace,
   type NormalizedUsage,
 } from "./agent";
+import type { ToolCallRecord } from "./tool-loop";
 import {
   CANONICAL_SCHEMA_VERSION,
   sanitizeFailure,
@@ -139,6 +140,22 @@ export async function runDebate(input: RunDebateInput): Promise<DebateResult> {
     }
   };
 
+  const emitToolCalls = async (
+    turnId: string,
+    toolCalls: readonly ToolCallRecord[],
+  ): Promise<void> => {
+    if (!input.recording) return;
+    for (const record of toolCalls) {
+      await emit({
+        schemaVersion: CANONICAL_SCHEMA_VERSION,
+        runId: input.recording.runId,
+        sequence,
+        type: "turn.tool_call",
+        data: { turnId, record: structuredClone(record) },
+      }, false);
+    }
+  };
+
   const endWithFailure = async (failure: DebateRunFailure): Promise<never> => {
     if (terminalEmitted) throw failure;
     if (input.recording) {
@@ -244,6 +261,7 @@ export async function runDebate(input: RunDebateInput): Promise<DebateResult> {
       });
 
       await emitAttempts(turn.request.turnId, reply.trace);
+      await emitToolCalls(turn.request.turnId, reply.toolCalls);
       if (runControls.budget
         && observedTokenLowerBound(observedUsage) > runControls.budget.maxTokens) {
         await endWithFailure(new DebateRunFailure({

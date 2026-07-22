@@ -226,6 +226,7 @@ function expectedReply(): AgentReply {
         },
       ],
     },
+    toolCalls: [],
   };
 }
 

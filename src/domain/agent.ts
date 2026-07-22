@@ -1,6 +1,7 @@
 import type { ContextDecision } from "./context";
 import type { CreativitySelection } from "./dial";
 import type { RoleDefinition } from "./roles";
+import type { ToolCallRecord } from "./tool-loop";
 import type { TurnCapabilityPolicy } from "./tool-policy";
 
 export interface ModelIdentity {
@@ -87,6 +88,7 @@ export interface AgentReply {
   controls: ControlReport;
   usage: NormalizedUsage;
   trace: AgentTrace;
+  toolCalls: readonly ToolCallRecord[];
 }
 
 export interface AgentReplyOptions {
@@ -119,6 +121,7 @@ export interface ScriptedReply {
   controls: ControlReport;
   usage: UsageObservation;
   trace: AgentTrace;
+  toolCalls?: readonly ToolCallRecord[];
 }
 
 const USAGE_KINDS = [
@@ -182,6 +185,7 @@ export class ScriptedAgent implements AgentPort {
       controls: scripted.controls,
       usage: normalizeUsage(scripted.usage),
       trace: structuredClone(scripted.trace),
+      toolCalls: structuredClone(scripted.toolCalls ?? []),
     });
   }
 
