@@ -266,6 +266,7 @@ function expectedReply(): AgentReply {
           attempt: 1,
           status: "succeeded",
           httpStatus: 200,
+          turnSequence: 1,
           usage: {
             inputTokens: 20,
             outputTokens: 0,
@@ -380,6 +381,7 @@ describe("PiAgent", () => {
         truncation: null,
       },
       durationMs: 25,
+      turnSequence: 2,
     }]);
 
     expect(fake.calls).toHaveLength(2);
@@ -393,6 +395,46 @@ describe("PiAgent", () => {
     expect(toolResult.isError).toBe(false);
     expect(toolResult.content).toEqual([{ type: "text", text: "result" }]);
 
+    await agent.dispose();
+  });
+
+  test("stamps attempts and tool calls with one shared turn sequence", async () => {
+    const fake = scriptedToolStream([
+      {
+        stopReason: "toolUse",
+        content: [
+          { type: "toolCall", id: "pi-call-1", name: "web-search", arguments: { query: "q" } },
+        ],
+      },
+      { stopReason: "stop", content: [{ type: "text", text: "Final answer" }] },
+    ]);
+    const agent = new PiAgent({
+      model: MODEL,
+      modelStream: fake.stream,
+      usageEvidence: { explicitlyReported: [], source: "test" },
+      tools: [{ toolId: "web-search", schemaVersion: "1", tool: WEB_SEARCH_TOOL }],
+      now: clock(1_000),
+    });
+    const request: TurnRequest = {
+      ...REQUEST,
+      capabilities: {
+        policyId: "research",
+        policyVersion: "1",
+        evidence: "recorded",
+        role: { id: "proposer", version: "1" },
+        phase: "proposal",
+        allowedTools: [{ toolId: "web-search", schemaVersion: "1", maxCalls: 1 }],
+        aggregateCallLimit: 1,
+        callTimeoutMs: 1_000,
+        maxResultBytes: 4_096,
+        deniedCallCharge: "none",
+      },
+    };
+
+    const reply = await agent.reply(request);
+
+    expect(reply.trace.attempts.map((attempt) => attempt.turnSequence)).toEqual([1, 3]);
+    expect(reply.toolCalls.map((record) => record.turnSequence)).toEqual([2]);
     await agent.dispose();
   });
 
@@ -794,6 +836,7 @@ describe("PiAgent", () => {
         httpStatus: 429,
         usage: {},
         usageEvidence: { explicitlyReported: [], source: "no-zero-evidence" },
+        turnSequence: 1,
       },
       {
         attempt: 2,
@@ -801,6 +844,7 @@ describe("PiAgent", () => {
         httpStatus: 200,
         usage: { inputTokens: 20, cacheWriteTokens: 3 },
         usageEvidence: { explicitlyReported: [], source: "no-zero-evidence" },
+        turnSequence: 2,
       },
     ]);
 
@@ -972,6 +1016,7 @@ describe("PiAgent", () => {
       httpStatus: 503,
       usage: { inputTokens: 20, cacheWriteTokens: 3 },
       usageEvidence: { explicitlyReported: [], source: "test" },
+      turnSequence: 1,
     }]);
     await agent.dispose();
   });

@@ -21,7 +21,7 @@ import {
   type UnrecordedToolCapabilityPolicy,
 } from "./tool-policy";
 
-export const CANONICAL_SCHEMA_VERSION = 4 as const;
+export const CANONICAL_SCHEMA_VERSION = 5 as const;
 
 export type CanonicalRunControls =
   | {
@@ -172,12 +172,13 @@ export function sanitizeFailure(
 function migrateHistoricalEvent(value: unknown): unknown {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return value;
   const event = value as Record<string, unknown>;
-  if (event.schemaVersion !== 1 && event.schemaVersion !== 2 && event.schemaVersion !== 3) {
+  if (event.schemaVersion !== 1 && event.schemaVersion !== 2
+    && event.schemaVersion !== 3 && event.schemaVersion !== 4) {
     return value;
   }
   const migrated = structuredClone(event);
   migrated.schemaVersion = CANONICAL_SCHEMA_VERSION;
-  if (event.schemaVersion === 3) return migrated;
+  if (event.schemaVersion === 3 || event.schemaVersion === 4) return migrated;
   if (migrated.type === "run.started"
     && typeof migrated.data === "object"
     && migrated.data !== null
@@ -371,9 +372,12 @@ export function validateToolCallRecord(value: unknown): asserts value is ToolCal
   assertExactFields(
     record,
     ["callId", "ordinal", "toolId", "schemaVersion", "arguments", "disposition", "outcome", "durationMs"],
-    [],
+    ["turnSequence"],
     "record",
   );
+  if (hasOwn(record, "turnSequence")) {
+    assertPositiveInteger(record.turnSequence, "record.turnSequence");
+  }
   assertNonEmptyString(record.callId, "record.callId");
   assertPositiveInteger(record.ordinal, "record.ordinal");
   assertNonEmptyString(record.toolId, "record.toolId");
@@ -667,9 +671,12 @@ function validateAttempt(value: unknown): asserts value is AttemptTrace {
   assertExactFields(
     attempt,
     ["attempt", "status", "usage", "usageEvidence"],
-    ["httpStatus"],
+    ["httpStatus", "turnSequence"],
     "attempt",
   );
+  if (hasOwn(attempt, "turnSequence")) {
+    assertPositiveInteger(attempt.turnSequence, "attempt.turnSequence");
+  }
   assertPositiveInteger(attempt.attempt, "attempt.attempt");
   if (attempt.status !== "succeeded" && attempt.status !== "failed" && attempt.status !== "aborted") {
     throw new Error("attempt.status is invalid");

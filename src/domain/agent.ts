@@ -75,6 +75,8 @@ export interface AttemptTrace {
   httpStatus?: number;
   usage: NormalizedUsage;
   usageEvidence: UsageEvidence;
+  /** Position in the turn's shared attempt/tool-call ordering, when the adapter records one. */
+  turnSequence?: number;
 }
 
 export interface AgentTrace {

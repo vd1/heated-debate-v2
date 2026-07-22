@@ -10,9 +10,9 @@ reproducible logs. Pi supplies model access and conversation mechanics behind a 
 Implementation is proceeding one independently testable task at a time; see
 [`plans/implementation-plan.md`](plans/implementation-plan.md). Milestones A and B plus C-EVENTS,
 C-JSONL, C-REPLAY, C-LIVE-ARTIFACT, C-MARKDOWN, C-FAILURES, and C-TOOL-POLICY are complete.
-C-TOOL-LOOP is in progress: concerns 2 and 4-9 from the
-[`codex review`](plans/c-tool-loop-concerns.md) are resolved; concerns 1 and 3 await an
-architecture decision.
+C-TOOL-LOOP is complete after resolving all nine findings in the
+[`codex review`](plans/c-tool-loop-concerns.md); see the
+[`C-TOOL-LOOP review`](plans/c-tool-loop-review.md). C-WEB-SEARCH is next.
 
 The original implementation remains in the sibling repository `../heated-debate/` and is treated
 as reference behavior, not as code to copy wholesale.

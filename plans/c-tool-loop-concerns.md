@@ -1,8 +1,8 @@
 # C-TOOL-LOOP concerns for Fable
 
-Status: concerns 2 and 4-9 resolved; concerns 1 and 3 open, pending an architecture decision
+Status: all nine concerns resolved
 
-Updated on 2026-07-22 (Fable pass after the initial codex review).
+Updated on 2026-07-23 (Fable pass after the initial codex review).
 
 Resolution summary:
 
@@ -22,9 +22,19 @@ Resolution summary:
 - Concern 9: executor error codes are typed, and Pi tool results containing non-text content are
   rejected explicitly as `unsupported_result_content`.
 
-Concerns 1 and 3 remain open below; both need a joint decision because the fixes change the
-adapter architecture (owning the tool loop above Pi core, or a unified interleaved trace
-vocabulary).
+Concerns 1 and 3 were resolved after an explicit architecture decision:
+
+- Concern 1: `PiAgent` now owns the tool loop. It streams each model step directly, forwards
+  policy-allowed tool definitions, and dispatches every returned tool call itself, so unknown
+  tool names are recorded as denied calls and non-coercible arguments as `malformed_arguments`
+  without executing the tool. Argument validation reuses `validateToolArguments` from
+  `pi-ai/compat`, so coercion semantics match Pi core. Documented as an ADR-0001 amendment.
+- Concern 3: adapter attempts and tool call records carry an optional shared `turnSequence`
+  stamped by the adapter as events occur, so canonical schema v5 preserves the true
+  attempt/call interleaving within a turn. Absent values stay absent for historical
+  artifacts, which migrate forward without invented sequences.
+
+The remaining sections below record the original findings for reference.
 
 This is a live review file for issues found while C-TOOL-LOOP is being implemented. The task
 contract in `plans/implementation-plan.md` remains the acceptance baseline. In particular, the

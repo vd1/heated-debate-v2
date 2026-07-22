@@ -70,6 +70,8 @@ export interface ToolCallRecord {
   disposition: ToolCallDisposition;
   outcome: ToolCallOutcome | null;
   durationMs: number;
+  /** Position in the turn's shared attempt/tool-call ordering, when the caller records one. */
+  turnSequence?: number;
 }
 
 export interface ToolDispatcherOptions {
@@ -82,6 +84,7 @@ export interface ToolDispatcherOptions {
 
 export interface ToolDispatchOptions {
   signal?: AbortSignal;
+  turnSequence?: number;
 }
 
 export interface ToolDispatcher {
@@ -113,6 +116,7 @@ export function createToolDispatcher(options: ToolDispatcherOptions): ToolDispat
     request: ToolCallRequest,
     ordinal: number,
     startedAt: number,
+    turnSequence: number | undefined,
     disposition: ToolCallDisposition,
     outcome: ToolCallOutcome | null,
   ): ToolCallRecord {
@@ -125,6 +129,7 @@ export function createToolDispatcher(options: ToolDispatcherOptions): ToolDispat
       disposition,
       outcome,
       durationMs: now() - startedAt,
+      ...(turnSequence === undefined ? {} : { turnSequence }),
     });
     records[ordinal - 1] = record;
     return record;
@@ -141,6 +146,7 @@ export function createToolDispatcher(options: ToolDispatcherOptions): ToolDispat
     const startedAt = now();
     dispatchCount += 1;
     const ordinal = dispatchCount;
+    const turnSequence = dispatchOptions.turnSequence;
     const externalSignal = dispatchOptions.signal;
     const authorization = authorizeToolCall(options.policy, accounting, {
       toolId: request.toolId,
@@ -148,7 +154,7 @@ export function createToolDispatcher(options: ToolDispatcherOptions): ToolDispat
     });
     accounting = authorization.accounting;
     if (authorization.decision.status === "denied") {
-      return finishRecord(request, ordinal, startedAt, {
+      return finishRecord(request, ordinal, startedAt, turnSequence, {
         status: "denied",
         reason: authorization.decision.reason,
       }, null);
@@ -156,13 +162,13 @@ export function createToolDispatcher(options: ToolDispatcherOptions): ToolDispat
 
     const executor = executors.get(executorKey(request.toolId, request.schemaVersion));
     if (!executor) {
-      return finishRecord(request, ordinal, startedAt, { status: "accepted" }, failure(
+      return finishRecord(request, ordinal, startedAt, turnSequence, { status: "accepted" }, failure(
         new Error(`tool is unavailable in environment: ${request.toolId}@${request.schemaVersion}`),
         "tool_unavailable",
       ));
     }
     if (!jsonProjection(request.arguments).faithful) {
-      return finishRecord(request, ordinal, startedAt, { status: "accepted" }, failure(
+      return finishRecord(request, ordinal, startedAt, turnSequence, { status: "accepted" }, failure(
         new Error("tool call arguments must be JSON-representable"),
         "malformed_arguments",
       ));
@@ -172,7 +178,7 @@ export function createToolDispatcher(options: ToolDispatcherOptions): ToolDispat
       "cancelled",
     );
     if (externalSignal?.aborted) {
-      return finishRecord(request, ordinal, startedAt, { status: "accepted" }, cancelledOutcome());
+      return finishRecord(request, ordinal, startedAt, turnSequence, { status: "accepted" }, cancelledOutcome());
     }
     const timeoutMs = options.policy.callTimeoutMs;
     const controller = new AbortController();
@@ -208,20 +214,20 @@ export function createToolDispatcher(options: ToolDispatcherOptions): ToolDispat
         }),
       ]);
       if (raced === timedOut) {
-        return finishRecord(request, ordinal, startedAt, { status: "accepted" }, failure(
+        return finishRecord(request, ordinal, startedAt, turnSequence, { status: "accepted" }, failure(
           new Error(`tool call timed out after ${String(timeoutMs)}ms`),
           "timeout",
         ));
       }
       if (raced === cancelled) {
-        return finishRecord(request, ordinal, startedAt, { status: "accepted" }, cancelledOutcome());
+        return finishRecord(request, ordinal, startedAt, turnSequence, { status: "accepted" }, cancelledOutcome());
       }
-      return finishRecord(request, ordinal, startedAt, { status: "accepted" }, successOutcome(
+      return finishRecord(request, ordinal, startedAt, turnSequence, { status: "accepted" }, successOutcome(
         raced,
         options.policy.maxResultBytes,
       ));
     } catch (error) {
-      return finishRecord(request, ordinal, startedAt, { status: "accepted" }, failure(
+      return finishRecord(request, ordinal, startedAt, turnSequence, { status: "accepted" }, failure(
         error,
         error instanceof ToolExecutorError ? error.code : "tool_error",
       ));

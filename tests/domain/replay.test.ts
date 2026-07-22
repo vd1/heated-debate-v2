@@ -145,7 +145,7 @@ function reply(text: string): CanonicalTurnReply {
 function recordedRun(): CanonicalEvent[] {
   return [
     {
-      schemaVersion: 4,
+      schemaVersion: 5,
       runId: "run-1",
       sequence: 0,
       type: "run.started",
@@ -164,35 +164,35 @@ function recordedRun(): CanonicalEvent[] {
       },
     },
     {
-      schemaVersion: 4,
+      schemaVersion: 5,
       runId: "run-1",
       sequence: 1,
       type: "turn.requested",
       data: { roundNumber: 1, request: PROPOSAL_REQUEST },
     },
     {
-      schemaVersion: 4,
+      schemaVersion: 5,
       runId: "run-1",
       sequence: 2,
       type: "turn.completed",
       data: { turnId: PROPOSAL_REQUEST.turnId, reply: reply("Recorded proposal") },
     },
     {
-      schemaVersion: 4,
+      schemaVersion: 5,
       runId: "run-1",
       sequence: 3,
       type: "turn.requested",
       data: { roundNumber: 1, request: REVIEW_REQUEST },
     },
     {
-      schemaVersion: 4,
+      schemaVersion: 5,
       runId: "run-1",
       sequence: 4,
       type: "turn.completed",
       data: { turnId: REVIEW_REQUEST.turnId, reply: reply("Recorded review") },
     },
     {
-      schemaVersion: 4,
+      schemaVersion: 5,
       runId: "run-1",
       sequence: 5,
       type: "run.completed",
@@ -209,35 +209,35 @@ function recordedTwoRoundRun(): CanonicalEvent[] {
     { ...start, data: { ...start.data, roundCount: 2 } },
     ...firstRound.slice(1),
     {
-      schemaVersion: 4,
+      schemaVersion: 5,
       runId: "run-1",
       sequence: 5,
       type: "turn.requested",
       data: { roundNumber: 2, request: SECOND_PROPOSAL_REQUEST },
     },
     {
-      schemaVersion: 4,
+      schemaVersion: 5,
       runId: "run-1",
       sequence: 6,
       type: "turn.completed",
       data: { turnId: SECOND_PROPOSAL_REQUEST.turnId, reply: reply("Second proposal") },
     },
     {
-      schemaVersion: 4,
+      schemaVersion: 5,
       runId: "run-1",
       sequence: 7,
       type: "turn.requested",
       data: { roundNumber: 2, request: SECOND_REVIEW_REQUEST },
     },
     {
-      schemaVersion: 4,
+      schemaVersion: 5,
       runId: "run-1",
       sequence: 8,
       type: "turn.completed",
       data: { turnId: SECOND_REVIEW_REQUEST.turnId, reply: reply("Second review") },
     },
     {
-      schemaVersion: 4,
+      schemaVersion: 5,
       runId: "run-1",
       sequence: 9,
       type: "run.completed",
@@ -529,7 +529,7 @@ describe("replayCanonicalRun", () => {
     const completion = events[2];
     if (completion?.type !== "turn.completed") throw new Error("bad fixture");
     events[2] = {
-      schemaVersion: 4,
+      schemaVersion: 5,
       runId: "run-1",
       sequence: 2,
       type: "adapter.attempt",
@@ -560,7 +560,7 @@ describe("replayCanonicalRun", () => {
   test("explicitly rejects turn failure, run failure, and a missing terminal event", async () => {
     const turnFailure = recordedRun();
     turnFailure[2] = {
-      schemaVersion: 4,
+      schemaVersion: 5,
       runId: "run-1",
       sequence: 2,
       type: "turn.failed",
@@ -579,7 +579,7 @@ describe("replayCanonicalRun", () => {
     const runFailure: CanonicalEvent[] = [
       start,
       {
-        schemaVersion: 4,
+        schemaVersion: 5,
         runId: "run-1",
         sequence: 1,
         type: "run.failed",
@@ -655,7 +655,7 @@ describe("replayCanonicalRun tool call records", () => {
   };
 
   const toolRecord = (ordinal: number): CanonicalEvent => ({
-    schemaVersion: 4,
+    schemaVersion: 5,
     runId: "run-1",
     sequence: 0,
     type: "turn.tool_call",

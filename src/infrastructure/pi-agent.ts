@@ -76,6 +76,11 @@ export interface CreatePiAgentFromRuntimeOptions {
   now?: () => number;
 }
 
+interface ObservedResponse {
+  response: ProviderResponse;
+  turnSequence: number;
+}
+
 interface ResolvedControls {
   report: ControlReport;
   thinkingLevel: ModelThinkingLevel;
@@ -125,7 +130,8 @@ export class PiAgent implements AgentPort {
   private readonly toolsByIdentity: ReadonlyMap<string, AgentTool>;
   private readonly now: () => number;
   private readonly secrets: readonly string[];
-  private activeResponses: ProviderResponse[] | undefined;
+  private activeResponses: ObservedResponse[] | undefined;
+  private turnSequenceCounter = 0;
   private activeReply: Promise<AgentReply> | undefined;
   private turnAbort: AbortController | undefined;
   private isDisposed = false;
@@ -235,6 +241,7 @@ export class PiAgent implements AgentPort {
     this.agent.state.thinkingLevel = controls.thinkingLevel;
 
     this.activeResponses = [];
+    this.turnSequenceCounter = 0;
     const startedAt = this.now();
     const stream = this.wrapControls(this.baseStream, controls);
     const controller = new AbortController();
@@ -280,7 +287,7 @@ export class PiAgent implements AgentPort {
             toolId: toolCall.name,
             schemaVersion: schemaVersions.get(toolCall.name) ?? "unspecified",
             arguments: toolCall.arguments,
-          }, { signal: controller.signal });
+          }, { signal: controller.signal, turnSequence: this.nextTurnSequence() });
           messages.push(toToolResultMessage(toolCall, record));
         }
       }
@@ -403,10 +410,18 @@ export class PiAgent implements AgentPort {
     return {
       ...options,
       onResponse: async (response, model) => {
-        this.activeResponses?.push(response);
+        this.activeResponses?.push({
+          response,
+          turnSequence: this.nextTurnSequence(),
+        });
         await existingOnResponse?.(response, model);
       },
     };
+  }
+
+  private nextTurnSequence(): number {
+    this.turnSequenceCounter += 1;
+    return this.turnSequenceCounter;
   }
 
   private wrapControls(stream: ModelStream, controls: ResolvedControls): ModelStream {
@@ -563,38 +578,39 @@ function toUsageObservation(message: AssistantMessage, evidence: UsageEvidence):
 }
 
 function buildFailureTrace(
-  responses: readonly ProviderResponse[],
+  responses: readonly ObservedResponse[],
   evidence: UsageEvidence,
   finalStatus: "failed" | "aborted",
 ): AgentTrace {
   const observations = responses.length > 0
-    ? responses.map((response) => ({ response, observed: true }))
-    : [{ response: { status: 0, headers: {} }, observed: false }];
+    ? responses.map((observed) => ({ ...observed, observed: true }))
+    : [{ response: { status: 0, headers: {} }, turnSequence: undefined, observed: false }];
   return {
-    attempts: observations.map(({ response, observed }, index) => ({
+    attempts: observations.map(({ response, turnSequence, observed }, index) => ({
       attempt: index + 1,
       status: index === observations.length - 1 ? finalStatus : "failed",
       ...(observed ? { httpStatus: response.status } : {}),
       usage: {},
       usageEvidence: structuredClone(evidence),
+      ...(turnSequence === undefined ? {} : { turnSequence }),
     })),
   };
 }
 
 function buildTrace(
-  responses: readonly ProviderResponse[],
+  responses: readonly ObservedResponse[],
   message: AssistantMessage,
   usage: NormalizedUsage,
   evidence: UsageEvidence,
 ): AgentTrace {
   const messageSucceeded = message.stopReason !== "error" && message.stopReason !== "aborted";
   const responseObservations = responses.length > 0
-    ? responses.map((response) => ({ response, observed: true }))
-    : [{ response: { status: 0, headers: {} }, observed: false }];
+    ? responses.map((observed) => ({ ...observed, observed: true }))
+    : [{ response: { status: 0, headers: {} }, turnSequence: undefined, observed: false }];
   const finalIndex = responseObservations.length - 1;
 
   return {
-    attempts: responseObservations.map(({ response, observed }, index) => {
+    attempts: responseObservations.map(({ response, turnSequence, observed }, index) => {
       const isFinal = index === finalIndex;
       const httpSucceeded = !observed || (response.status >= 200 && response.status < 300);
       const status = isFinal && message.stopReason === "aborted"
@@ -608,6 +624,7 @@ function buildTrace(
         ...(observed ? { httpStatus: response.status } : {}),
         usage: isFinal ? usage : {},
         usageEvidence: structuredClone(evidence),
+        ...(turnSequence === undefined ? {} : { turnSequence }),
       };
     }),
   };

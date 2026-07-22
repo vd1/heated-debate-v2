@@ -1,11 +1,11 @@
 # C-TOOL-LOOP review
 
-Status: in progress; see `plans/c-tool-loop-concerns.md`. Concerns 1 and 3 remain open.
+Status: pass
 
-Reviewed on 2026-07-22. The initial pass verdict was premature: the codex review filed nine
-concerns, of which 2 and 4-9 are now resolved. Concerns 1 (Pi-side validation bypasses the
-dispatcher) and 3 (attempt/tool-call interleaving is not recorded) are open architecture
-decisions.
+Reviewed on 2026-07-22 and re-reviewed on 2026-07-23. The initial pass verdict was premature:
+the codex review filed nine concerns in `plans/c-tool-loop-concerns.md`. All nine are now
+resolved, including the two architecture decisions: `PiAgent` owns the tool loop (ADR-0001
+amendment), and canonical schema v5 records a shared per-turn attempt/tool-call sequence.
 
 The project now owns a normalized tool call vocabulary and a deterministic dispatcher. The
 dispatcher alone enforces the C-TOOL-POLICY capability policy and records an ordered trace with

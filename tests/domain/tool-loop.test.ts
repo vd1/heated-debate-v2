@@ -136,6 +136,30 @@ describe("tool dispatcher", () => {
     });
   });
 
+  test("stamps a caller-provided turn sequence on the record", async () => {
+    const dispatcher = createToolDispatcher({
+      dispatchId: "debate-1:round-1:proposer",
+      policy: policy(),
+      executors: [CALCULATOR],
+      now: fakeClock(2_200, 2_201, 2_202, 2_203),
+    });
+
+    const stamped = await dispatcher.dispatch({
+      toolId: "calculator",
+      schemaVersion: "2",
+      arguments: { a: 1, b: 2 },
+    }, { turnSequence: 7 });
+    const unstamped = await dispatcher.dispatch({
+      toolId: "calculator",
+      schemaVersion: "2",
+      arguments: { a: 3, b: 4 },
+    });
+
+    expect(stamped.turnSequence).toBe(7);
+    expect(unstamped.turnSequence).toBeUndefined();
+    expect("turnSequence" in unstamped).toBe(false);
+  });
+
   test("passes the stable project call ID and timeout to the executor", async () => {
     let observedCallId: string | undefined;
     let observedTimeoutMs: number | undefined;
