@@ -25,6 +25,7 @@ import {
   type AgentReply,
   type AgentReplyOptions,
   type AgentTrace,
+  type AttemptTrace,
   type ControlReport,
   type ControlTrace,
   type ModelIdentity,
@@ -79,6 +80,11 @@ export interface CreatePiAgentFromRuntimeOptions {
 interface ObservedResponse {
   response: ProviderResponse;
   turnSequence: number;
+}
+
+interface ModelStep {
+  responses: readonly ObservedResponse[];
+  message: AssistantMessage;
 }
 
 interface ResolvedControls {
@@ -240,7 +246,8 @@ export class PiAgent implements AgentPort {
     this.agent.state.model = this.model;
     this.agent.state.thinkingLevel = controls.thinkingLevel;
 
-    this.activeResponses = [];
+    const observedResponses: ObservedResponse[] = [];
+    this.activeResponses = observedResponses;
     this.turnSequenceCounter = 0;
     const startedAt = this.now();
     const stream = this.wrapControls(this.baseStream, controls);
@@ -254,6 +261,7 @@ export class PiAgent implements AgentPort {
       dispatcher === undefined ? {} : { toolCalls: dispatcher.trace() };
 
     let message: AssistantMessage;
+    const steps: ModelStep[] = [];
     try {
       // The project owns the tool loop: Pi core never executes tools, so every
       // model tool call reaches the dispatcher and its canonical trace.
@@ -263,6 +271,7 @@ export class PiAgent implements AgentPort {
       let iteration = 0;
       for (;;) {
         iteration += 1;
+        const responsesBefore = observedResponses.length;
         const events = await stream(this.model, {
           systemPrompt: request.role.systemPrompt,
           messages: [...messages],
@@ -272,16 +281,21 @@ export class PiAgent implements AgentPort {
           signal: controller.signal,
         });
         message = await events.result();
+        steps.push({
+          responses: observedResponses.slice(responsesBefore),
+          message,
+        });
         messages.push(message);
         if (message.stopReason === "error" || message.stopReason === "aborted") break;
 
         const toolCalls = message.content.filter(
           (content): content is ToolCall => content.type === "toolCall",
         );
-        if (dispatcher === undefined || toolCalls.length === 0) break;
-        if (iteration >= maxIterations) {
-          throw new Error("tool loop exceeded the policy call budget");
+        if (toolCalls.length === 0) break;
+        if (dispatcher === undefined) {
+          throw new Error("model returned tool calls for a turn without a recorded tool policy");
         }
+        // Dispatch before any guard so every model-returned call is recorded.
         for (const toolCall of toolCalls) {
           const record = await dispatcher.dispatch({
             toolId: toolCall.name,
@@ -290,17 +304,24 @@ export class PiAgent implements AgentPort {
           }, { signal: controller.signal, turnSequence: this.nextTurnSequence() });
           messages.push(toToolResultMessage(toolCall, record));
         }
+        if (iteration >= maxIterations) {
+          throw new Error("tool loop exceeded the policy call budget");
+        }
       }
     } catch (error) {
-      const responses = this.activeResponses;
       this.activeResponses = undefined;
+      const pending = observedResponses.slice(
+        steps.reduce((count, step) => count + step.responses.length, 0),
+      );
       throw new AgentFailure({
         code: options.signal?.aborted ? "cancelled" : "provider_failure",
         message: toError(error).message,
         trace: buildFailureTrace(
-          responses,
+          steps,
+          pending,
           this.usageEvidence,
           options.signal?.aborted ? "aborted" : "failed",
+          () => this.nextTurnSequence(),
         ),
         ...failureToolCalls(),
       });
@@ -309,11 +330,12 @@ export class PiAgent implements AgentPort {
       if (this.turnAbort === controller) this.turnAbort = undefined;
     }
     const durationMs = Math.max(0, this.now() - startedAt);
-    const responses = this.activeResponses;
     this.activeResponses = undefined;
 
-    const usage = normalizeUsage(toUsageObservation(message, this.usageEvidence));
-    const trace = buildTrace(responses, message, usage, this.usageEvidence);
+    const usage = sumNormalizedUsage(steps.map(
+      (step) => normalizeUsage(toUsageObservation(step.message, this.usageEvidence)),
+    ));
+    const trace = buildSteppedTrace(steps, this.usageEvidence, () => this.nextTurnSequence());
     if (message.stopReason === "error" || message.stopReason === "aborted") {
       throw new AgentFailure({
         code: message.stopReason === "aborted" ? "cancelled" : "provider_failure",
@@ -577,58 +599,104 @@ function toUsageObservation(message: AssistantMessage, evidence: UsageEvidence):
   };
 }
 
+function buildSteppedTrace(
+  steps: readonly ModelStep[],
+  evidence: UsageEvidence,
+  nextTurnSequence: () => number,
+): AgentTrace {
+  const attempts: AttemptTrace[] = [];
+  for (const step of steps) {
+    appendStepAttempts(attempts, step, evidence, nextTurnSequence);
+  }
+  return { attempts };
+}
+
 function buildFailureTrace(
-  responses: readonly ObservedResponse[],
+  steps: readonly ModelStep[],
+  pending: readonly ObservedResponse[],
   evidence: UsageEvidence,
   finalStatus: "failed" | "aborted",
+  nextTurnSequence: () => number,
 ): AgentTrace {
-  const observations = responses.length > 0
-    ? responses.map((observed) => ({ ...observed, observed: true }))
-    : [{ response: { status: 0, headers: {} }, turnSequence: undefined, observed: false }];
-  return {
-    attempts: observations.map(({ response, turnSequence, observed }, index) => ({
-      attempt: index + 1,
-      status: index === observations.length - 1 ? finalStatus : "failed",
-      ...(observed ? { httpStatus: response.status } : {}),
+  const attempts: AttemptTrace[] = [];
+  for (const step of steps) {
+    appendStepAttempts(attempts, step, evidence, nextTurnSequence);
+  }
+  if (pending.length > 0) {
+    pending.forEach(({ response, turnSequence }, index) => {
+      attempts.push({
+        attempt: attempts.length + 1,
+        status: index === pending.length - 1 ? finalStatus : "failed",
+        httpStatus: response.status,
+        usage: {},
+        usageEvidence: structuredClone(evidence),
+        turnSequence,
+      });
+    });
+  } else if (attempts.length === 0 || attempts.every((attempt) => attempt.status === "succeeded")) {
+    // The failing model step produced no observable response; record it explicitly.
+    attempts.push({
+      attempt: attempts.length + 1,
+      status: finalStatus,
       usage: {},
       usageEvidence: structuredClone(evidence),
-      ...(turnSequence === undefined ? {} : { turnSequence }),
-    })),
-  };
+      turnSequence: nextTurnSequence(),
+    });
+  }
+  return { attempts };
 }
 
-function buildTrace(
-  responses: readonly ObservedResponse[],
-  message: AssistantMessage,
-  usage: NormalizedUsage,
+function appendStepAttempts(
+  attempts: AttemptTrace[],
+  step: ModelStep,
   evidence: UsageEvidence,
-): AgentTrace {
-  const messageSucceeded = message.stopReason !== "error" && message.stopReason !== "aborted";
-  const responseObservations = responses.length > 0
-    ? responses.map((observed) => ({ ...observed, observed: true }))
-    : [{ response: { status: 0, headers: {} }, turnSequence: undefined, observed: false }];
-  const finalIndex = responseObservations.length - 1;
-
-  return {
-    attempts: responseObservations.map(({ response, turnSequence, observed }, index) => {
-      const isFinal = index === finalIndex;
-      const httpSucceeded = !observed || (response.status >= 200 && response.status < 300);
-      const status = isFinal && message.stopReason === "aborted"
-        ? "aborted" as const
-        : isFinal && messageSucceeded && httpSucceeded
-          ? "succeeded" as const
-          : "failed" as const;
-      return {
-        attempt: index + 1,
-        status,
-        ...(observed ? { httpStatus: response.status } : {}),
-        usage: isFinal ? usage : {},
-        usageEvidence: structuredClone(evidence),
-        ...(turnSequence === undefined ? {} : { turnSequence }),
-      };
-    }),
-  };
+  nextTurnSequence: () => number,
+): void {
+  const stepUsage = normalizeUsage(toUsageObservation(step.message, evidence));
+  const terminalStatus = step.message.stopReason === "aborted"
+    ? "aborted" as const
+    : step.message.stopReason === "error"
+      ? "failed" as const
+      : "succeeded" as const;
+  if (step.responses.length === 0) {
+    // The project invoked this model step even though no response hook fired.
+    attempts.push({
+      attempt: attempts.length + 1,
+      status: terminalStatus,
+      usage: stepUsage,
+      usageEvidence: structuredClone(evidence),
+      turnSequence: nextTurnSequence(),
+    });
+    return;
+  }
+  step.responses.forEach(({ response, turnSequence }, index) => {
+    const isTerminal = index === step.responses.length - 1;
+    const httpSucceeded = response.status >= 200 && response.status < 300;
+    attempts.push({
+      attempt: attempts.length + 1,
+      status: isTerminal
+        ? (terminalStatus === "succeeded" && !httpSucceeded ? "failed" : terminalStatus)
+        : "failed",
+      httpStatus: response.status,
+      usage: isTerminal ? stepUsage : {},
+      usageEvidence: structuredClone(evidence),
+      turnSequence,
+    });
+  });
 }
+
+function sumNormalizedUsage(usages: readonly NormalizedUsage[]): NormalizedUsage {
+  const sum: NormalizedUsage = {};
+  for (const usage of usages) {
+    for (const kind of Object.keys(usage) as (keyof NormalizedUsage)[]) {
+      const value = usage[kind];
+      if (value === undefined) continue;
+      sum[kind] = (sum[kind] ?? 0) + value;
+    }
+  }
+  return sum;
+}
+
 
 function responseModelIdentity(message: AssistantMessage): ModelIdentity {
   return {

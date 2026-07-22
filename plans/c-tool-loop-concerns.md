@@ -1,199 +1,152 @@
 # C-TOOL-LOOP concerns for Fable
 
-Status: all nine concerns resolved
+Status: concerns 1, 2, 4, and 6-9 are resolved. Concerns 3 and 5 remain open. Concerns 10 and 11
+were added after reviewing the follow-up implementation.
 
-Updated on 2026-07-23 (Fable pass after the initial codex review).
+Updated on 2026-07-23 after reviewing commits `94efdc7`, `5fc2d80`, `aff61a9`, and `5dbc03f`.
 
-Resolution summary:
+Validation at `5dbc03f`:
 
-- Concern 2: a synchronous executor throw is now normalized into a charged `tool_error` record.
-- Concern 4: `AgentFailure` and `DebateRunFailure` carry completed tool call records, and the
-  runner emits `turn.tool_call` events before `turn.failed`. The hard-interrupt path where an
-  agent ignores cancellation still cannot recover records the adapter never returned.
-- Concern 5: canonical replay now re-drives each recorded tool loop, re-authorizing every call
-  against the recorded policy, rejecting missing, extra, or drifted calls, and comparing the
-  recorded final response.
-- Concern 6: the canonical serializer redacts configured secrets from failed `turn.tool_call`
-  outcomes, and `PiAgent` threads a secrets list into its per-turn dispatcher.
-- Concern 7: the dispatcher trace is invocation-ordered even when concurrent executions complete
-  out of order.
-- Concern 8: canonical validation rejects byte accounting that disagrees with the UTF-8 length
-  of the recorded output.
-- Concern 9: executor error codes are typed, and Pi tool results containing non-text content are
-  rejected explicitly as `unsupported_result_content`.
+- `bun test`: 164 passed, 2 skipped, 0 failed.
+- `bun run typecheck`: passed.
+- `bun run lint`: passed.
 
-Concerns 1 and 3 were resolved after an explicit architecture decision:
-
-- Concern 1: `PiAgent` now owns the tool loop. It streams each model step directly, forwards
-  policy-allowed tool definitions, and dispatches every returned tool call itself, so unknown
-  tool names are recorded as denied calls and non-coercible arguments as `malformed_arguments`
-  without executing the tool. Argument validation reuses `validateToolArguments` from
-  `pi-ai/compat`, so coercion semantics match Pi core. Documented as an ADR-0001 amendment.
-- Concern 3: adapter attempts and tool call records carry an optional shared `turnSequence`
-  stamped by the adapter as events occur, so canonical schema v5 preserves the true
-  attempt/call interleaving within a turn. Absent values stay absent for historical
-  artifacts, which migrate forward without invented sequences.
-
-The remaining sections below record the original findings for reference.
-
-This is a live review file for issues found while C-TOOL-LOOP is being implemented. The task
-contract in `plans/implementation-plan.md` remains the acceptance baseline. In particular, the
-project dispatcher must own policy enforcement and trace emission, malformed and undeclared calls
-must be covered, replay must inject recorded results at their exact positions and compare the whole
-trace, and Pi's transcript must not be the only result copy.
+Passing checks do not close the remaining trace and accounting gaps below. The task contract in
+`plans/implementation-plan.md` remains the acceptance baseline.
 
 ## Open concerns
 
-### 1. Pi bypasses the dispatcher for unknown names and schema-invalid arguments
+### 3. Shared sequence numbers are recorded but not enforced or projected as event order
 
 Severity: high
 
-`PiAgent` exposes only policy-allowed wrappers, and each wrapper retains the original Pi parameter
-schema. Pi core performs tool lookup and argument validation before wrapper execution. An unknown
-tool name or ordinary JSON with missing or wrongly typed fields therefore produces Pi's immediate
-error without calling `dispatcher.dispatch`. Such a call is absent from project policy accounting
-and `reply.toolCalls`.
+The adapter now stamps observed responses and tool calls with a shared `turnSequence`. This is
+useful evidence, but the rest of the system still stores and emits the two record types in separate
+buckets:
 
-The domain `ToolExecutor` also has no schema or validation hook. Its malformed-argument test covers
-functions and circular objects, not schema-invalid JSON such as a missing required field or a string
-where a number is required.
+- `AgentTrace` contains attempts while `AgentReply.toolCalls` contains calls.
+- `projectDebateEvents` emits all attempts first and all tool calls second.
+- `runDebate` also calls `emitAttempts` before `emitToolCalls`.
+- `validateCanonicalSequence` validates only the outer event sequence. It does not require shared
+  turn positions to be unique, consecutive, complete, or consistent with event order.
+- Canonical replay ignores `turnSequence` on both attempts and calls.
 
-Evidence:
+For a real model response, tool result, model response exchange, the JSONL event order is still
+attempt, attempt, tool call. The payload annotations can suggest attempt, tool call, attempt, but
+canonical validation accepts duplicates, gaps, inversions, and mixed annotated and unannotated v5
+records. The current projection test still expects the bucketed order and does not exercise an
+annotated attempt, call, attempt trace.
 
-- `src/domain/tool-loop.ts`: `ToolExecutor` and the JSON-representability check.
-- `src/infrastructure/pi-agent.ts`: `buildTurnTools` retains `tool.parameters` and wraps only allowed
-  registrations.
-- `node_modules/@earendil-works/pi-agent-core/dist/agent-loop.js`: `prepareToolCall` performs lookup
-  and `validateToolArguments` before `tool.execute`.
-- `plans/c-tool-loop-review.md` lists these paths as a limitation, but the implementation plan does
-  not exclude them from C-TOOL-LOOP.
+Acceptance check: either adopt one ordered project trace or merge the two buckets by
+`turnSequence` when projecting and recording. For newly recorded v5 turns, validate a unique,
+consecutive shared sequence and reject contradictions. Add live and post-hoc tests whose canonical
+event order is attempt, tool call, attempt, followed by replay validation of the same order.
 
-Acceptance check: Pi tests for an unknown tool and schema-invalid JSON both produce canonical
-project records, do not execute the underlying tool, and use the same dispatcher error vocabulary
-as the scripted driver.
-
-### 2. A synchronous executor throw escapes without a record
+### 5. Canonical replay compares recorded data with a driver built from the same data
 
 Severity: high
 
-`executor.execute(...)` is evaluated before the dispatcher's `try` block. The current thrown-error
-test uses `Promise.reject`, so it does not exercise a real synchronous `throw`. A synchronous throw
-rejects `dispatch()` without a normalized outcome or trace record.
+The standalone `replayToolLoop` improvement is valid: a caller-supplied driver can now be checked
+for request, count, disposition, and final-text drift. `replayCanonicalRun` does not supply an
+independent driver, however. `replayRecordedToolLoop` constructs every driver step from
+`recorded.toolCalls`, appends `recorded.reply.text`, and then compares the result with those same
+records and that same text.
 
-Evidence: `src/domain/tool-loop.ts`, the `const execution = executor.execute(...)` statement before
-the `try` block.
+This re-authorizes recorded dispositions, but request and final-response comparisons are
+self-comparisons. A changed canonical request or final response changes both the generated driver
+side and the expected side. The function therefore does not re-drive the recorded tool loop or
+compare its whole trace against an independent scripted model execution.
 
-Acceptance check: an executor implemented as `execute: () => { throw new Error("boom"); }` returns a
-charged `tool_error` record and does not escape the normalized boundary.
+Acceptance check: canonical replay must receive a scripted `ToolLoopDriver`, or an equivalent
+independent per-turn model script. Feed recorded results into that driver at their recorded
+positions, then reject request drift, missing or extra calls, result-position drift, and final-text
+drift. Tests should mutate each recorded element while leaving the independent script unchanged.
 
-### 3. Adapter attempts and tool calls are stored in separate buckets
-
-Severity: high
-
-`AgentTrace` contains adapter attempts while `AgentReply.toolCalls` contains tool records. Both
-`projectDebateEvents` and live recording emit every adapter attempt first, then every tool call. A
-real tool exchange is usually model attempt, tool result, next model attempt, and final response.
-The current representation cannot reconstruct that interleaving, so it cannot compare the whole
-trace or prove an exact tool-result message position.
-
-Evidence:
-
-- `src/domain/agent.ts`: separate `trace.attempts` and `toolCalls` fields.
-- `src/domain/debate-events.ts`: the attempts loop precedes the tool-calls loop.
-- `src/domain/debate.ts`: `emitAttempts` precedes `emitToolCalls` after the entire reply completes.
-
-Acceptance check: use one ordered project-owned trace vocabulary and test a tool call followed by a
-second model attempt. Canonical events must retain the actual attempt, call/result, attempt order.
-
-### 4. Failed turns lose completed tool calls
+### 10. The project-owned Pi loop misclassifies model steps and loses their usage
 
 Severity: high
 
-Tool calls exist only on successful `AgentReply`. `AgentFailure` carries adapter attempts but no tool
-records. If a tool completes and a later model step fails or is cancelled, the completed call is
-lost from the canonical failure prefix. The current C-TOOL-LOOP review acknowledges this as a
-limitation even though the task requires Pi's internal transcript not to be the only result copy.
+`PiAgent` now invokes the stream once per model step, but it collects every `onResponse` callback
+in one flat `activeResponses` array and calls `buildTrace` only after the whole tool loop. That
+function treats every response except the last as failed and assigns usage only from the last
+assistant message to the last response.
 
-Evidence: `src/domain/agent.ts`, `AgentFailure` versus `AgentReply`.
+For a successful model response that requests a tool followed by a successful final model
+response, the first HTTP 200 response is consequently recorded as a failed adapter attempt with
+empty usage. The first assistant message's usage is discarded from both the trace and
+`AgentReply.usage`. Since debate budgets sum attempt usage, tool-enabled turns can be
+systematically undercounted. If a stream exposes no response hook, a multi-step tool turn is
+collapsed into one synthetic attempt with no shared sequence even though the project invoked each
+model step itself.
 
-Acceptance check: a scripted Pi turn completes a tool call and then fails on the following model
-step. The failure artifact still contains the completed tool call at its original trace position.
+Acceptance check: collect response observations and the terminal assistant message per stream
+invocation. Mark a successful tool-use step as succeeded, attach that step's normalized usage to
+its terminal response, and preserve an observable attempt entry for each project-invoked model
+step even when HTTP status is unavailable. Test a tool-use response and final response with
+distinct usage, then verify trace order, statuses, per-step usage, total turn usage, and debate
+budget accounting without double counting.
 
-### 5. Replay does not yet compare the whole trace
-
-Severity: high
-
-`replayToolLoop` replays recorded tool results and compares call requests and policy dispositions,
-which is useful. It does not accept or compare the recorded final response. Separately,
-`replayCanonicalRun` collects tool records and attaches them to a replay reply, but it does not run a
-tool-loop driver or invoke `replayToolLoop`. A canonical run can therefore pass replay without
-reproducing its tool loop or final assistant step.
-
-Evidence: `src/domain/replay.ts`, `ReplayToolLoopInput`, `replayToolLoop`, and
-`replayCanonicalRunSync`.
-
-Acceptance check: canonical replay drives the tool loop, injects each recorded result, rejects tool
-request drift, rejects missing or extra calls, and rejects final-response drift.
-
-### 6. Configured secrets can leak through tool-call failures
+### 11. The loop guard can discard a returned tool call before the dispatcher records it
 
 Severity: high
 
-The Pi dispatcher is constructed without a secrets list. More importantly, the canonical serializer
-redacts configured secrets only for `turn.failed` and `run.failed`. A failed `turn.tool_call` outcome
-can therefore persist an underlying tool exception verbatim even when the JSONL writer has the
-secret configured.
+When a model keeps returning tool calls, `PiAgent` checks `iteration >= maxIterations` before it
+dispatches the calls in that message. The call that reaches the guard is therefore absent from the
+dispatcher trace and from `AgentFailure.toolCalls`. This is especially easy to reach with repeated
+denied calls because denial may not consume the aggregate call budget.
 
-Evidence:
+There is a second silent path when `dispatcher` is undefined: a returned tool call causes the loop
+to break and return a successful reply with no tool-call record. That can occur for an unrecorded
+deny-all request even though the model emitted undeclared tool content.
 
-- `src/infrastructure/pi-agent.ts`: `createToolDispatcher` receives no `secrets` option.
-- `src/domain/events.ts`: `redactFailureSecrets` ignores `turn.tool_call` outcomes.
+Acceptance check: every tool call returned by the model must either pass through the project
+dispatcher or produce an explicit normalized protocol failure with equivalent canonical evidence.
+Test repeated denied calls through the loop limit and a no-dispatcher turn that unexpectedly
+returns a tool call. No returned call may disappear from the success or failure artifact.
 
-Acceptance check: serialize and persist a failed tool event whose message contains a configured
-secret, then verify that only `[REDACTED]` reaches JSONL and replay input.
+## Resolved concerns
 
-### 7. Stable IDs are reserved at dispatch start, but trace order is still completion order
+### 1. Pi bypassed the dispatcher for unknown names and schema-invalid arguments
 
-Severity: medium
+Resolved by `aff61a9`. `PiAgent` now owns the model/tool loop, dispatches unknown names as policy
+denials, and converts non-coercible schema failures to `malformed_arguments` without executing the
+tool. The new tests cover both paths. Concern 11 describes a separate guard path that can still
+skip recording a returned call.
 
-The in-progress fix reserves `callId` and `ordinal` when dispatch begins. `finishRecord` still uses
-`records.push`, so concurrent executions appear in `trace()` by completion order. Pi wrappers are
-currently forced to sequential execution, but the exported dispatcher contract should still keep
-its promised stable invocation order.
+### 2. A synchronous executor throw escaped without a record
 
-Acceptance check: start two deferred calls, complete call 2 first, and assert that `trace()` returns
-ordinals 1 then 2 with their matching IDs and outcomes.
+Resolved by `94efdc7`. Executor invocation is normalized through the dispatcher's guarded async
+boundary, and a synchronous-throw regression test produces a charged `tool_error` record.
 
-### 8. Canonical validation does not verify output bytes against the output string
+### 4. Failed turns lost completed tool calls
 
-Severity: medium
+Resolved by `5fc2d80`. `AgentFailure` and `DebateRunFailure` carry completed tool-call records, and
+the runner emits those records before `turn.failed`. A hard timeout still cannot recover records
+from an arbitrary adapter that ignores cancellation and never returns them.
 
-For an untruncated success, canonical validation accepts any non-negative `outputBytes`. For a
-truncated success, it checks `outputBytes === retainedBytes` but does not check either value against
-the UTF-8 byte length of `output`. A tampered event can therefore be structurally accepted with
-false byte accounting.
+### 6. Configured secrets could leak through persisted tool-call failures
 
-Evidence: `src/domain/events.ts`, `validateToolCallOutcome`.
+Resolved by `94efdc7` for the acceptance boundary. Canonical serialization redacts configured
+secrets from failed `turn.tool_call` outcomes, and tests verify the serialized replay input.
+`PiAgent` also accepts a secrets list for dispatcher-side redaction.
 
-Acceptance check: canonical parsing rejects byte counts that disagree with the actual UTF-8 output
-for both truncated and untruncated results.
+### 7. Concurrent dispatcher traces used completion order
 
-### 9. Pi silently drops non-text tool result content
+Resolved by `94efdc7`. Records reserve their ordinal at invocation and occupy that ordinal's trace
+slot even when calls complete out of order.
 
-Severity: medium
+### 8. Canonical validation trusted incorrect output byte counts
 
-The Pi executor adapter filters the original result to text blocks, concatenates them, discards all
-other content and `details`, then reports success. An image-only result becomes a successful empty
-string, while mixed content is only partially preserved. This changes tool semantics without an
-explicit error.
+Resolved by `94efdc7`. Validation compares recorded counts with the actual UTF-8 length for both
+truncated and untruncated success outcomes.
 
-Evidence: `src/infrastructure/pi-agent.ts`, the executor created by `buildTurnTools`.
+### 9. Pi silently dropped non-text tool result content
 
-Acceptance check: either normalize all supported result blocks into the project vocabulary or
-reject unsupported non-text content explicitly. Add mixed-content and image-only tests.
+Resolved by `94efdc7`. Mixed or non-text result content produces the explicit
+`unsupported_result_content` executor error instead of a successful altered result.
 
 ## Completion status
 
-`README.md` and `plans/c-tool-loop-review.md` should not declare C-TOOL-LOOP complete while the high
-severity items above remain open. The two limitations documented in the pass review directly overlap
-the task's stated acceptance contract.
+`README.md` and `plans/c-tool-loop-review.md` should not declare C-TOOL-LOOP complete while concerns
+3, 5, 10, and 11 remain open. The review file also retains stale descriptions of Pi wrappers,
+canonical schema v4, and limitations that the newer commits changed.

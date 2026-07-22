@@ -178,6 +178,7 @@ interface ScriptedToolMessage {
   stopReason: "stop" | "toolUse" | "length" | "error";
   content: AssistantMessage["content"];
   errorMessage?: string;
+  usage?: Partial<AssistantMessage["usage"]>;
 }
 
 function scriptedToolStream(messages: ScriptedToolMessage[]): {
@@ -202,11 +203,13 @@ function scriptedToolStream(messages: ScriptedToolMessage[]): {
       const scripted = messages[messageIndex];
       messageIndex += 1;
       if (!scripted) throw new Error("scripted tool stream has no message remaining");
+      const base = assistantMessage("", requestModel);
       const message: AssistantMessage = {
-        ...assistantMessage("", requestModel),
+        ...base,
         content: structuredClone(scripted.content),
         stopReason: scripted.stopReason,
         ...(scripted.errorMessage === undefined ? {} : { errorMessage: scripted.errorMessage }),
+        usage: { ...base.usage, ...scripted.usage },
       };
 
       queueMicrotask(() => {
@@ -395,6 +398,151 @@ describe("PiAgent", () => {
     expect(toolResult.isError).toBe(false);
     expect(toolResult.content).toEqual([{ type: "text", text: "result" }]);
 
+    await agent.dispose();
+  });
+
+  test("records every returned tool call before failing on the loop guard", async () => {
+    const deniedCall = (id: string): ScriptedToolMessage => ({
+      stopReason: "toolUse" as const,
+      content: [
+        { type: "toolCall", id, name: "filesystem", arguments: { path: "/etc" } },
+      ],
+    });
+    const fake = scriptedToolStream([
+      deniedCall("pi-call-1"),
+      deniedCall("pi-call-2"),
+      deniedCall("pi-call-3"),
+      deniedCall("pi-call-4"),
+    ]);
+    const agent = new PiAgent({
+      model: MODEL,
+      modelStream: fake.stream,
+      usageEvidence: { explicitlyReported: [], source: "test" },
+      tools: [{ toolId: "web-search", schemaVersion: "1", tool: WEB_SEARCH_TOOL }],
+      now: clock(1_000),
+    });
+    const request: TurnRequest = {
+      ...REQUEST,
+      capabilities: {
+        policyId: "research",
+        policyVersion: "1",
+        evidence: "recorded",
+        role: { id: "proposer", version: "1" },
+        phase: "proposal",
+        allowedTools: [{ toolId: "web-search", schemaVersion: "1", maxCalls: 1 }],
+        aggregateCallLimit: 1,
+        callTimeoutMs: 1_000,
+        maxResultBytes: 4_096,
+        deniedCallCharge: "none",
+      },
+    };
+
+    const error = await rejectionError(agent.reply(request));
+
+    expect(error).toBeInstanceOf(AgentFailure);
+    const failure = error as AgentFailure;
+    expect(failure.message).toBe("tool loop exceeded the policy call budget");
+    // Every model-returned call up to and including the guard step is recorded.
+    expect(failure.toolCalls).toHaveLength(3);
+    expect(failure.toolCalls.every(
+      (record) => record.disposition.status === "denied",
+    )).toBe(true);
+    await agent.dispose();
+  });
+
+  test("fails a turn whose model returns tool calls without a tool policy", async () => {
+    const fake = scriptedToolStream([
+      {
+        stopReason: "toolUse",
+        content: [
+          { type: "toolCall", id: "pi-call-1", name: "web-search", arguments: { query: "q" } },
+        ],
+      },
+    ]);
+    const agent = new PiAgent({
+      model: MODEL,
+      modelStream: fake.stream,
+      usageEvidence: { explicitlyReported: [], source: "test" },
+      now: clock(1_000),
+    });
+    const request: TurnRequest = {
+      ...REQUEST,
+      capabilities: {
+        policyId: "legacy-tool-names",
+        policyVersion: "1",
+        evidence: "unrecorded",
+        toolNames: [],
+      },
+    };
+
+    const error = await rejectionError(agent.reply(request));
+
+    expect(error).toBeInstanceOf(AgentFailure);
+    expect((error as AgentFailure).message).toBe(
+      "model returned tool calls for a turn without a recorded tool policy",
+    );
+    await agent.dispose();
+  });
+
+  test("keeps per-step attempt statuses and usage across a tool loop", async () => {
+    const fake = scriptedToolStream([
+      {
+        stopReason: "toolUse",
+        content: [
+          { type: "toolCall", id: "pi-call-1", name: "web-search", arguments: { query: "q" } },
+        ],
+        usage: { input: 10, output: 5, cacheWrite: 0, totalTokens: 15 },
+      },
+      {
+        stopReason: "stop",
+        content: [{ type: "text", text: "Final answer" }],
+        usage: { input: 20, output: 7, cacheWrite: 0, totalTokens: 27 },
+      },
+    ]);
+    const agent = new PiAgent({
+      model: MODEL,
+      modelStream: fake.stream,
+      usageEvidence: { explicitlyReported: [], source: "test" },
+      tools: [{ toolId: "web-search", schemaVersion: "1", tool: WEB_SEARCH_TOOL }],
+      now: clock(1_000),
+    });
+    const request: TurnRequest = {
+      ...REQUEST,
+      capabilities: {
+        policyId: "research",
+        policyVersion: "1",
+        evidence: "recorded",
+        role: { id: "proposer", version: "1" },
+        phase: "proposal",
+        allowedTools: [{ toolId: "web-search", schemaVersion: "1", maxCalls: 1 }],
+        aggregateCallLimit: 1,
+        callTimeoutMs: 1_000,
+        maxResultBytes: 4_096,
+        deniedCallCharge: "none",
+      },
+    };
+
+    const reply = await agent.reply(request);
+
+    expect(reply.trace.attempts).toEqual([
+      {
+        attempt: 1,
+        status: "succeeded",
+        httpStatus: 200,
+        usage: { inputTokens: 10, outputTokens: 5 },
+        usageEvidence: { explicitlyReported: [], source: "test" },
+        turnSequence: 1,
+      },
+      {
+        attempt: 2,
+        status: "succeeded",
+        httpStatus: 200,
+        usage: { inputTokens: 20, outputTokens: 7 },
+        usageEvidence: { explicitlyReported: [], source: "test" },
+        turnSequence: 3,
+      },
+    ]);
+    expect(reply.usage).toEqual({ inputTokens: 30, outputTokens: 12 });
     await agent.dispose();
   });
 
@@ -867,6 +1015,7 @@ describe("PiAgent", () => {
       status: "succeeded",
       usage: { inputTokens: 20, cacheWriteTokens: 3 },
       usageEvidence: { explicitlyReported: [], source: "test" },
+      turnSequence: 1,
     }]);
     await agent.dispose();
   });
