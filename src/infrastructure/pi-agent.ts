@@ -33,7 +33,12 @@ import {
   type UsageObservation,
 } from "../domain/agent";
 import type { ContextDecision, ModelInputMessage } from "../domain/context";
-import { resolveToolPolicy } from "../domain/tool-policy";
+import {
+  createToolDispatcher,
+  type ToolDispatcher,
+  type ToolExecutor,
+} from "../domain/tool-loop";
+import { resolveToolPolicy, type ToolCapabilityPolicy } from "../domain/tool-policy";
 
 export type ModelStream = StreamFn;
 
@@ -194,22 +199,13 @@ export class PiAgent implements AgentPort {
         throw new Error("cannot execute unrecorded tool capabilities");
       }
     }
-    const allowedTools = request.capabilities.evidence === "recorded"
+    const resolvedPolicy = request.capabilities.evidence === "recorded"
       ? resolveToolPolicy(request.capabilities, {
           role: { id: request.role.id, version: request.role.version },
           phase: request.capabilities.phase,
-        }).allowedTools
-      : [];
-    const tools = allowedTools.map(({ toolId, schemaVersion }) => {
-      const tool = this.toolsByIdentity.get(toolIdentityKey(toolId, schemaVersion));
-      if (!tool) {
-        throw new Error(`tool is unavailable in environment: ${toolId}@${schemaVersion}`);
-      }
-      return tool;
-    });
-    if (tools.length > 0) {
-      throw new Error("tool-enabled policies require the project dispatcher");
-    }
+        })
+      : undefined;
+    const { tools, dispatcher } = this.buildTurnTools(request.turnId, resolvedPolicy);
 
     this.agent.state.systemPrompt = request.role.systemPrompt;
     this.agent.state.model = this.model;
@@ -270,8 +266,64 @@ export class PiAgent implements AgentPort {
       controls: report,
       usage,
       trace,
-      toolCalls: [],
+      toolCalls: dispatcher === undefined ? [] : structuredClone(dispatcher.trace()),
     };
+  }
+
+  private buildTurnTools(
+    turnId: string,
+    policy: ToolCapabilityPolicy | undefined,
+  ): { tools: AgentTool[]; dispatcher: ToolDispatcher | undefined } {
+    if (!policy || policy.allowedTools.length === 0) {
+      return { tools: [], dispatcher: undefined };
+    }
+    const registrations = policy.allowedTools.map(({ toolId, schemaVersion }) => {
+      const tool = this.toolsByIdentity.get(toolIdentityKey(toolId, schemaVersion));
+      if (!tool) {
+        throw new Error(`tool is unavailable in environment: ${toolId}@${schemaVersion}`);
+      }
+      return { toolId, schemaVersion, tool };
+    });
+    const executors: ToolExecutor[] = registrations.map(({ toolId, schemaVersion, tool }) => ({
+      toolId,
+      schemaVersion,
+      execute: async (args, context) => {
+        const result = await tool.execute(context.callId, args, context.signal);
+        return result.content
+          .filter((content) => content.type === "text")
+          .map((content) => content.text)
+          .join("");
+      },
+    }));
+    const dispatcher = createToolDispatcher({
+      dispatchId: turnId,
+      policy,
+      executors,
+      now: this.now,
+    });
+    const tools = registrations.map(({ toolId, schemaVersion, tool }): AgentTool => ({
+      ...tool,
+      executionMode: "sequential",
+      execute: async (_toolCallId, params, signal) => {
+        const record = await dispatcher.dispatch(
+          { toolId, schemaVersion, arguments: params },
+          signal === undefined ? {} : { signal },
+        );
+        if (record.disposition.status === "denied") {
+          throw new Error(`tool call denied: ${record.disposition.reason}`);
+        }
+        if (record.outcome === null || record.outcome.status !== "succeeded") {
+          throw new Error(record.outcome === null
+            ? "tool call recorded no outcome"
+            : `${record.outcome.error.code}: ${record.outcome.error.message}`);
+        }
+        return {
+          content: [{ type: "text", text: record.outcome.output }],
+          details: {},
+        };
+      },
+    }));
+    return { tools, dispatcher };
   }
 
   private synchronizeContext(context: ContextDecision): string {

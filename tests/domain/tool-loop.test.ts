@@ -135,6 +135,35 @@ describe("tool dispatcher", () => {
     });
   });
 
+  test("passes the stable project call ID and timeout to the executor", async () => {
+    let observedCallId: string | undefined;
+    let observedTimeoutMs: number | undefined;
+    const dispatcher = createToolDispatcher({
+      dispatchId: "debate-1:round-1:proposer",
+      policy: policy({ callTimeoutMs: 750 }),
+      executors: [{
+        toolId: "calculator",
+        schemaVersion: "2",
+        execute: (_args, context) => {
+          observedCallId = context.callId;
+          observedTimeoutMs = context.timeoutMs;
+          return Promise.resolve("ok");
+        },
+      }],
+      now: fakeClock(2_500, 2_501),
+    });
+
+    const record = await dispatcher.dispatch({
+      toolId: "calculator",
+      schemaVersion: "2",
+      arguments: { a: 1, b: 2 },
+    });
+
+    expect(observedCallId).toBe("debate-1:round-1:proposer:call-1");
+    expect(observedCallId).toBe(record.callId);
+    expect(observedTimeoutMs).toBe(750);
+  });
+
   test("charges an accepted call whose tool is unavailable in the environment", async () => {
     const dispatcher = createToolDispatcher({
       dispatchId: "debate-1:round-1:proposer",

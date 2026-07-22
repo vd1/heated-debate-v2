@@ -5,6 +5,7 @@ import type {
   ThinkingLevel,
   TurnRequest,
 } from "./agent";
+import type { ToolCallRecord } from "./tool-loop";
 import {
   validateCanonicalSequence,
   type CanonicalEvent,
@@ -16,6 +17,7 @@ interface TranscriptTurn {
   roundNumber: number;
   request: TurnRequest;
   attempts: AttemptTrace[];
+  toolCalls: ToolCallRecord[];
   reply?: CanonicalTurnReply;
   failure?: SanitizedFailure;
 }
@@ -40,6 +42,7 @@ export function renderDebateMarkdown(events: readonly CanonicalEvent[]): string 
           roundNumber: event.data.roundNumber,
           request: structuredClone(event.data.request),
           attempts: [],
+          toolCalls: [],
         };
         turns.push(turn);
         turnsById.set(turnId, turn);
@@ -47,6 +50,9 @@ export function renderDebateMarkdown(events: readonly CanonicalEvent[]): string 
       }
       case "adapter.attempt":
         requireTurn(turnsById, event.data.turnId).attempts.push(structuredClone(event.data.attempt));
+        break;
+      case "turn.tool_call":
+        requireTurn(turnsById, event.data.turnId).toolCalls.push(structuredClone(event.data.record));
         break;
       case "turn.completed": {
         const turn = requireTurn(turnsById, event.data.turnId);
@@ -193,6 +199,42 @@ function renderTurn(lines: string[], turn: TranscriptTurn): void {
   }
 
   if (turn.attempts.length > 0) renderAttempts(lines, turn.attempts);
+  if (turn.toolCalls.length > 0) renderToolCalls(lines, turn.toolCalls);
+}
+
+function renderToolCalls(lines: string[], toolCalls: readonly ToolCallRecord[]): void {
+  lines.push(
+    "",
+    "#### Tool calls",
+    "",
+    "| # | Tool | Disposition | Outcome | Output bytes | Truncation | Duration (ms) |",
+    "| ---: | --- | --- | --- | ---: | --- | ---: |",
+  );
+  for (const record of toolCalls) {
+    const disposition = record.disposition.status === "accepted"
+      ? "accepted"
+      : `denied: ${record.disposition.reason}`;
+    const outcome = record.outcome === null
+      ? "_none_"
+      : record.outcome.status === "succeeded"
+        ? "succeeded"
+        : `failed: ${inlineCode(record.outcome.error.code)}`;
+    const outputBytes = record.outcome?.status === "succeeded"
+      ? String(record.outcome.outputBytes)
+      : "-";
+    const truncation = record.outcome?.status === "succeeded" && record.outcome.truncation !== null
+      ? `${String(record.outcome.truncation.originalBytes)} -> ${String(record.outcome.truncation.retainedBytes)}`
+      : "-";
+    lines.push([
+      `| ${String(record.ordinal)}`,
+      inlineCode(`${record.toolId}@${record.schemaVersion}`),
+      escapeTableCell(disposition),
+      escapeTableCell(outcome),
+      outputBytes,
+      truncation,
+      `${String(record.durationMs)} |`,
+    ].join(" | "));
+  }
 }
 
 function renderAttempts(lines: string[], attempts: readonly AttemptTrace[]): void {

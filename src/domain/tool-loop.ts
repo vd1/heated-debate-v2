@@ -10,6 +10,7 @@ import {
 export type ToolCallArguments = unknown;
 
 export interface ToolExecutionContext {
+  callId: string;
   signal: AbortSignal;
   timeoutMs: number;
 }
@@ -93,17 +94,19 @@ export function createToolDispatcher(options: ToolDispatcherOptions): ToolDispat
     ]),
   );
   const records: ToolCallRecord[] = [];
+  let dispatchCount = 0;
   let accounting = createToolCallAccounting(options.policy);
 
   function finishRecord(
     request: ToolCallRequest,
+    ordinal: number,
     startedAt: number,
     disposition: ToolCallDisposition,
     outcome: ToolCallOutcome | null,
   ): ToolCallRecord {
     const record = deepFreeze({
-      callId: `${options.dispatchId}:call-${String(records.length + 1)}`,
-      ordinal: records.length + 1,
+      callId: callIdFor(ordinal),
+      ordinal,
       toolId: request.toolId,
       schemaVersion: request.schemaVersion,
       arguments: jsonProjection(request.arguments).projected,
@@ -115,11 +118,17 @@ export function createToolDispatcher(options: ToolDispatcherOptions): ToolDispat
     return record;
   }
 
+  function callIdFor(ordinal: number): string {
+    return `${options.dispatchId}:call-${String(ordinal)}`;
+  }
+
   async function dispatch(
     request: ToolCallRequest,
     dispatchOptions: ToolDispatchOptions = {},
   ): Promise<ToolCallRecord> {
     const startedAt = now();
+    dispatchCount += 1;
+    const ordinal = dispatchCount;
     const externalSignal = dispatchOptions.signal;
     const authorization = authorizeToolCall(options.policy, accounting, {
       toolId: request.toolId,
@@ -127,7 +136,7 @@ export function createToolDispatcher(options: ToolDispatcherOptions): ToolDispat
     });
     accounting = authorization.accounting;
     if (authorization.decision.status === "denied") {
-      return finishRecord(request, startedAt, {
+      return finishRecord(request, ordinal, startedAt, {
         status: "denied",
         reason: authorization.decision.reason,
       }, null);
@@ -135,13 +144,13 @@ export function createToolDispatcher(options: ToolDispatcherOptions): ToolDispat
 
     const executor = executors.get(executorKey(request.toolId, request.schemaVersion));
     if (!executor) {
-      return finishRecord(request, startedAt, { status: "accepted" }, failure(
+      return finishRecord(request, ordinal, startedAt, { status: "accepted" }, failure(
         new Error(`tool is unavailable in environment: ${request.toolId}@${request.schemaVersion}`),
         "tool_unavailable",
       ));
     }
     if (!jsonProjection(request.arguments).faithful) {
-      return finishRecord(request, startedAt, { status: "accepted" }, failure(
+      return finishRecord(request, ordinal, startedAt, { status: "accepted" }, failure(
         new Error("tool call arguments must be JSON-representable"),
         "malformed_arguments",
       ));
@@ -151,13 +160,14 @@ export function createToolDispatcher(options: ToolDispatcherOptions): ToolDispat
       "cancelled",
     );
     if (externalSignal?.aborted) {
-      return finishRecord(request, startedAt, { status: "accepted" }, cancelledOutcome());
+      return finishRecord(request, ordinal, startedAt, { status: "accepted" }, cancelledOutcome());
     }
     const timeoutMs = options.policy.callTimeoutMs;
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     let removeAbortListener: (() => void) | undefined;
     const execution = executor.execute(structuredClone(request.arguments), {
+      callId: callIdFor(ordinal),
       signal: controller.signal,
       timeoutMs,
     });
@@ -185,20 +195,20 @@ export function createToolDispatcher(options: ToolDispatcherOptions): ToolDispat
         }),
       ]);
       if (raced === timedOut) {
-        return finishRecord(request, startedAt, { status: "accepted" }, failure(
+        return finishRecord(request, ordinal, startedAt, { status: "accepted" }, failure(
           new Error(`tool call timed out after ${String(timeoutMs)}ms`),
           "timeout",
         ));
       }
       if (raced === cancelled) {
-        return finishRecord(request, startedAt, { status: "accepted" }, cancelledOutcome());
+        return finishRecord(request, ordinal, startedAt, { status: "accepted" }, cancelledOutcome());
       }
-      return finishRecord(request, startedAt, { status: "accepted" }, successOutcome(
+      return finishRecord(request, ordinal, startedAt, { status: "accepted" }, successOutcome(
         raced,
         options.policy.maxResultBytes,
       ));
     } catch (error) {
-      return finishRecord(request, startedAt, { status: "accepted" }, failure(error, "tool_error"));
+      return finishRecord(request, ordinal, startedAt, { status: "accepted" }, failure(error, "tool_error"));
     } finally {
       if (timer !== undefined) clearTimeout(timer);
       removeAbortListener?.();

@@ -283,6 +283,68 @@ Completed 1 turn.
     expect(markdown).not.toContain("Aggregate tool call limit:");
   });
 
+
+  test("renders recorded tool calls with disposition, truncation, and duration", () => {
+    const base = EVENTS.slice(0, 3);
+    const toolEvents: CanonicalEvent[] = [
+      {
+        schemaVersion: 4,
+        runId: "artifact-1",
+        sequence: 0,
+        type: "turn.tool_call",
+        data: {
+          turnId: "debate-1:round-1:proposer",
+          record: {
+            callId: "debate-1:round-1:proposer:call-1",
+            ordinal: 1,
+            toolId: "web-search",
+            schemaVersion: "1",
+            arguments: { query: "queues" },
+            disposition: { status: "accepted" },
+            outcome: {
+              status: "succeeded",
+              output: "partial",
+              outputBytes: 7,
+              truncation: { originalBytes: 64, retainedBytes: 7 },
+            },
+            durationMs: 41,
+          },
+        },
+      },
+      {
+        schemaVersion: 4,
+        runId: "artifact-1",
+        sequence: 0,
+        type: "turn.tool_call",
+        data: {
+          turnId: "debate-1:round-1:proposer",
+          record: {
+            callId: "debate-1:round-1:proposer:call-2",
+            ordinal: 2,
+            toolId: "filesystem",
+            schemaVersion: "2",
+            arguments: { path: "/tmp" },
+            disposition: { status: "denied", reason: "tool_not_allowed" },
+            outcome: null,
+            durationMs: 0,
+          },
+        },
+      },
+    ];
+    const events = [...base, ...toolEvents, ...EVENTS.slice(3)]
+      .map((event, sequence) => ({ ...event, sequence }));
+
+    const markdown = renderDebateMarkdown(events);
+
+    expect(markdown).toContain("#### Tool calls");
+    expect(markdown).toContain(
+      "| 1 | `web-search@1` | accepted | succeeded | 7 | 64 -> 7 | 41 |",
+    );
+    expect(markdown).toContain(
+      "| 2 | `filesystem@2` | denied: tool_not_allowed | _none_ | - | - | 0 |",
+    );
+  });
+
   test("renders a sanitized failed turn without requiring a completion", () => {
     const start = EVENTS[0];
     const request = EVENTS[1];

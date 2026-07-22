@@ -174,6 +174,52 @@ function scriptedStream(options: ScriptedStreamOptions): {
   };
 }
 
+interface ScriptedToolMessage {
+  stopReason: "stop" | "toolUse" | "length";
+  content: AssistantMessage["content"];
+}
+
+function scriptedToolStream(messages: ScriptedToolMessage[]): {
+  calls: StreamCall[];
+  stream: ModelStream;
+} {
+  const calls: StreamCall[] = [];
+  let messageIndex = 0;
+
+  return {
+    calls,
+    stream: (requestModel, context, streamOptions) => {
+      const { tools, ...serializableContext } = context;
+      calls.push({
+        context: {
+          ...structuredClone(serializableContext),
+          ...(tools === undefined ? {} : { tools: [...tools] }),
+        },
+        options: streamOptions,
+      });
+      const events = createAssistantMessageEventStream();
+      const scripted = messages[messageIndex];
+      messageIndex += 1;
+      if (!scripted) throw new Error("scripted tool stream has no message remaining");
+      const message: AssistantMessage = {
+        ...assistantMessage("", requestModel),
+        content: structuredClone(scripted.content),
+        stopReason: scripted.stopReason,
+      };
+
+      queueMicrotask(() => {
+        void (async () => {
+          await streamOptions?.onResponse?.({ status: 200, headers: {} }, requestModel);
+          events.push({ type: "start", partial: { ...message, content: [] } });
+          events.push({ type: "done", reason: scripted.stopReason, message });
+          events.end();
+        })();
+      });
+      return events;
+    },
+  };
+}
+
 function messageText(message: Message): string {
   if (message.role === "toolResult") return "";
   if (typeof message.content === "string") return message.content;
@@ -277,13 +323,23 @@ describe("PiAgent", () => {
     await Promise.all([scripted.dispose(), agent.dispose()]);
   });
 
-  test("blocks registered policy tools until the project dispatcher owns execution", async () => {
-    const fake = scriptedStream({ replies: ["Used the declared capability."] });
+  test("routes tool-enabled turns through the project dispatcher", async () => {
+    const fake = scriptedToolStream([
+      {
+        stopReason: "toolUse",
+        content: [
+          { type: "text", text: "Let me search." },
+          { type: "toolCall", id: "pi-call-9", name: "web-search", arguments: { query: "queues" } },
+        ],
+      },
+      { stopReason: "stop", content: [{ type: "text", text: "Final answer" }] },
+    ]);
     const agent = new PiAgent({
       model: MODEL,
       modelStream: fake.stream,
       usageEvidence: { explicitlyReported: [], source: "test" },
       tools: [{ toolId: "web-search", schemaVersion: "1", tool: WEB_SEARCH_TOOL }],
+      now: clock(1_000, 1_020, 1_045, 1_100),
     });
     const request: TurnRequest = {
       ...REQUEST,
@@ -301,10 +357,95 @@ describe("PiAgent", () => {
       },
     };
 
-    expect((await rejectionError(agent.reply(request))).message).toBe(
-      "tool-enabled policies require the project dispatcher",
+    const reply = await agent.reply(request);
+
+    expect(reply.text).toBe("Final answer");
+    expect(reply.toolCalls).toEqual([{
+      callId: "turn-1:call-1",
+      ordinal: 1,
+      toolId: "web-search",
+      schemaVersion: "1",
+      arguments: { query: "queues" },
+      disposition: { status: "accepted" },
+      outcome: {
+        status: "succeeded",
+        output: "result",
+        outputBytes: 6,
+        truncation: null,
+      },
+      durationMs: 25,
+    }]);
+
+    expect(fake.calls).toHaveLength(2);
+    const forwarded = fake.calls[0]?.context.tools;
+    expect(forwarded?.map((tool) => tool.name)).toEqual(["web-search"]);
+    expect((forwarded?.[0] as AgentTool | undefined)?.executionMode).toBe("sequential");
+    const toolResult = fake.calls[1]?.context.messages.find(
+      (message) => message.role === "toolResult",
     );
-    expect(fake.calls).toHaveLength(0);
+    if (!toolResult) throw new Error("missing tool result");
+    expect(toolResult.toolCallId).toBe("pi-call-9");
+    expect(toolResult.isError).toBe(false);
+    expect(toolResult.content).toEqual([{ type: "text", text: "result" }]);
+
+    await agent.dispose();
+  });
+
+  test("feeds a policy denial back to the model as a sanitized tool error", async () => {
+    const fake = scriptedToolStream([
+      {
+        stopReason: "toolUse",
+        content: [
+          { type: "toolCall", id: "pi-call-1", name: "web-search", arguments: { query: "one" } },
+        ],
+      },
+      {
+        stopReason: "toolUse",
+        content: [
+          { type: "toolCall", id: "pi-call-2", name: "web-search", arguments: { query: "two" } },
+        ],
+      },
+      { stopReason: "stop", content: [{ type: "text", text: "Done under budget." }] },
+    ]);
+    const agent = new PiAgent({
+      model: MODEL,
+      modelStream: fake.stream,
+      usageEvidence: { explicitlyReported: [], source: "test" },
+      tools: [{ toolId: "web-search", schemaVersion: "1", tool: WEB_SEARCH_TOOL }],
+      now: clock(1_000),
+    });
+    const request: TurnRequest = {
+      ...REQUEST,
+      capabilities: {
+        policyId: "research",
+        policyVersion: "1",
+        evidence: "recorded",
+        role: { id: "proposer", version: "1" },
+        phase: "proposal",
+        allowedTools: [{ toolId: "web-search", schemaVersion: "1", maxCalls: 1 }],
+        aggregateCallLimit: 2,
+        callTimeoutMs: 1_000,
+        maxResultBytes: 4_096,
+        deniedCallCharge: "none",
+      },
+    };
+
+    const reply = await agent.reply(request);
+
+    expect(reply.text).toBe("Done under budget.");
+    expect(reply.toolCalls).toHaveLength(2);
+    expect(reply.toolCalls[1]?.disposition).toEqual({
+      status: "denied",
+      reason: "tool_call_limit_exhausted",
+    });
+    expect(reply.toolCalls[1]?.outcome).toBeNull();
+    const deniedResult = fake.calls[2]?.context.messages.filter(
+      (message) => message.role === "toolResult",
+    ).at(-1);
+    if (!deniedResult) throw new Error("missing denial");
+    expect(deniedResult.isError).toBe(true);
+    expect(JSON.stringify(deniedResult.content)).toContain("tool_call_limit_exhausted");
+
     await agent.dispose();
   });
 
