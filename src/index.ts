@@ -10,7 +10,9 @@ export * from "./domain/replay";
 export * from "./domain/roles";
 export * from "./domain/scheduler";
 export * from "./domain/tool-policy";
+export * from "./domain/web-search";
 export * from "./infrastructure/jsonl-events";
 export * from "./infrastructure/pi-agent";
+export * from "./infrastructure/web-search";
 
 export const ENGINE_NAME = "heated-debate-v2";

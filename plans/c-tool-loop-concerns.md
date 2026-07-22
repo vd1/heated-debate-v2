@@ -1,9 +1,9 @@
 # C-TOOL-LOOP concerns for Fable
 
-Status: concerns 1, 2, 4, 6-9, and 11 are resolved. Concerns 3, 5, and 10 remain open. Concern 12
-was added after reviewing the latest follow-up implementation.
+Status: concerns 1-4, 6-9, and 11 are resolved. Concern 5 is partially resolved. Concerns 10, 12,
+and 13 remain open.
 
-Updated on 2026-07-23 after reviewing through commit `87fd863`.
+Updated on 2026-07-23 after reviewing through commit `ce2c1f5`.
 
 Validation at `5dbc03f`:
 
@@ -16,51 +16,24 @@ Passing checks do not close the remaining trace and accounting gaps below. The t
 
 ## Open concerns
 
-### 3. Shared sequence numbers are recorded but not enforced or projected as event order
+### 5. Full canonical replay is optional and silently falls back to self-comparison
 
 Severity: high
 
-The adapter now stamps observed responses and tool calls with a shared `turnSequence`. This is
-useful evidence, but the rest of the system still stores and emits the two record types in separate
-buckets:
+Commit `ce2c1f5` adds the needed independent path. When `toolLoopDrivers` supplies a driver for a
+turn, canonical replay feeds it recorded results and detects request and final-text tampering. The
+new integration tests demonstrate that path.
 
-- `AgentTrace` contains attempts while `AgentReply.toolCalls` contains calls.
-- `projectDebateEvents` emits all attempts first and all tool calls second.
-- `runDebate` also calls `emitAttempts` before `emitToolCalls`.
-- `validateCanonicalSequence` validates only the outer event sequence. It does not require shared
-  turn positions to be unique, consecutive, complete, or consistent with event order.
-- Canonical replay ignores `turnSequence` on both attempts and calls.
+The option is not required for a turn containing tool calls. If the callback is omitted or returns
+`undefined`, `replayRecordedToolLoop` retains the driver built from the same recorded calls and
+reply. `replayCanonicalRun` still succeeds and returns the same result type even though only policy
+re-authorization occurred. A caller can therefore believe it requested deterministic replay while
+silently receiving the weaker self-comparison path.
 
-For a real model response, tool result, model response exchange, the JSONL event order is still
-attempt, attempt, tool call. The payload annotations can suggest attempt, tool call, attempt, but
-canonical validation accepts duplicates, gaps, inversions, and mixed annotated and unannotated v5
-records. The current projection test still expects the bucketed order and does not exercise an
-annotated attempt, call, attempt trace.
-
-Acceptance check: either adopt one ordered project trace or merge the two buckets by
-`turnSequence` when projecting and recording. For newly recorded v5 turns, validate a unique,
-consecutive shared sequence and reject contradictions. Add live and post-hoc tests whose canonical
-event order is attempt, tool call, attempt, followed by replay validation of the same order.
-
-### 5. Canonical replay compares recorded data with a driver built from the same data
-
-Severity: high
-
-The standalone `replayToolLoop` improvement is valid: a caller-supplied driver can now be checked
-for request, count, disposition, and final-text drift. `replayCanonicalRun` does not supply an
-independent driver, however. `replayRecordedToolLoop` constructs every driver step from
-`recorded.toolCalls`, appends `recorded.reply.text`, and then compares the result with those same
-records and that same text.
-
-This re-authorizes recorded dispositions, but request and final-response comparisons are
-self-comparisons. A changed canonical request or final response changes both the generated driver
-side and the expected side. The function therefore does not re-drive the recorded tool loop or
-compare its whole trace against an independent scripted model execution.
-
-Acceptance check: canonical replay must receive a scripted `ToolLoopDriver`, or an equivalent
-independent per-turn model script. Feed recorded results into that driver at their recorded
-positions, then reject request drift, missing or extra calls, result-position drift, and final-text
-drift. Tests should mutate each recorded element while leaving the independent script unchanged.
+Acceptance check: make full replay fail closed when a recorded tool turn lacks an independent
+driver, or expose the weaker operation under a separate API or explicit mode with a result that
+states which guarantee was achieved. Keep historical request reconstruction available, but do not
+report it as full tool-loop replay.
 
 ### 10. A model step without a response hook is sequenced after its tool calls
 
@@ -103,19 +76,43 @@ after a completed step. The guard and no-policy tests should retain the complete
 attempts and calls without appending another adapter attempt. Record a normalized local loop or
 protocol failure code rather than a provider failure if the failure vocabulary permits it.
 
+### 13. Producers can emit a sequence that canonical validation later rejects
+
+Severity: medium
+
+Commit `ce2c1f5` adds strong read-time checks for annotated evidence: duplicates, gaps, inversions,
+and mixed sequenced and unsequenced entries are rejected by `validateCanonicalSequence`.
+
+The production helper `orderedTurnEvidence` does not apply those checks. If every item is
+annotated, it sorts duplicate or gapped positions and emits them. If annotations are mixed, it
+falls back to bucket order and emits the mixed evidence. `projectDebateEvents` and live
+`runDebate` can therefore produce and persist a schema-v5 artifact that their own sequence
+validator rejects when it is later read or replayed.
+
+Acceptance check: validate shared turn positions before projection or the first sink append. Mixed
+annotations and non-consecutive annotated positions must fail before an invalid artifact is
+returned or persisted. Preserve the all-unsequenced compatibility path only where its weaker
+ordering guarantee is deliberate.
+
 ## Resolved concerns
 
 ### 1. Pi bypassed the dispatcher for unknown names and schema-invalid arguments
 
 Resolved by `aff61a9`. `PiAgent` now owns the model/tool loop, dispatches unknown names as policy
 denials, and converts non-coercible schema failures to `malformed_arguments` without executing the
-tool. The new tests cover both paths. Concern 11 describes a separate guard path that can still
-skip recording a returned call.
+tool. The new tests cover both paths.
 
 ### 2. A synchronous executor throw escaped without a record
 
 Resolved by `94efdc7`. Executor invocation is normalized through the dispatcher's guarded async
 boundary, and a synchronous-throw regression test produces a charged `tool_error` record.
+
+### 3. Attempts and tool calls were projected in separate buckets
+
+Resolved by `ce2c1f5` for correctly sequenced evidence. `orderedTurnEvidence` merges both record
+types by `turnSequence` for live and post-hoc artifacts, and canonical validation enforces a unique,
+consecutive sequence consistent with event order. Concern 13 covers invalid producer input before
+that read-time validation runs.
 
 ### 4. Failed turns lost completed tool calls
 
@@ -154,5 +151,5 @@ trace.
 ## Completion status
 
 `README.md` and `plans/c-tool-loop-review.md` should not declare C-TOOL-LOOP complete while concerns
-3, 5, 10, and 12 remain open. The review file also retains stale descriptions of Pi wrappers,
+5, 10, 12, and 13 remain open. The review file also retains stale descriptions of Pi wrappers,
 canonical schema v4, and limitations that the newer commits changed.

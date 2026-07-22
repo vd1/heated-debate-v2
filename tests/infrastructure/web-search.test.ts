@@ -1,0 +1,172 @@
+import { describe, expect, test } from "bun:test";
+
+import {
+  createHttpWebSearchPort,
+  createWebSearchToolRegistration,
+  type WebSearchFetch,
+} from "../../src/infrastructure/web-search";
+
+function fakeBackend(payload: unknown, options: {
+  status?: number;
+  onRequest?: (url: string, init: { headers: Record<string, string>; signal?: AbortSignal }) => void;
+} = {}): WebSearchFetch {
+  return (url, init) => {
+    options.onRequest?.(url, init);
+    return Promise.resolve({
+      status: options.status ?? 200,
+      json: () => Promise.resolve(structuredClone(payload)),
+    });
+  };
+}
+
+const THREE_RESULTS = {
+  results: [
+    { title: "Bounded queues", url: "https://example.test/a", content: "Queues with caps." },
+    { title: "Backpressure", url: "https://example.test/b", content: "Flow control." },
+    { title: "Ring buffers", url: "https://example.test/c", content: "Fixed storage." },
+  ],
+};
+
+describe("http web search port", () => {
+  test("normalizes query, results, provenance, timestamp, and truncation", async () => {
+    const requests: string[] = [];
+    const port = createHttpWebSearchPort({
+      provider: "test-search",
+      endpoint: "https://search.example.test/search",
+      fetchFn: fakeBackend(THREE_RESULTS, {
+        onRequest: (url) => {
+          requests.push(url);
+        },
+      }),
+      now: () => 1_753_000_000_000,
+    });
+
+    const response = await port.search({ query: "bounded queues", maxResults: 2 });
+
+    expect(requests).toEqual([
+      "https://search.example.test/search?q=bounded+queues&format=json",
+    ]);
+    expect(response).toEqual({
+      query: "bounded queues",
+      retrievedAt: 1_753_000_000_000,
+      provenance: {
+        provider: "test-search",
+        endpoint: "https://search.example.test/search",
+      },
+      results: [
+        { title: "Bounded queues", url: "https://example.test/a", snippet: "Queues with caps." },
+        { title: "Backpressure", url: "https://example.test/b", snippet: "Flow control." },
+      ],
+      truncation: { available: 3, returned: 2 },
+    });
+  });
+
+  test("reports no truncation when every result is returned", async () => {
+    const port = createHttpWebSearchPort({
+      provider: "test-search",
+      endpoint: "https://search.example.test/search",
+      fetchFn: fakeBackend(THREE_RESULTS),
+      now: () => 1_753_000_000_000,
+    });
+
+    const response = await port.search({ query: "bounded queues" });
+
+    expect(response.results).toHaveLength(3);
+    expect(response.truncation).toBeNull();
+  });
+
+  test("fails on non-success status without leaking the endpoint credentials", async () => {
+    const port = createHttpWebSearchPort({
+      provider: "test-search",
+      endpoint: "https://search.example.test/search",
+      apiKey: "search-secret-123",
+      fetchFn: fakeBackend({}, { status: 503 }),
+      now: () => 0,
+    });
+
+    let caught: unknown;
+    try {
+      await port.search({ query: "queues" });
+    } catch (error) {
+      caught = error;
+    }
+    if (!(caught instanceof Error)) throw new Error("expected a search failure");
+    expect(caught.message).toBe("search backend responded with status 503");
+    expect(caught.message).not.toContain("search-secret-123");
+  });
+
+  test("sends the API key as a header and never places it in the response", async () => {
+    let observedHeaders: Record<string, string> | undefined;
+    const port = createHttpWebSearchPort({
+      provider: "test-search",
+      endpoint: "https://search.example.test/search",
+      apiKey: "search-secret-123",
+      fetchFn: fakeBackend(THREE_RESULTS, {
+        onRequest: (_url, init) => {
+          observedHeaders = init.headers;
+        },
+      }),
+      now: () => 0,
+    });
+
+    const response = await port.search({ query: "queues" });
+
+    expect(observedHeaders).toEqual({ authorization: "Bearer search-secret-123" });
+    expect(JSON.stringify(response)).not.toContain("search-secret-123");
+  });
+
+  test("rejects malformed backend payloads with a typed message", async () => {
+    const port = createHttpWebSearchPort({
+      provider: "test-search",
+      endpoint: "https://search.example.test/search",
+      fetchFn: fakeBackend({ results: [{ title: "x", url: "https://a", content: 5 }] }),
+      now: () => 0,
+    });
+
+    let caught: unknown;
+    try {
+      await port.search({ query: "queues" });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toBe("search result 0 is missing title, url, or content");
+  });
+});
+
+describe("web search tool registration", () => {
+  test("wraps the port as a versioned Pi tool emitting the full JSON evidence", async () => {
+    const port = createHttpWebSearchPort({
+      provider: "test-search",
+      endpoint: "https://search.example.test/search",
+      fetchFn: fakeBackend(THREE_RESULTS),
+      now: () => 1_753_000_000_000,
+    });
+    const registration = createWebSearchToolRegistration(port);
+
+    expect(registration.toolId).toBe("web-search");
+    expect(registration.schemaVersion).toBe("1");
+    expect(registration.tool.name).toBe("web-search");
+
+    const result = await registration.tool.execute(
+      "call-1",
+      { query: "bounded queues", maxResults: 1 },
+    );
+
+    expect(result.content).toHaveLength(1);
+    const text = result.content[0];
+    if (text?.type !== "text") throw new Error("expected text content");
+    expect(JSON.parse(text.text)).toEqual({
+      query: "bounded queues",
+      retrievedAt: 1_753_000_000_000,
+      provenance: {
+        provider: "test-search",
+        endpoint: "https://search.example.test/search",
+      },
+      results: [
+        { title: "Bounded queues", url: "https://example.test/a", snippet: "Queues with caps." },
+      ],
+      truncation: { available: 3, returned: 1 },
+    });
+  });
+});
