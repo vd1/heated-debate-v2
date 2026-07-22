@@ -92,15 +92,14 @@ function debateInput(
   };
 }
 
-const FAILED_TRACE: AgentTrace = {
-  attempts: [{
-    attempt: 1,
-    status: "failed",
-    httpStatus: 503,
-    usage: {},
-    usageEvidence: { explicitlyReported: [], source: "provider response" },
-  }],
+const FAILED_ATTEMPT: AgentTrace["attempts"][number] = {
+  attempt: 1,
+  status: "failed",
+  httpStatus: 503,
+  usage: {},
+  usageEvidence: { explicitlyReported: [], source: "provider response" },
 };
+const FAILED_TRACE: AgentTrace = { attempts: [FAILED_ATTEMPT] };
 
 describe("runDebate failure semantics", () => {
   test.each([
@@ -232,6 +231,43 @@ describe("runDebate failure semantics", () => {
     });
   });
 
+
+
+  test("emits sequenced attempts and tool calls in shared order while recording", async () => {
+    const annotatedReply: AgentReply = {
+      ...reply("Proposal"),
+      trace: {
+        attempts: [
+          { ...FAILED_ATTEMPT, status: "succeeded", turnSequence: 1 },
+          { ...FAILED_ATTEMPT, status: "succeeded", attempt: 2, turnSequence: 3 },
+        ],
+      },
+      toolCalls: [{
+        callId: "failure-run:round-1:proposer:call-1",
+        ordinal: 1,
+        toolId: "web-search",
+        schemaVersion: "1",
+        arguments: { query: "q" },
+        disposition: { status: "accepted" },
+        outcome: { status: "succeeded", output: "r", outputBytes: 1, truncation: null },
+        durationMs: 5,
+        turnSequence: 2,
+      }],
+    };
+    const proposer = new ScenarioAgent(() => Promise.resolve(structuredClone(annotatedReply)));
+    const reviewer = new ScenarioAgent(() => Promise.resolve(reply("Review")));
+    const sink = new MemorySink();
+
+    await runDebate(debateInput(proposer, reviewer, sink));
+
+    expect(sink.events.slice(1, 6).map((event) => event.type)).toEqual([
+      "turn.requested",
+      "adapter.attempt",
+      "turn.tool_call",
+      "adapter.attempt",
+      "turn.completed",
+    ]);
+  });
 
   test("emits completed tool calls before the turn failure that follows them", async () => {
     const completedCall = {

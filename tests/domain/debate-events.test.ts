@@ -122,6 +122,54 @@ describe("projectDebateEvents", () => {
     expect(replay.requests).toEqual(requests.map((event) => event.data.request));
   });
 
+  test("projects sequenced attempts and tool calls in their shared turn order", async () => {
+    const attempts: AgentReply["trace"]["attempts"] = [
+      { ...SUCCEEDED_ATTEMPT, attempt: 1, turnSequence: 1 },
+      { ...SUCCEEDED_ATTEMPT, attempt: 2, turnSequence: 3 },
+    ];
+    const toolCalls: AgentReply["toolCalls"] = [{
+      callId: "debate-1:round-1:proposer:call-1",
+      ordinal: 1,
+      toolId: "web-search",
+      schemaVersion: "1",
+      arguments: { query: "queues" },
+      disposition: { status: "accepted" },
+      outcome: { status: "succeeded", output: "results", outputBytes: 7, truncation: null },
+      durationMs: 25,
+      turnSequence: 2,
+    }];
+    const result = await runDebate({
+      debateId: "debate-1",
+      topic: "Project interleaving.",
+      roundCount: 1,
+      proposer: {
+        agent: new FixedAgent("Proposal", attempts, toolCalls),
+        role: PROPOSER_ROLE,
+        controls: CONTROLS,
+      },
+      reviewer: {
+        agent: new FixedAgent("Review", [{ ...SUCCEEDED_ATTEMPT, attempt: 1 }]),
+        role: REVIEWER_ROLE,
+        controls: CONTROLS,
+      },
+    });
+
+    const events = projectDebateEvents(result, "artifact-run-11");
+
+    expect(events.map((event) => event.type)).toEqual([
+      "run.started",
+      "turn.requested",
+      "adapter.attempt",
+      "turn.tool_call",
+      "adapter.attempt",
+      "turn.completed",
+      "turn.requested",
+      "adapter.attempt",
+      "turn.completed",
+      "run.completed",
+    ]);
+  });
+
   test("projects tool call records between attempts and completion for their turn", async () => {
     const proposerToolCalls: AgentReply["toolCalls"] = [
       {

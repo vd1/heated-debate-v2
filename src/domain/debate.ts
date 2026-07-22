@@ -14,6 +14,7 @@ import {
   type CanonicalTurnReply,
 } from "./events";
 import type { ExchangeParticipant, ExchangeResult } from "./exchange";
+import { orderedTurnEvidence } from "./debate-events";
 import { DebateScheduler } from "./scheduler";
 
 /**
@@ -128,34 +129,32 @@ export async function runDebate(input: RunDebateInput): Promise<DebateResult> {
     if (flush) await input.recording.sink.flush();
   };
 
-  const emitAttempts = async (turnId: string, trace: AgentTrace): Promise<void> => {
-    for (const attempt of trace.attempts) {
-      if (input.recording) {
+  const emitTurnEvidence = async (
+    turnId: string,
+    trace: AgentTrace,
+    toolCalls: readonly ToolCallRecord[],
+  ): Promise<void> => {
+    for (const evidence of orderedTurnEvidence(trace.attempts, toolCalls)) {
+      if (evidence.kind === "attempt") {
+        if (input.recording) {
+          await emit({
+            schemaVersion: CANONICAL_SCHEMA_VERSION,
+            runId: input.recording.runId,
+            sequence,
+            type: "adapter.attempt",
+            data: { turnId, attempt: structuredClone(evidence.attempt) },
+          }, false);
+        }
+        addObservedUsage(observedUsage, evidence.attempt.usage);
+      } else if (input.recording) {
         await emit({
           schemaVersion: CANONICAL_SCHEMA_VERSION,
           runId: input.recording.runId,
           sequence,
-          type: "adapter.attempt",
-          data: { turnId, attempt: structuredClone(attempt) },
+          type: "turn.tool_call",
+          data: { turnId, record: structuredClone(evidence.record) },
         }, false);
       }
-      addObservedUsage(observedUsage, attempt.usage);
-    }
-  };
-
-  const emitToolCalls = async (
-    turnId: string,
-    toolCalls: readonly ToolCallRecord[],
-  ): Promise<void> => {
-    if (!input.recording) return;
-    for (const record of toolCalls) {
-      await emit({
-        schemaVersion: CANONICAL_SCHEMA_VERSION,
-        runId: input.recording.runId,
-        sequence,
-        type: "turn.tool_call",
-        data: { turnId, record: structuredClone(record) },
-      }, false);
     }
   };
 
@@ -253,8 +252,7 @@ export async function runDebate(input: RunDebateInput): Promise<DebateResult> {
         input.signalFailureCode ?? "cancelled",
       ).catch(async (error: unknown) => {
         const normalized = normalizeDispatchFailure(error, turn.request.turnId, observedUsage);
-        await emitAttempts(turn.request.turnId, normalized.trace);
-        await emitToolCalls(turn.request.turnId, normalized.toolCalls);
+        await emitTurnEvidence(turn.request.turnId, normalized.trace, normalized.toolCalls);
         return endWithFailure(new DebateRunFailure({
           code: normalized.code,
           message: normalized.message,
@@ -265,8 +263,7 @@ export async function runDebate(input: RunDebateInput): Promise<DebateResult> {
         }));
       });
 
-      await emitAttempts(turn.request.turnId, reply.trace);
-      await emitToolCalls(turn.request.turnId, reply.toolCalls);
+      await emitTurnEvidence(turn.request.turnId, reply.trace, reply.toolCalls);
       if (runControls.budget
         && observedTokenLowerBound(observedUsage) > runControls.budget.maxTokens) {
         await endWithFailure(new DebateRunFailure({

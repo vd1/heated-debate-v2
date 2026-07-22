@@ -46,6 +46,14 @@ export interface ReplayConfiguration {
 export interface ReplayCanonicalRunInput {
   events: readonly CanonicalEvent[];
   configuration: ReplayConfiguration;
+  /**
+   * Independent scripted tool-loop drivers keyed by turn ID. When provided for
+   * a turn, replay drives that script against the recorded records and rejects
+   * request, count, disposition, and final-text drift. Without one, replay
+   * still re-authorizes recorded dispositions but cannot independently verify
+   * requests or the final response.
+   */
+  toolLoopDrivers?: (turnId: string) => ToolLoopDriver | undefined;
 }
 
 export interface ReplayResult {
@@ -114,7 +122,7 @@ async function replayCanonicalRunInternal(input: ReplayCanonicalRunInput): Promi
     }
     assertNoDrift(recorded.request.turnId, recorded.roundNumber, replayed.roundNumber, "roundNumber");
     assertTurnRequestNoDrift(recorded.request, replayed.request);
-    await replayRecordedToolLoop(recorded);
+    await replayRecordedToolLoop(recorded, input.toolLoopDrivers?.(recorded.request.turnId));
     reconstructed.push(replayed.request);
     scheduler.acceptReply(toReplayReply(recorded.reply, recorded.toolCalls));
   }
@@ -126,12 +134,25 @@ async function replayCanonicalRunInternal(input: ReplayCanonicalRunInput): Promi
   return Object.freeze({ requests: Object.freeze(reconstructed) });
 }
 
-async function replayRecordedToolLoop(recorded: RecordedTurn): Promise<void> {
-  if (recorded.toolCalls.length === 0) return;
+async function replayRecordedToolLoop(
+  recorded: RecordedTurn,
+  independentDriver: ToolLoopDriver | undefined,
+): Promise<void> {
+  if (recorded.toolCalls.length === 0 && independentDriver === undefined) return;
   if (recorded.request.capabilities.evidence !== "recorded") {
     throw new Error(
       `cannot deterministically replay tool calls without recorded policy evidence for ${recorded.request.turnId}`,
     );
+  }
+  if (independentDriver) {
+    await replayToolLoop({
+      driver: independentDriver,
+      policy: recorded.request.capabilities,
+      records: recorded.toolCalls,
+      finalText: recorded.reply.text,
+      id: recorded.request.turnId,
+    });
+    return;
   }
   const steps = [
     ...recorded.toolCalls.map((record) => ({

@@ -2,10 +2,12 @@
 
 Status: pass
 
-Reviewed on 2026-07-22 and re-reviewed on 2026-07-23. The initial pass verdict was premature:
-the codex review filed nine concerns in `plans/c-tool-loop-concerns.md`. All nine are now
-resolved, including the two architecture decisions: `PiAgent` owns the tool loop (ADR-0001
-amendment), and canonical schema v5 records a shared per-turn attempt/tool-call sequence.
+Reviewed on 2026-07-22; re-reviewed twice on 2026-07-23. The codex review filed eleven concerns
+in `plans/c-tool-loop-concerns.md` across two passes; all are resolved. The two architecture
+decisions: `PiAgent` owns the tool loop (ADR-0001 amendment), and canonical schema v5 records a
+shared per-turn attempt/tool-call sequence that projection, live recording, and validation
+enforce as one interleaved order. Canonical replay accepts independent scripted tool-loop
+drivers for full drift detection, and per-step trace accounting keeps tool-turn budgets exact.
 
 The project now owns a normalized tool call vocabulary and a deterministic dispatcher. The
 dispatcher alone enforces the C-TOOL-POLICY capability policy and records an ordered trace with

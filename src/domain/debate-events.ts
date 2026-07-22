@@ -1,3 +1,4 @@
+import type { AttemptTrace } from "./agent";
 import type { DebateResult } from "./debate";
 import {
   CANONICAL_SCHEMA_VERSION,
@@ -5,6 +6,7 @@ import {
   type CanonicalEvent,
   type CanonicalTurnReply,
 } from "./events";
+import type { ToolCallRecord } from "./tool-loop";
 
 export function projectDebateEvents(
   result: DebateResult,
@@ -43,29 +45,28 @@ export function projectDebateEvents(
           request: structuredClone(turn.request),
         },
       });
-      for (const attempt of turn.reply.trace.attempts) {
-        append({
-          schemaVersion: CANONICAL_SCHEMA_VERSION,
-          runId: artifactRunId,
-          sequence,
-          type: "adapter.attempt",
-          data: {
-            turnId: turn.request.turnId,
-            attempt: structuredClone(attempt),
-          },
-        });
-      }
-      for (const record of turn.reply.toolCalls) {
-        append({
-          schemaVersion: CANONICAL_SCHEMA_VERSION,
-          runId: artifactRunId,
-          sequence,
-          type: "turn.tool_call",
-          data: {
-            turnId: turn.request.turnId,
-            record: structuredClone(record),
-          },
-        });
+      for (const evidence of orderedTurnEvidence(turn.reply.trace.attempts, turn.reply.toolCalls)) {
+        append(evidence.kind === "attempt"
+          ? {
+              schemaVersion: CANONICAL_SCHEMA_VERSION,
+              runId: artifactRunId,
+              sequence,
+              type: "adapter.attempt",
+              data: {
+                turnId: turn.request.turnId,
+                attempt: structuredClone(evidence.attempt),
+              },
+            }
+          : {
+              schemaVersion: CANONICAL_SCHEMA_VERSION,
+              runId: artifactRunId,
+              sequence,
+              type: "turn.tool_call",
+              data: {
+                turnId: turn.request.turnId,
+                record: structuredClone(evidence.record),
+              },
+            });
       }
       const reply: CanonicalTurnReply = {
         text: turn.reply.text,
@@ -92,6 +93,32 @@ export function projectDebateEvents(
   });
 
   return deepFreeze(events);
+}
+
+export type TurnEvidence =
+  | { kind: "attempt"; attempt: AttemptTrace }
+  | { kind: "tool_call"; record: ToolCallRecord };
+
+/**
+ * Orders a turn's attempts and tool calls by their shared turn sequence when
+ * every entry carries one; otherwise preserves the bucketed attempt-then-call
+ * order for evidence recorded without sequencing.
+ */
+export function orderedTurnEvidence(
+  attempts: readonly AttemptTrace[],
+  toolCalls: readonly ToolCallRecord[],
+): readonly TurnEvidence[] {
+  const bucketed: TurnEvidence[] = [
+    ...attempts.map((attempt) => ({ kind: "attempt" as const, attempt })),
+    ...toolCalls.map((record) => ({ kind: "tool_call" as const, record })),
+  ];
+  const sequenceOf = (evidence: TurnEvidence): number | undefined =>
+    evidence.kind === "attempt" ? evidence.attempt.turnSequence : evidence.record.turnSequence;
+  if (bucketed.length === 0 || bucketed.some((evidence) => sequenceOf(evidence) === undefined)) {
+    return bucketed;
+  }
+  return bucketed.slice().sort((left, right) =>
+    (sequenceOf(left) ?? 0) - (sequenceOf(right) ?? 0));
 }
 
 function deepFreeze<T>(value: T): T {

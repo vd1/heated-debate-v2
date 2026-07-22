@@ -144,6 +144,7 @@ export function parseCanonicalEvent(serialized: string): CanonicalEvent {
 
 export function validateCanonicalSequence(events: readonly CanonicalEvent[]): void {
   let runId: string | undefined;
+  const turnEvidence = new Map<string, { annotated: number[]; total: number }>();
   for (let index = 0; index < events.length; index += 1) {
     const event = events[index];
     if (!event) continue;
@@ -155,6 +156,29 @@ export function validateCanonicalSequence(events: readonly CanonicalEvent[]): vo
     if (event.sequence !== index) {
       throw new Error(`expected sequence ${String(index)}, received ${String(event.sequence)}`);
     }
+    if (event.type === "adapter.attempt" || event.type === "turn.tool_call") {
+      const evidence = turnEvidence.get(event.data.turnId) ?? { annotated: [], total: 0 };
+      evidence.total += 1;
+      const turnSequence = event.type === "adapter.attempt"
+        ? event.data.attempt.turnSequence
+        : event.data.record.turnSequence;
+      if (turnSequence !== undefined) evidence.annotated.push(turnSequence);
+      turnEvidence.set(event.data.turnId, evidence);
+    }
+  }
+  for (const [turnId, evidence] of turnEvidence) {
+    if (evidence.annotated.length === 0) continue;
+    if (evidence.annotated.length !== evidence.total) {
+      throw new Error(`turn ${turnId} mixes sequenced and unsequenced evidence`);
+    }
+    evidence.annotated.forEach((turnSequence, position) => {
+      if (turnSequence !== position + 1) {
+        throw new Error(
+          `turn ${turnId} shared turn sequence expected ${String(position + 1)}, `
+          + `received ${String(turnSequence)}`,
+        );
+      }
+    });
   }
 }
 

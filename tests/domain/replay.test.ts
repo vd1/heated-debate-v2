@@ -859,3 +859,129 @@ describe("replayToolLoop", () => {
     }))).toBe("replay drift for run-1:round-1:proposer:call-1 at disposition.reason");
   });
 });
+
+describe("replayCanonicalRun with independent tool drivers", () => {
+  const SEARCH_POLICY_2 = resolveToolPolicy({
+    policyId: "research",
+    policyVersion: "1",
+    evidence: "recorded",
+    role: { id: PROPOSER.id, version: PROPOSER.version },
+    phase: "proposal",
+    allowedTools: [{ toolId: "web-search", schemaVersion: "1", maxCalls: 2 }],
+    aggregateCallLimit: 2,
+    callTimeoutMs: 5_000,
+    maxResultBytes: 16_384,
+    deniedCallCharge: "none",
+  }, { role: { id: PROPOSER.id, version: PROPOSER.version }, phase: "proposal" });
+
+  function scriptedTurnDriver(steps: ToolLoopStep[]): (turnId: string) => ToolLoopDriver | undefined {
+    return (turnId) => {
+      if (turnId !== PROPOSAL_REQUEST.turnId) return undefined;
+      let index = 0;
+      return {
+        nextStep: () => {
+          const step = steps[index];
+          index += 1;
+          if (!step) throw new Error("independent driver has no step remaining");
+          return Promise.resolve(step);
+        },
+      };
+    };
+  }
+
+  function annotatedToolRun(mutate?: (events: CanonicalEvent[]) => void): CanonicalEvent[] {
+    const events = recordedRun();
+    const requested = events[1];
+    if (requested?.type !== "turn.requested") throw new Error("bad fixture");
+    requested.data = {
+      ...requested.data,
+      request: { ...PROPOSAL_REQUEST, capabilities: SEARCH_POLICY_2 },
+    };
+    events.splice(2, 0, {
+      schemaVersion: 5,
+      runId: "run-1",
+      sequence: 0,
+      type: "turn.tool_call",
+      data: {
+        turnId: PROPOSAL_REQUEST.turnId,
+        record: {
+          callId: `${PROPOSAL_REQUEST.turnId}:call-1`,
+          ordinal: 1,
+          toolId: "web-search",
+          schemaVersion: "1",
+          arguments: { query: "queues" },
+          disposition: { status: "accepted" },
+          outcome: { status: "succeeded", output: "results", outputBytes: 7, truncation: null },
+          durationMs: 5,
+        },
+      },
+    });
+    mutate?.(events);
+    return events.map((event, sequence) => ({ ...event, sequence }));
+  }
+
+  const MATCHING_STEPS: ToolLoopStep[] = [
+    {
+      kind: "tool_call",
+      request: { toolId: "web-search", schemaVersion: "1", arguments: { query: "queues" } },
+    },
+    { kind: "final", text: "Recorded proposal" },
+  ];
+
+  test("replays against an independent scripted driver", async () => {
+    const configuration: ReplayConfiguration = {
+      ...CONFIGURATION,
+      proposer: { ...CONFIGURATION.proposer, capabilities: SEARCH_POLICY_2 },
+    };
+
+    const result = await replayCanonicalRun({
+      events: annotatedToolRun(),
+      configuration,
+      toolLoopDrivers: scriptedTurnDriver(MATCHING_STEPS),
+    });
+
+    expect(result.requests).toHaveLength(2);
+  });
+
+  test("detects recorded argument drift against the unchanged driver", async () => {
+    const configuration: ReplayConfiguration = {
+      ...CONFIGURATION,
+      proposer: { ...CONFIGURATION.proposer, capabilities: SEARCH_POLICY_2 },
+    };
+    const events = annotatedToolRun((all) => {
+      const call = all[2];
+      if (call?.type !== "turn.tool_call") throw new Error("bad fixture");
+      call.data = {
+        ...call.data,
+        record: { ...call.data.record, arguments: { query: "tampered" } },
+      };
+    });
+
+    expect(await rejectionMessage(replayCanonicalRun({
+      events,
+      configuration,
+      toolLoopDrivers: scriptedTurnDriver(MATCHING_STEPS),
+    }))).toBe("replay drift for run-1:round-1:proposer:call-1 at arguments.query");
+  });
+
+  test("detects recorded final-text drift against the unchanged driver", async () => {
+    const configuration: ReplayConfiguration = {
+      ...CONFIGURATION,
+      proposer: { ...CONFIGURATION.proposer, capabilities: SEARCH_POLICY_2 },
+    };
+    const events = annotatedToolRun((all) => {
+      const completed = all[3];
+      if (completed?.type !== "turn.completed") throw new Error("bad fixture");
+      completed.data = {
+        ...completed.data,
+        reply: { ...completed.data.reply, text: "Tampered proposal" },
+      };
+    });
+
+    expect(await rejectionMessage(replayCanonicalRun({
+      events,
+      configuration,
+      toolLoopDrivers: scriptedTurnDriver(MATCHING_STEPS),
+    }))).toBe("replay drift for run-1:round-1:proposer at finalText");
+  });
+});

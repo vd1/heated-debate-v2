@@ -594,3 +594,94 @@ describe("canonical tool call events", () => {
     expect(migrated.type).toBe("run.started");
   });
 });
+
+describe("shared turn sequence validation", () => {
+  function annotatedRun(
+    firstAttemptSeq: number | undefined,
+    callSeq: number | undefined,
+    secondAttemptSeq: number | undefined,
+  ): CanonicalEvent[] {
+    const base = events();
+    const start = base[0];
+    const requested = base[1];
+    const completed = base[3];
+    const runCompleted = base[4];
+    if (start?.type !== "run.started" || requested?.type !== "turn.requested"
+      || completed?.type !== "turn.completed" || runCompleted?.type !== "run.completed") {
+      throw new Error("bad fixture");
+    }
+    const attempt = (turnSequence: number | undefined, n: number): CanonicalEvent => ({
+      schemaVersion: 5,
+      runId: "run-1",
+      sequence: 0,
+      type: "adapter.attempt",
+      data: {
+        turnId: REQUEST.turnId,
+        attempt: {
+          attempt: n,
+          status: "succeeded",
+          httpStatus: 200,
+          usage: {},
+          usageEvidence: { explicitlyReported: [], source: "test" },
+          ...(turnSequence === undefined ? {} : { turnSequence }),
+        },
+      },
+    });
+    const call: CanonicalEvent = {
+      schemaVersion: 5,
+      runId: "run-1",
+      sequence: 0,
+      type: "turn.tool_call",
+      data: {
+        turnId: REQUEST.turnId,
+        record: {
+          callId: `${REQUEST.turnId}:call-1`,
+          ordinal: 1,
+          toolId: "web-search",
+          schemaVersion: "1",
+          arguments: { query: "q" },
+          disposition: { status: "accepted" },
+          outcome: { status: "succeeded", output: "r", outputBytes: 1, truncation: null },
+          durationMs: 5,
+          ...(callSeq === undefined ? {} : { turnSequence: callSeq }),
+        },
+      },
+    };
+    return [
+      start,
+      requested,
+      attempt(firstAttemptSeq, 1),
+      call,
+      attempt(secondAttemptSeq, 2),
+      completed,
+      runCompleted,
+    ].map((event, sequence) => ({ ...event, sequence }));
+  }
+
+  test("accepts a unique consecutive shared sequence in event order", () => {
+    expect(() => {
+      validateCanonicalSequence(annotatedRun(1, 2, 3));
+    }).not.toThrow();
+    expect(() => {
+      validateCanonicalSequence(annotatedRun(undefined, undefined, undefined));
+    }).not.toThrow();
+  });
+
+  test("rejects duplicate, gapped, or out-of-order shared sequences", () => {
+    expect(() => {
+      validateCanonicalSequence(annotatedRun(1, 1, 2));
+    }).toThrow(`turn ${REQUEST.turnId} shared turn sequence expected 2, received 1`);
+    expect(() => {
+      validateCanonicalSequence(annotatedRun(1, 3, 4));
+    }).toThrow(`turn ${REQUEST.turnId} shared turn sequence expected 2, received 3`);
+    expect(() => {
+      validateCanonicalSequence(annotatedRun(2, 1, 3));
+    }).toThrow(`turn ${REQUEST.turnId} shared turn sequence expected 1, received 2`);
+  });
+
+  test("rejects mixing sequenced and unsequenced evidence in one turn", () => {
+    expect(() => {
+      validateCanonicalSequence(annotatedRun(1, undefined, 2));
+    }).toThrow(`turn ${REQUEST.turnId} mixes sequenced and unsequenced evidence`);
+  });
+});

@@ -1,9 +1,9 @@
 # C-TOOL-LOOP concerns for Fable
 
-Status: concerns 1, 2, 4, and 6-9 are resolved. Concerns 3 and 5 remain open. Concerns 10 and 11
-were added after reviewing the follow-up implementation.
+Status: concerns 1, 2, 4, 6-9, and 11 are resolved. Concerns 3, 5, and 10 remain open. Concern 12
+was added after reviewing the latest follow-up implementation.
 
-Updated on 2026-07-23 after reviewing commits `94efdc7`, `5fc2d80`, `aff61a9`, and `5dbc03f`.
+Updated on 2026-07-23 after reviewing through commit `87fd863`.
 
 Validation at `5dbc03f`:
 
@@ -62,47 +62,46 @@ independent per-turn model script. Feed recorded results into that driver at the
 positions, then reject request drift, missing or extra calls, result-position drift, and final-text
 drift. Tests should mutate each recorded element while leaving the independent script unchanged.
 
-### 10. The project-owned Pi loop misclassifies model steps and loses their usage
+### 10. A model step without a response hook is sequenced after its tool calls
 
 Severity: high
 
-`PiAgent` now invokes the stream once per model step, but it collects every `onResponse` callback
-in one flat `activeResponses` array and calls `buildTrace` only after the whole tool loop. That
-function treats every response except the last as failed and assigns usage only from the last
-assistant message to the last response.
+Commit `87fd863` fixes the original accounting defect: model steps are grouped, successful
+tool-use responses remain successful, per-step usage is retained, and `AgentReply.usage` sums the
+steps. The response-hook path now has the expected attempt, tool call, attempt sequence.
 
-For a successful model response that requests a tool followed by a successful final model
-response, the first HTTP 200 response is consequently recorded as a failed adapter attempt with
-empty usage. The first assistant message's usage is discarded from both the trace and
-`AgentReply.usage`. Since debate budgets sum attempt usage, tool-enabled turns can be
-systematically undercounted. If a stream exposes no response hook, a multi-step tool turn is
-collapsed into one synthetic attempt with no shared sequence even though the project invoked each
-model step itself.
+The no-hook path is still ordered incorrectly. A `ModelStep` with no observed response does not
+reserve a `turnSequence` when its result arrives. `appendStepAttempts` allocates that sequence only
+while building the trace after the whole loop. Any tool call from that step has already taken a
+sequence number from the shared counter. A two-step exchange without response hooks therefore
+records tool call 1, attempt 2, attempt 3 even though the first attempt occurred before the tool
+call.
 
-Acceptance check: collect response observations and the terminal assistant message per stream
-invocation. Mark a successful tool-use step as succeeded, attach that step's normalized usage to
-its terminal response, and preserve an observable attempt entry for each project-invoked model
-step even when HTTP status is unavailable. Test a tool-use response and final response with
-distinct usage, then verify trace order, statuses, per-step usage, total turn usage, and debate
-budget accounting without double counting.
+The current no-hook test covers a single model step without tools, so it cannot detect this
+inversion.
 
-### 11. The loop guard can discard a returned tool call before the dispatcher records it
+Acceptance check: reserve the fallback attempt sequence as soon as a model step completes without
+an `onResponse` observation and before dispatching any returned calls. Add a two-step no-hook test
+that produces a tool call and final response, then assert attempt 1, tool call 2, attempt 3.
+
+### 12. Local tool-loop failures invent an adapter attempt that never occurred
 
 Severity: high
 
-When a model keeps returning tool calls, `PiAgent` checks `iteration >= maxIterations` before it
-dispatches the calls in that message. The call that reaches the guard is therefore absent from the
-dispatcher trace and from `AgentFailure.toolCalls`. This is especially easy to reach with repeated
-denied calls because denial may not consume the aggregate call budget.
+The loop guard and the no-policy check both throw after a model step has completed successfully.
+The common catch path calls `buildFailureTrace`. When all completed attempts succeeded and there
+is no pending provider response, that function appends a synthetic failed attempt under the
+assumption that a model step failed without an observable response.
 
-There is a second silent path when `dispatcher` is undefined: a returned tool call causes the loop
-to break and return a successful reply with no tool-call record. That can occur for an unrecorded
-deny-all request even though the model emitted undeclared tool content.
+No additional model request occurred in either local failure path. The resulting trace therefore
+claims an adapter attempt that did not happen and classifies the local protocol failure as
+`provider_failure`. This weakens attempt accounting and makes the new shared ordering contain a
+fictitious entry.
 
-Acceptance check: every tool call returned by the model must either pass through the project
-dispatcher or produce an explicit normalized protocol failure with equivalent canonical evidence.
-Test repeated denied calls through the loop limit and a no-dispatcher turn that unexpectedly
-returns a tool call. No returned call may disappear from the success or failure artifact.
+Acceptance check: distinguish failures raised during an in-flight model step from failures raised
+after a completed step. The guard and no-policy tests should retain the completed successful
+attempts and calls without appending another adapter attempt. Record a normalized local loop or
+protocol failure code rather than a provider failure if the failure vocabulary permits it.
 
 ## Resolved concerns
 
@@ -145,8 +144,15 @@ truncated and untruncated success outcomes.
 Resolved by `94efdc7`. Mixed or non-text result content produces the explicit
 `unsupported_result_content` executor error instead of a successful altered result.
 
+### 11. The loop guard discarded a returned tool call before recording it
+
+Resolved by `87fd863`. `PiAgent` dispatches all calls from a returned model message before applying
+the iteration guard, so the guard failure carries those records. A model call returned without a
+recorded policy now fails explicitly instead of producing a successful reply with an empty call
+trace.
+
 ## Completion status
 
 `README.md` and `plans/c-tool-loop-review.md` should not declare C-TOOL-LOOP complete while concerns
-3, 5, 10, and 11 remain open. The review file also retains stale descriptions of Pi wrappers,
+3, 5, 10, and 12 remain open. The review file also retains stale descriptions of Pi wrappers,
 canonical schema v4, and limitations that the newer commits changed.
