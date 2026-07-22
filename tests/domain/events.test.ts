@@ -493,11 +493,33 @@ describe("canonical tool call events", () => {
           record.outcome = {
             status: "succeeded",
             output: "partial",
-            outputBytes: 9,
-            truncation: { originalBytes: 32, retainedBytes: 7 },
+            outputBytes: 7,
+            truncation: { originalBytes: 32, retainedBytes: 6 },
           };
         },
         message: "truncated output bytes must equal retained bytes",
+      },
+      {
+        mutate: (record) => {
+          record.outcome = {
+            status: "succeeded",
+            output: "queue results",
+            outputBytes: 12,
+            truncation: null,
+          };
+        },
+        message: "output bytes must equal the UTF-8 length of output",
+      },
+      {
+        mutate: (record) => {
+          record.outcome = {
+            status: "succeeded",
+            output: "partial",
+            outputBytes: 6,
+            truncation: { originalBytes: 32, retainedBytes: 6 },
+          };
+        },
+        message: "output bytes must equal the UTF-8 length of output",
       },
       {
         mutate: (record) => { record.arguments = { query: undefined }; },
@@ -515,6 +537,30 @@ describe("canonical tool call events", () => {
       invalid.mutate(event.data.record as unknown as Record<string, unknown>);
       expect(() => serializeCanonicalEvent(event, { secrets: [] })).toThrow(invalid.message);
     }
+  });
+
+
+  test("redacts configured secrets from failed tool call outcomes", () => {
+    const event = toolCallEvent();
+    if (event.type !== "turn.tool_call") throw new Error("bad fixture");
+    event.data.record.outcome = {
+      status: "failed",
+      error: {
+        code: "tool_error",
+        message: "backend rejected configured-secret-123",
+      },
+    };
+
+    const serialized = serializeCanonicalEvent(event, { secrets: ["configured-secret-123"] });
+
+    expect(serialized).not.toContain("configured-secret-123");
+    expect(parseCanonicalEvent(serialized)).toMatchObject({
+      data: {
+        record: {
+          outcome: { error: { message: "backend rejected [REDACTED]" } },
+        },
+      },
+    });
   });
 
   test("migrates schema-v3 events forward without inventing tool call evidence", () => {

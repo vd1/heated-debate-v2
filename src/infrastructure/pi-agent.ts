@@ -35,6 +35,7 @@ import {
 import type { ContextDecision, ModelInputMessage } from "../domain/context";
 import {
   createToolDispatcher,
+  ToolExecutorError,
   type ToolDispatcher,
   type ToolExecutor,
 } from "../domain/tool-loop";
@@ -59,6 +60,7 @@ export interface PiAgentOptions {
   modelStream: ModelStream;
   usageEvidence: UsageEvidence;
   tools?: readonly PiToolRegistration[];
+  secrets?: readonly string[];
   now?: () => number;
 }
 
@@ -118,6 +120,7 @@ export class PiAgent implements AgentPort {
   private readonly usageEvidence: UsageEvidence;
   private readonly toolsByIdentity: ReadonlyMap<string, AgentTool>;
   private readonly now: () => number;
+  private readonly secrets: readonly string[];
   private activeResponses: ProviderResponse[] | undefined;
   private activeReply: Promise<AgentReply> | undefined;
   private isDisposed = false;
@@ -127,6 +130,7 @@ export class PiAgent implements AgentPort {
     this.usageEvidence = structuredClone(options.usageEvidence);
     this.toolsByIdentity = toolRegistrationMap(options.tools ?? []);
     this.now = options.now ?? Date.now;
+    this.secrets = [...(options.secrets ?? [])];
     this.baseStream = (model, context, streamOptions) => options.modelStream(
       model,
       context,
@@ -289,6 +293,13 @@ export class PiAgent implements AgentPort {
       schemaVersion,
       execute: async (args, context) => {
         const result = await tool.execute(context.callId, args, context.signal);
+        const unsupported = result.content.find((content) => content.type !== "text");
+        if (unsupported) {
+          throw new ToolExecutorError({
+            code: "unsupported_result_content",
+            message: `tool returned unsupported non-text content: ${unsupported.type}`,
+          });
+        }
         return result.content
           .filter((content) => content.type === "text")
           .map((content) => content.text)
@@ -299,6 +310,7 @@ export class PiAgent implements AgentPort {
       dispatchId: turnId,
       policy,
       executors,
+      secrets: this.secrets,
       now: this.now,
     });
     const tools = registrations.map(({ toolId, schemaVersion, tool }): AgentTool => ({

@@ -21,6 +21,16 @@ export interface ToolExecutor {
   execute(args: ToolCallArguments, context: ToolExecutionContext): Promise<string>;
 }
 
+export class ToolExecutorError extends Error {
+  readonly name = "ToolExecutorError";
+  readonly code: string;
+
+  constructor(input: { code: string; message: string }) {
+    super(input.message);
+    this.code = input.code;
+  }
+}
+
 export interface ToolCallRequest {
   toolId: string;
   schemaVersion: string;
@@ -93,7 +103,9 @@ export function createToolDispatcher(options: ToolDispatcherOptions): ToolDispat
       executor,
     ]),
   );
-  const records: ToolCallRecord[] = [];
+  // Indexed by ordinal - 1 so the trace keeps invocation order even when
+  // concurrent executions complete out of order.
+  const records: (ToolCallRecord | undefined)[] = [];
   let dispatchCount = 0;
   let accounting = createToolCallAccounting(options.policy);
 
@@ -114,7 +126,7 @@ export function createToolDispatcher(options: ToolDispatcherOptions): ToolDispat
       outcome,
       durationMs: now() - startedAt,
     });
-    records.push(record);
+    records[ordinal - 1] = record;
     return record;
   }
 
@@ -166,11 +178,12 @@ export function createToolDispatcher(options: ToolDispatcherOptions): ToolDispat
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     let removeAbortListener: (() => void) | undefined;
-    const execution = executor.execute(structuredClone(request.arguments), {
+    // Wrap the call so a synchronous executor throw becomes a recorded rejection.
+    const execution = (async () => executor.execute(structuredClone(request.arguments), {
       callId: callIdFor(ordinal),
       signal: controller.signal,
       timeoutMs,
-    });
+    }))();
     const timedOut = Symbol("tool-call-timeout");
     const cancelled = Symbol("tool-call-cancelled");
     try {
@@ -208,7 +221,10 @@ export function createToolDispatcher(options: ToolDispatcherOptions): ToolDispat
         options.policy.maxResultBytes,
       ));
     } catch (error) {
-      return finishRecord(request, ordinal, startedAt, { status: "accepted" }, failure(error, "tool_error"));
+      return finishRecord(request, ordinal, startedAt, { status: "accepted" }, failure(
+        error,
+        error instanceof ToolExecutorError ? error.code : "tool_error",
+      ));
     } finally {
       if (timer !== undefined) clearTimeout(timer);
       removeAbortListener?.();
@@ -218,7 +234,9 @@ export function createToolDispatcher(options: ToolDispatcherOptions): ToolDispat
 
   return {
     dispatch,
-    trace: () => Object.freeze([...records]),
+    trace: () => Object.freeze(records.filter(
+      (record): record is ToolCallRecord => record !== undefined,
+    )),
     accounting: () => accounting,
   };
 }

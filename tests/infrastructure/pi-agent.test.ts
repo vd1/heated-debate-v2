@@ -391,6 +391,114 @@ describe("PiAgent", () => {
     await agent.dispose();
   });
 
+  test("rejects non-text tool result content instead of silently altering it", async () => {
+    const fake = scriptedToolStream([
+      {
+        stopReason: "toolUse",
+        content: [
+          { type: "toolCall", id: "pi-call-1", name: "web-search", arguments: { query: "q" } },
+        ],
+      },
+      { stopReason: "stop", content: [{ type: "text", text: "Continued without the image." }] },
+    ]);
+    const agent = new PiAgent({
+      model: MODEL,
+      modelStream: fake.stream,
+      usageEvidence: { explicitlyReported: [], source: "test" },
+      tools: [{
+        toolId: "web-search",
+        schemaVersion: "1",
+        tool: {
+          ...WEB_SEARCH_TOOL,
+          execute: () => Promise.resolve({
+            content: [
+              { type: "text", text: "caption" },
+              { type: "image", data: "aGk=", mimeType: "image/png" },
+            ],
+            details: {},
+          }),
+        },
+      }],
+      now: clock(1_000),
+    });
+    const request: TurnRequest = {
+      ...REQUEST,
+      capabilities: {
+        policyId: "research",
+        policyVersion: "1",
+        evidence: "recorded",
+        role: { id: "proposer", version: "1" },
+        phase: "proposal",
+        allowedTools: [{ toolId: "web-search", schemaVersion: "1", maxCalls: 1 }],
+        aggregateCallLimit: 1,
+        callTimeoutMs: 1_000,
+        maxResultBytes: 4_096,
+        deniedCallCharge: "none",
+      },
+    };
+
+    const reply = await agent.reply(request);
+
+    expect(reply.toolCalls[0]?.outcome).toEqual({
+      status: "failed",
+      error: {
+        code: "unsupported_result_content",
+        message: "tool returned unsupported non-text content: image",
+      },
+    });
+    await agent.dispose();
+  });
+
+  test("redacts configured secrets from dispatcher tool records", async () => {
+    const fake = scriptedToolStream([
+      {
+        stopReason: "toolUse",
+        content: [
+          { type: "toolCall", id: "pi-call-1", name: "web-search", arguments: { query: "q" } },
+        ],
+      },
+      { stopReason: "stop", content: [{ type: "text", text: "Recovered." }] },
+    ]);
+    const agent = new PiAgent({
+      model: MODEL,
+      modelStream: fake.stream,
+      usageEvidence: { explicitlyReported: [], source: "test" },
+      tools: [{
+        toolId: "web-search",
+        schemaVersion: "1",
+        tool: {
+          ...WEB_SEARCH_TOOL,
+          execute: () => Promise.reject(new Error("token configured-secret-123 rejected")),
+        },
+      }],
+      secrets: ["configured-secret-123"],
+      now: clock(1_000),
+    });
+    const request: TurnRequest = {
+      ...REQUEST,
+      capabilities: {
+        policyId: "research",
+        policyVersion: "1",
+        evidence: "recorded",
+        role: { id: "proposer", version: "1" },
+        phase: "proposal",
+        allowedTools: [{ toolId: "web-search", schemaVersion: "1", maxCalls: 1 }],
+        aggregateCallLimit: 1,
+        callTimeoutMs: 1_000,
+        maxResultBytes: 4_096,
+        deniedCallCharge: "none",
+      },
+    };
+
+    const reply = await agent.reply(request);
+
+    expect(reply.toolCalls[0]?.outcome).toEqual({
+      status: "failed",
+      error: { code: "tool_error", message: "token [REDACTED] rejected" },
+    });
+    await agent.dispose();
+  });
+
   test("feeds a policy denial back to the model as a sanitized tool error", async () => {
     const fake = scriptedToolStream([
       {

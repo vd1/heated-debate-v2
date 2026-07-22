@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import {
   createToolDispatcher,
   runToolLoop,
+  ToolExecutorError,
   type ToolCallRecord,
   type ToolExecutor,
   type ToolLoopStep,
@@ -297,6 +298,36 @@ describe("tool dispatcher", () => {
     });
   });
 
+  test("preserves a typed executor error code in the recorded outcome", async () => {
+    const dispatcher = createToolDispatcher({
+      dispatchId: "debate-1:round-1:proposer",
+      policy: policy(),
+      executors: [{
+        toolId: "calculator",
+        schemaVersion: "2",
+        execute: () => Promise.reject(new ToolExecutorError({
+          code: "unsupported_result_content",
+          message: "tool returned non-text content",
+        })),
+      }],
+      now: fakeClock(6_200, 6_201),
+    });
+
+    const record = await dispatcher.dispatch({
+      toolId: "calculator",
+      schemaVersion: "2",
+      arguments: { a: 1, b: 2 },
+    });
+
+    expect(record.outcome).toEqual({
+      status: "failed",
+      error: {
+        code: "unsupported_result_content",
+        message: "tool returned non-text content",
+      },
+    });
+  });
+
   test("records a thrown executor error as a sanitized charged failure", async () => {
     const dispatcher = createToolDispatcher({
       dispatchId: "debate-1:round-1:proposer",
@@ -330,6 +361,35 @@ describe("tool dispatcher", () => {
       deniedCalls: 0,
       consumedCalls: 1,
     });
+  });
+
+  test("records a synchronous executor throw as a charged sanitized failure", async () => {
+    const dispatcher = createToolDispatcher({
+      dispatchId: "debate-1:round-1:proposer",
+      policy: policy(),
+      executors: [{
+        toolId: "calculator",
+        schemaVersion: "2",
+        execute: () => {
+          throw new Error("boom");
+        },
+      }],
+      now: fakeClock(6_500, 6_501),
+    });
+
+    const record = await dispatcher.dispatch({
+      toolId: "calculator",
+      schemaVersion: "2",
+      arguments: { a: 1, b: 2 },
+    });
+
+    expect(record.disposition).toEqual({ status: "accepted" });
+    expect(record.outcome).toEqual({
+      status: "failed",
+      error: { code: "tool_error", message: "boom" },
+    });
+    expect(dispatcher.trace()).toEqual([record]);
+    expect(dispatcher.accounting().aggregate.consumedCalls).toBe(1);
   });
 
   test("cancels an in-flight call through a standard signal and charges it", async () => {
@@ -409,6 +469,49 @@ describe("tool dispatcher", () => {
     });
     expect(executed).toBe(0);
     expect(dispatcher.accounting().aggregate.consumedCalls).toBe(1);
+  });
+
+  test("keeps the trace in invocation order when calls complete out of order", async () => {
+    let releaseFirst: ((value: string) => void) | undefined;
+    const dispatcher = createToolDispatcher({
+      dispatchId: "debate-1:round-1:proposer",
+      policy: policy(),
+      executors: [{
+        toolId: "calculator",
+        schemaVersion: "2",
+        execute: (args) => {
+          const { slow } = args as { slow: boolean };
+          if (!slow) return Promise.resolve("fast");
+          return new Promise<string>((resolve) => {
+            releaseFirst = resolve;
+          });
+        },
+      }],
+      now: fakeClock(10_500, 10_501, 10_502, 10_503),
+    });
+
+    const first = dispatcher.dispatch({
+      toolId: "calculator",
+      schemaVersion: "2",
+      arguments: { slow: true },
+    });
+    const second = dispatcher.dispatch({
+      toolId: "calculator",
+      schemaVersion: "2",
+      arguments: { slow: false },
+    });
+
+    const secondRecord = await second;
+    expect(secondRecord.callId).toBe("debate-1:round-1:proposer:call-2");
+    if (!releaseFirst) throw new Error("first call never reached its executor");
+    releaseFirst("slow");
+    const firstRecord = await first;
+    expect(firstRecord.callId).toBe("debate-1:round-1:proposer:call-1");
+
+    expect(dispatcher.trace().map((record) => record.ordinal)).toEqual([1, 2]);
+    expect(dispatcher.trace().map((record) => record.outcome?.status === "succeeded"
+      ? record.outcome.output
+      : null)).toEqual(["slow", "fast"]);
   });
 
   test("truncates oversized output at the byte limit without splitting a character", async () => {

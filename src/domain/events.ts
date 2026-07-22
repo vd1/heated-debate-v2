@@ -225,6 +225,14 @@ function migrateHistoricalCapabilities(event: Record<string, unknown>): void {
 }
 
 function redactFailureSecrets(event: CanonicalEvent, secrets: readonly string[]): void {
+  if (event.type === "turn.tool_call") {
+    const outcome = event.data.record.outcome;
+    if (outcome !== null && outcome.status === "failed") {
+      outcome.error.code = redactSecrets(outcome.error.code, secrets);
+      outcome.error.message = redactSecrets(outcome.error.message, secrets);
+    }
+    return;
+  }
   if (event.type !== "turn.failed" && event.type !== "run.failed") return;
   event.data.failure.code = redactSecrets(event.data.failure.code, secrets);
   event.data.failure.message = redactSecrets(event.data.failure.message, secrets);
@@ -405,6 +413,9 @@ function validateToolCallOutcome(value: unknown): void {
     );
     assertString(outcome.output, "record.outcome.output");
     assertNonNegativeInteger(outcome.outputBytes, "record.outcome.outputBytes");
+    if (outcome.outputBytes !== new TextEncoder().encode(outcome.output).byteLength) {
+      throw new Error("output bytes must equal the UTF-8 length of output");
+    }
     if (outcome.truncation === null) return;
     const truncation = assertRecord(outcome.truncation, "record.outcome.truncation");
     assertExactFields(truncation, ["originalBytes", "retainedBytes"], [], "record.outcome.truncation");
