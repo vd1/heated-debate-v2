@@ -69,3 +69,20 @@ C-LIVE-ARTIFACT confirmed at payload level that the pinned Codex subscription ro
 C-FAILURES observes adapter attempts only at Pi's exposed response and terminal-message hooks. A response hook can distinguish failed HTTP responses preceding a final response, and normalized provider failures carry those partial attempts. Retries wholly hidden inside a provider SDK or transport before any response hook are not observable, cannot be counted or budget-stopped individually, and must not be invented in traces. Domain budgets stop at the first overage visible in the returned attempt trace.
 
 Canonical schema v2 records one snapshotted `run-controls@1` value used by both enforcement and projection: per-turn timeout, whole-run timeout, and turn/token budgets. Historical schema-v1 events migrate to v2 with `evidence: unrecorded`; migration never converts missing historical evidence into configured absence. Whole-run deadline cancellation is recorded as `run_timeout`, distinct from per-turn `timeout` and user `cancelled` outcomes.
+
+## C-TOOL-LOOP amendment: the project owns the tool loop
+
+The adapter no longer delegates tool execution to `pi-agent-core`'s internal agent loop. Pi core
+performs tool lookup and schema validation before a tool's `execute` runs, so an unknown tool
+name or schema-invalid arguments would produce Pi-transcript-only errors that never reach the
+project dispatcher, violating the rule that every tool call must be canonical evidence.
+
+`PiAgent` therefore streams each model step directly through the pi-ai `StreamFn`, forwards
+policy-allowed tool definitions in the request context, and processes returned `toolCall`
+content itself: every call, including unknown names and invalid arguments, is dispatched through
+the project dispatcher, which records disposition, outcome, truncation, and duration. Argument
+validation reuses `validateToolArguments` from `pi-ai/compat`, so coercion semantics match what
+Pi core would have applied; non-coercible arguments are recorded as `malformed_arguments`
+without executing the tool. Tool results are appended as `toolResult` messages and the loop
+re-streams until a non-tool stop, bounded by the policy's aggregate call limit. The low-level
+`Agent` object remains only for conversation state retention and disposal.

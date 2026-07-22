@@ -1,6 +1,5 @@
 import {
   Agent,
-  type AgentMessage,
   type AgentTool,
   type StreamFn,
 } from "@earendil-works/pi-agent-core";
@@ -8,11 +7,15 @@ import {
   type Api,
   type AssistantMessage,
   type AuthCheck,
+  type Message,
   type Model,
   type ModelThinkingLevel,
   type ProviderResponse,
   type SimpleStreamOptions,
+  type ToolCall,
+  type ToolResultMessage,
 } from "@earendil-works/pi-ai";
+import { validateToolArguments } from "@earendil-works/pi-ai/compat";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 
 import {
@@ -32,10 +35,11 @@ import {
   type UsageEvidence,
   type UsageObservation,
 } from "../domain/agent";
-import type { ContextDecision, ModelInputMessage } from "../domain/context";
+import type { ModelInputMessage } from "../domain/context";
 import {
   createToolDispatcher,
   ToolExecutorError,
+  type ToolCallRecord,
   type ToolDispatcher,
   type ToolExecutor,
 } from "../domain/tool-loop";
@@ -123,6 +127,7 @@ export class PiAgent implements AgentPort {
   private readonly secrets: readonly string[];
   private activeResponses: ProviderResponse[] | undefined;
   private activeReply: Promise<AgentReply> | undefined;
+  private turnAbort: AbortController | undefined;
   private isDisposed = false;
 
   constructor(options: PiAgentOptions) {
@@ -182,6 +187,7 @@ export class PiAgent implements AgentPort {
 
   async dispose(): Promise<void> {
     if (this.isDisposed) return;
+    this.turnAbort?.abort();
     this.agent.abort();
     if (this.activeReply) {
       try {
@@ -209,23 +215,75 @@ export class PiAgent implements AgentPort {
           phase: request.capabilities.phase,
         })
       : undefined;
-    const { tools, dispatcher } = this.buildTurnTools(request.turnId, resolvedPolicy);
+    const { definitions, dispatcher, schemaVersions } = this.buildTurnTools(
+      request.turnId,
+      resolvedPolicy,
+    );
+
+    const contextMessages = request.context.messages;
+    const finalContextMessage = contextMessages[contextMessages.length - 1];
+    if (!finalContextMessage) throw new Error("selected model input must contain at least one message");
+    if (finalContextMessage.role !== "user") {
+      throw new Error("selected model input must end with a user message");
+    }
+    const messages: Message[] = contextMessages.map(
+      (message) => toAgentMessage(message, this.model),
+    );
 
     this.agent.state.systemPrompt = request.role.systemPrompt;
     this.agent.state.model = this.model;
     this.agent.state.thinkingLevel = controls.thinkingLevel;
-    this.agent.state.tools = tools;
-    const prompt = this.synchronizeContext(request.context);
 
     this.activeResponses = [];
     const startedAt = this.now();
-    this.agent.streamFn = this.wrapControls(this.baseStream, controls);
+    const stream = this.wrapControls(this.baseStream, controls);
+    const controller = new AbortController();
+    this.turnAbort = controller;
     const onAbort = (): void => {
-      this.agent.abort();
+      controller.abort();
     };
     options.signal?.addEventListener("abort", onAbort, { once: true });
+    const failureToolCalls = (): { toolCalls?: readonly ToolCallRecord[] } =>
+      dispatcher === undefined ? {} : { toolCalls: dispatcher.trace() };
+
+    let message: AssistantMessage;
     try {
-      await this.agent.prompt(prompt);
+      // The project owns the tool loop: Pi core never executes tools, so every
+      // model tool call reaches the dispatcher and its canonical trace.
+      const maxIterations = resolvedPolicy === undefined
+        ? 1
+        : resolvedPolicy.aggregateCallLimit + 2;
+      let iteration = 0;
+      for (;;) {
+        iteration += 1;
+        const events = await stream(this.model, {
+          systemPrompt: request.role.systemPrompt,
+          messages: [...messages],
+          ...(definitions.length === 0 ? {} : { tools: definitions }),
+        }, {
+          ...(controls.thinkingLevel === "off" ? {} : { reasoning: controls.thinkingLevel }),
+          signal: controller.signal,
+        });
+        message = await events.result();
+        messages.push(message);
+        if (message.stopReason === "error" || message.stopReason === "aborted") break;
+
+        const toolCalls = message.content.filter(
+          (content): content is ToolCall => content.type === "toolCall",
+        );
+        if (dispatcher === undefined || toolCalls.length === 0) break;
+        if (iteration >= maxIterations) {
+          throw new Error("tool loop exceeded the policy call budget");
+        }
+        for (const toolCall of toolCalls) {
+          const record = await dispatcher.dispatch({
+            toolId: toolCall.name,
+            schemaVersion: schemaVersions.get(toolCall.name) ?? "unspecified",
+            arguments: toolCall.arguments,
+          }, { signal: controller.signal });
+          messages.push(toToolResultMessage(toolCall, record));
+        }
+      }
     } catch (error) {
       const responses = this.activeResponses;
       this.activeResponses = undefined;
@@ -237,17 +295,15 @@ export class PiAgent implements AgentPort {
           this.usageEvidence,
           options.signal?.aborted ? "aborted" : "failed",
         ),
-        ...(dispatcher === undefined ? {} : { toolCalls: dispatcher.trace() }),
+        ...failureToolCalls(),
       });
     } finally {
       options.signal?.removeEventListener("abort", onAbort);
+      if (this.turnAbort === controller) this.turnAbort = undefined;
     }
     const durationMs = Math.max(0, this.now() - startedAt);
     const responses = this.activeResponses;
     this.activeResponses = undefined;
-
-    const message = findLastAssistantMessage(this.agent.state.messages);
-    if (!message) throw new Error("Pi Agent completed without an assistant message");
 
     const usage = normalizeUsage(toUsageObservation(message, this.usageEvidence));
     const trace = buildTrace(responses, message, usage, this.usageEvidence);
@@ -256,9 +312,10 @@ export class PiAgent implements AgentPort {
         code: message.stopReason === "aborted" ? "cancelled" : "provider_failure",
         message: message.errorMessage ?? `provider stopped with ${message.stopReason}`,
         trace,
-        ...(dispatcher === undefined ? {} : { toolCalls: dispatcher.trace() }),
+        ...failureToolCalls(),
       });
     }
+    this.agent.state.messages = messages;
     const model = responseModelIdentity(message);
     const report = withVerifiedModel(controls.report, providerVerifiedModelIdentity(message));
 
@@ -279,9 +336,13 @@ export class PiAgent implements AgentPort {
   private buildTurnTools(
     turnId: string,
     policy: ToolCapabilityPolicy | undefined,
-  ): { tools: AgentTool[]; dispatcher: ToolDispatcher | undefined } {
-    if (!policy || policy.allowedTools.length === 0) {
-      return { tools: [], dispatcher: undefined };
+  ): {
+    definitions: AgentTool[];
+    dispatcher: ToolDispatcher | undefined;
+    schemaVersions: ReadonlyMap<string, string>;
+  } {
+    if (!policy) {
+      return { definitions: [], dispatcher: undefined, schemaVersions: new Map() };
     }
     const registrations = policy.allowedTools.map(({ toolId, schemaVersion }) => {
       const tool = this.toolsByIdentity.get(toolIdentityKey(toolId, schemaVersion));
@@ -294,7 +355,21 @@ export class PiAgent implements AgentPort {
       toolId,
       schemaVersion,
       execute: async (args, context) => {
-        const result = await tool.execute(context.callId, args, context.signal);
+        let validated: unknown;
+        try {
+          validated = validateToolArguments(tool, {
+            type: "toolCall",
+            id: context.callId,
+            name: toolId,
+            arguments: args as Record<string, unknown>,
+          });
+        } catch {
+          throw new ToolExecutorError({
+            code: "malformed_arguments",
+            message: "tool call arguments do not match the tool schema",
+          });
+        }
+        const result = await tool.execute(context.callId, validated, context.signal);
         const unsupported = result.content.find((content) => content.type !== "text");
         if (unsupported) {
           throw new ToolExecutorError({
@@ -308,50 +383,19 @@ export class PiAgent implements AgentPort {
           .join("");
       },
     }));
-    const dispatcher = createToolDispatcher({
-      dispatchId: turnId,
-      policy,
-      executors,
-      secrets: this.secrets,
-      now: this.now,
-    });
-    const tools = registrations.map(({ toolId, schemaVersion, tool }): AgentTool => ({
-      ...tool,
-      executionMode: "sequential",
-      execute: async (_toolCallId, params, signal) => {
-        const record = await dispatcher.dispatch(
-          { toolId, schemaVersion, arguments: params },
-          signal === undefined ? {} : { signal },
-        );
-        if (record.disposition.status === "denied") {
-          throw new Error(`tool call denied: ${record.disposition.reason}`);
-        }
-        if (record.outcome === null || record.outcome.status !== "succeeded") {
-          throw new Error(record.outcome === null
-            ? "tool call recorded no outcome"
-            : `${record.outcome.error.code}: ${record.outcome.error.message}`);
-        }
-        return {
-          content: [{ type: "text", text: record.outcome.output }],
-          details: {},
-        };
-      },
-    }));
-    return { tools, dispatcher };
-  }
-
-  private synchronizeContext(context: ContextDecision): string {
-    const messages = context.messages;
-    const finalMessage = messages[messages.length - 1];
-    if (!finalMessage) throw new Error("selected model input must contain at least one message");
-    if (finalMessage.role !== "user") {
-      throw new Error("selected model input must end with a user message");
-    }
-
-    this.agent.state.messages = messages
-      .slice(0, -1)
-      .map((message) => toAgentMessage(message, this.model));
-    return finalMessage.content;
+    return {
+      definitions: registrations.map(({ tool }) => tool),
+      dispatcher: createToolDispatcher({
+        dispatchId: turnId,
+        policy,
+        executors,
+        secrets: this.secrets,
+        now: this.now,
+      }),
+      schemaVersions: new Map(
+        registrations.map(({ toolId, schemaVersion }) => [toolId, schemaVersion]),
+      ),
+    };
   }
 
   private withAttemptObservation(options: SimpleStreamOptions | undefined): SimpleStreamOptions {
@@ -396,6 +440,27 @@ function toolRegistrationMap(
 
 function toolIdentityKey(toolId: string, schemaVersion: string): string {
   return JSON.stringify([toolId, schemaVersion]);
+}
+
+function toToolResultMessage(toolCall: ToolCall, record: ToolCallRecord): ToolResultMessage {
+  const text = record.disposition.status === "denied"
+    ? `tool call denied: ${record.disposition.reason}`
+    : record.outcome === null
+      ? "tool call recorded no outcome"
+      : record.outcome.status === "succeeded"
+        ? record.outcome.output
+        : `${record.outcome.error.code}: ${record.outcome.error.message}`;
+  return {
+    role: "toolResult",
+    toolCallId: toolCall.id,
+    toolName: toolCall.name,
+    content: [{ type: "text", text }],
+    details: {},
+    isError: record.disposition.status !== "accepted"
+      || record.outcome === null
+      || record.outcome.status !== "succeeded",
+    timestamp: 0,
+  };
 }
 
 function resolveControls(model: Model<Api>, requested: RequestedControls): ResolvedControls {
@@ -561,7 +626,7 @@ function providerVerifiedModelIdentity(message: AssistantMessage): ModelIdentity
     : { providerId: message.provider, modelId: message.responseModel };
 }
 
-function toAgentMessage(message: ModelInputMessage, model: Model<Api>): AgentMessage {
+function toAgentMessage(message: ModelInputMessage, model: Model<Api>): Message {
   if (message.role === "user") {
     return {
       role: "user",
@@ -600,14 +665,4 @@ function sameModel(left: ModelIdentity, right: ModelIdentity): boolean {
   return left.providerId === right.providerId && left.modelId === right.modelId;
 }
 
-function findLastAssistantMessage(messages: readonly unknown[]): AssistantMessage | undefined {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (isAssistantMessage(message)) return message;
-  }
-  return undefined;
-}
 
-function isAssistantMessage(value: unknown): value is AssistantMessage {
-  return typeof value === "object" && value !== null && "role" in value && value.role === "assistant";
-}

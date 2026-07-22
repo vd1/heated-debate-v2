@@ -319,7 +319,7 @@ describe("PiAgent", () => {
     expect(piReply).toEqual(expected);
     expect(piReply).toEqual(scriptedReply);
     expect(fake.calls[0]?.context.systemPrompt).toBe(REQUEST.role.systemPrompt);
-    expect(fake.calls[0]?.context.tools).toEqual([]);
+    expect(fake.calls[0]?.context.tools).toBeUndefined();
     expect(fake.calls[0]?.options).toMatchObject({
       reasoning: "high",
       temperature: 0.7,
@@ -385,7 +385,6 @@ describe("PiAgent", () => {
     expect(fake.calls).toHaveLength(2);
     const forwarded = fake.calls[0]?.context.tools;
     expect(forwarded?.map((tool) => tool.name)).toEqual(["web-search"]);
-    expect((forwarded?.[0] as AgentTool | undefined)?.executionMode).toBe("sequential");
     const toolResult = fake.calls[1]?.context.messages.find(
       (message) => message.role === "toolResult",
     );
@@ -394,6 +393,117 @@ describe("PiAgent", () => {
     expect(toolResult.isError).toBe(false);
     expect(toolResult.content).toEqual([{ type: "text", text: "result" }]);
 
+    await agent.dispose();
+  });
+
+  test("records an unknown tool name as a denied dispatcher call", async () => {
+    const fake = scriptedToolStream([
+      {
+        stopReason: "toolUse",
+        content: [
+          { type: "toolCall", id: "pi-call-1", name: "filesystem", arguments: { path: "/etc" } },
+        ],
+      },
+      { stopReason: "stop", content: [{ type: "text", text: "Proceeding without it." }] },
+    ]);
+    const agent = new PiAgent({
+      model: MODEL,
+      modelStream: fake.stream,
+      usageEvidence: { explicitlyReported: [], source: "test" },
+      tools: [{ toolId: "web-search", schemaVersion: "1", tool: WEB_SEARCH_TOOL }],
+      now: clock(1_000),
+    });
+    const request: TurnRequest = {
+      ...REQUEST,
+      capabilities: {
+        policyId: "research",
+        policyVersion: "1",
+        evidence: "recorded",
+        role: { id: "proposer", version: "1" },
+        phase: "proposal",
+        allowedTools: [{ toolId: "web-search", schemaVersion: "1", maxCalls: 1 }],
+        aggregateCallLimit: 1,
+        callTimeoutMs: 1_000,
+        maxResultBytes: 4_096,
+        deniedCallCharge: "none",
+      },
+    };
+
+    const reply = await agent.reply(request);
+
+    expect(reply.text).toBe("Proceeding without it.");
+    expect(reply.toolCalls).toHaveLength(1);
+    expect(reply.toolCalls[0]?.toolId).toBe("filesystem");
+    expect(reply.toolCalls[0]?.disposition).toEqual({
+      status: "denied",
+      reason: "tool_not_allowed",
+    });
+    const feedback = fake.calls[1]?.context.messages.filter(
+      (message) => message.role === "toolResult",
+    ).at(-1);
+    if (!feedback) throw new Error("missing tool result feedback");
+    expect(feedback.isError).toBe(true);
+    expect(JSON.stringify(feedback.content)).toContain("tool_not_allowed");
+    await agent.dispose();
+  });
+
+  test("records schema-invalid arguments without executing the underlying tool", async () => {
+    let executed = 0;
+    const fake = scriptedToolStream([
+      {
+        stopReason: "toolUse",
+        content: [
+          { type: "toolCall", id: "pi-call-1", name: "web-search", arguments: { query: { nested: true } } },
+        ],
+      },
+      { stopReason: "stop", content: [{ type: "text", text: "Adjusted the call." }] },
+    ]);
+    const agent = new PiAgent({
+      model: MODEL,
+      modelStream: fake.stream,
+      usageEvidence: { explicitlyReported: [], source: "test" },
+      tools: [{
+        toolId: "web-search",
+        schemaVersion: "1",
+        tool: {
+          ...WEB_SEARCH_TOOL,
+          parameters: Type.Object({ query: Type.String() }),
+          execute: () => {
+            executed += 1;
+            return Promise.resolve({ content: [{ type: "text", text: "never" }], details: {} });
+          },
+        },
+      }],
+      now: clock(1_000),
+    });
+    const request: TurnRequest = {
+      ...REQUEST,
+      capabilities: {
+        policyId: "research",
+        policyVersion: "1",
+        evidence: "recorded",
+        role: { id: "proposer", version: "1" },
+        phase: "proposal",
+        allowedTools: [{ toolId: "web-search", schemaVersion: "1", maxCalls: 1 }],
+        aggregateCallLimit: 1,
+        callTimeoutMs: 1_000,
+        maxResultBytes: 4_096,
+        deniedCallCharge: "none",
+      },
+    };
+
+    const reply = await agent.reply(request);
+
+    expect(executed).toBe(0);
+    expect(reply.toolCalls).toHaveLength(1);
+    expect(reply.toolCalls[0]?.disposition).toEqual({ status: "accepted" });
+    expect(reply.toolCalls[0]?.outcome).toEqual({
+      status: "failed",
+      error: {
+        code: "malformed_arguments",
+        message: "tool call arguments do not match the tool schema",
+      },
+    });
     await agent.dispose();
   });
 
