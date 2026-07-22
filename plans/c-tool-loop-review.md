@@ -1,8 +1,11 @@
 # C-TOOL-LOOP review
 
-Status: pass
+Status: in progress; see `plans/c-tool-loop-concerns.md`. Concerns 1 and 3 remain open.
 
-Reviewed on 2026-07-22.
+Reviewed on 2026-07-22. The initial pass verdict was premature: the codex review filed nine
+concerns, of which 2 and 4-9 are now resolved. Concerns 1 (Pi-side validation bypasses the
+dispatcher) and 3 (attempt/tool-call interleaving is not recorded) are open architecture
+decisions.
 
 The project now owns a normalized tool call vocabulary and a deterministic dispatcher. The
 dispatcher alone enforces the C-TOOL-POLICY capability policy and records an ordered trace with

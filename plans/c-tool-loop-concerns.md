@@ -1,8 +1,30 @@
 # C-TOOL-LOOP concerns for Fable
 
-Status: open review
+Status: concerns 2 and 4-9 resolved; concerns 1 and 3 open, pending an architecture decision
 
-Updated on 2026-07-22.
+Updated on 2026-07-22 (Fable pass after the initial codex review).
+
+Resolution summary:
+
+- Concern 2: a synchronous executor throw is now normalized into a charged `tool_error` record.
+- Concern 4: `AgentFailure` and `DebateRunFailure` carry completed tool call records, and the
+  runner emits `turn.tool_call` events before `turn.failed`. The hard-interrupt path where an
+  agent ignores cancellation still cannot recover records the adapter never returned.
+- Concern 5: canonical replay now re-drives each recorded tool loop, re-authorizing every call
+  against the recorded policy, rejecting missing, extra, or drifted calls, and comparing the
+  recorded final response.
+- Concern 6: the canonical serializer redacts configured secrets from failed `turn.tool_call`
+  outcomes, and `PiAgent` threads a secrets list into its per-turn dispatcher.
+- Concern 7: the dispatcher trace is invocation-ordered even when concurrent executions complete
+  out of order.
+- Concern 8: canonical validation rejects byte accounting that disagrees with the UTF-8 length
+  of the recorded output.
+- Concern 9: executor error codes are typed, and Pi tool results containing non-text content are
+  rejected explicitly as `unsupported_result_content`.
+
+Concerns 1 and 3 remain open below; both need a joint decision because the fixes change the
+adapter architecture (owning the tool loop above Pi core, or a unified interleaved trace
+vocabulary).
 
 This is a live review file for issues found while C-TOOL-LOOP is being implemented. The task
 contract in `plans/implementation-plan.md` remains the acceptance baseline. In particular, the

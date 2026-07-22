@@ -101,11 +101,18 @@ export class AgentFailure extends Error {
   readonly name = "AgentFailure";
   readonly code: AgentFailureCode;
   readonly trace: AgentTrace;
+  readonly toolCalls: readonly ToolCallRecord[];
 
-  constructor(input: { code: AgentFailureCode; message: string; trace: AgentTrace }) {
+  constructor(input: {
+    code: AgentFailureCode;
+    message: string;
+    trace: AgentTrace;
+    toolCalls?: readonly ToolCallRecord[];
+  }) {
     super(input.message);
     this.code = input.code;
     this.trace = structuredClone(input.trace);
+    this.toolCalls = structuredClone(input.toolCalls ?? []);
   }
 }
 

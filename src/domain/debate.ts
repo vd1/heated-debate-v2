@@ -57,6 +57,7 @@ export class DebateRunFailure extends Error {
   readonly code: DebateFailureCode;
   readonly turnId: string | undefined;
   readonly trace: AgentTrace;
+  readonly toolCalls: readonly ToolCallRecord[];
   /** Observed lower-bound usage; unavailable kinds remain absent. */
   readonly observedUsage: BudgetObservedUsage;
 
@@ -65,12 +66,14 @@ export class DebateRunFailure extends Error {
     message: string;
     turnId?: string;
     trace?: AgentTrace;
+    toolCalls?: readonly ToolCallRecord[];
     observedUsage?: BudgetObservedUsage;
   }) {
     super(input.message);
     this.code = input.code;
     this.turnId = input.turnId;
     this.trace = structuredClone(input.trace ?? { attempts: [] });
+    this.toolCalls = structuredClone(input.toolCalls ?? []);
     this.observedUsage = structuredClone(input.observedUsage ?? {});
   }
 }
@@ -251,11 +254,13 @@ export async function runDebate(input: RunDebateInput): Promise<DebateResult> {
       ).catch(async (error: unknown) => {
         const normalized = normalizeDispatchFailure(error, turn.request.turnId, observedUsage);
         await emitAttempts(turn.request.turnId, normalized.trace);
+        await emitToolCalls(turn.request.turnId, normalized.toolCalls);
         return endWithFailure(new DebateRunFailure({
           code: normalized.code,
           message: normalized.message,
           ...(normalized.turnId === undefined ? {} : { turnId: normalized.turnId }),
           trace: normalized.trace,
+          toolCalls: normalized.toolCalls,
           observedUsage,
         }));
       });
@@ -451,6 +456,7 @@ function normalizeDispatchFailure(
       message: error.message,
       turnId,
       trace: error.trace,
+      toolCalls: error.toolCalls,
       observedUsage,
     });
   }

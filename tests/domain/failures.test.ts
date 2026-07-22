@@ -232,6 +232,47 @@ describe("runDebate failure semantics", () => {
     });
   });
 
+
+  test("emits completed tool calls before the turn failure that follows them", async () => {
+    const completedCall = {
+      callId: "failure-run:round-1:proposer:call-1",
+      ordinal: 1,
+      toolId: "web-search",
+      schemaVersion: "1",
+      arguments: { query: "queues" },
+      disposition: { status: "accepted" as const },
+      outcome: {
+        status: "succeeded" as const,
+        output: "results",
+        outputBytes: 7,
+        truncation: null,
+      },
+      durationMs: 12,
+    };
+    const proposer = new ScenarioAgent(() => Promise.reject(new AgentFailure({
+      code: "provider_failure",
+      message: "provider failed after tool completion",
+      trace: FAILED_TRACE,
+      toolCalls: [completedCall],
+    })));
+    const reviewer = new ScenarioAgent(() => Promise.resolve(reply("unused")));
+    const sink = new MemorySink();
+
+    const error = await debateError(debateInput(proposer, reviewer, sink));
+
+    expect(error.code).toBe("provider_failure");
+    expect(error.toolCalls).toEqual([completedCall]);
+    const types = sink.events.map((event) => event.type);
+    const toolCallIndex = types.indexOf("turn.tool_call");
+    const failureIndex = types.indexOf("turn.failed");
+    expect(toolCallIndex).toBeGreaterThan(-1);
+    expect(failureIndex).toBeGreaterThan(toolCallIndex);
+    const toolEvent = sink.events[toolCallIndex];
+    if (toolEvent?.type !== "turn.tool_call") throw new Error("missing tool call event");
+    expect(toolEvent.data.record).toEqual(completedCall);
+    expect(toolEvent.data.turnId).toBe("failure-run:round-1:proposer");
+  });
+
   test("snapshots and freezes run controls once for enforcement and post-hoc projection", async () => {
     const mutableBudget = { maxTurns: 2, maxTokens: 100 };
     const oneToken = usageTrace({ outputTokens: 1 });

@@ -72,15 +72,11 @@ interface RecordedTurn {
   toolCalls: readonly ToolCallRecord[];
 }
 
-export function replayCanonicalRun(input: ReplayCanonicalRunInput): Promise<ReplayResult> {
-  try {
-    return Promise.resolve(replayCanonicalRunSync(input));
-  } catch (error) {
-    return Promise.reject(error instanceof Error ? error : new Error(String(error)));
-  }
+export async function replayCanonicalRun(input: ReplayCanonicalRunInput): Promise<ReplayResult> {
+  return replayCanonicalRunInternal(input);
 }
 
-function replayCanonicalRunSync(input: ReplayCanonicalRunInput): ReplayResult {
+async function replayCanonicalRunInternal(input: ReplayCanonicalRunInput): Promise<ReplayResult> {
   validateCanonicalSequence(input.events);
   const trace = readSuccessfulTrace(input.events);
   const configuration = structuredClone(input.configuration);
@@ -118,6 +114,7 @@ function replayCanonicalRunSync(input: ReplayCanonicalRunInput): ReplayResult {
     }
     assertNoDrift(recorded.request.turnId, recorded.roundNumber, replayed.roundNumber, "roundNumber");
     assertTurnRequestNoDrift(recorded.request, replayed.request);
+    await replayRecordedToolLoop(recorded);
     reconstructed.push(replayed.request);
     scheduler.acceptReply(toReplayReply(recorded.reply, recorded.toolCalls));
   }
@@ -127,6 +124,41 @@ function replayCanonicalRunSync(input: ReplayCanonicalRunInput): ReplayResult {
   scheduler.result();
 
   return Object.freeze({ requests: Object.freeze(reconstructed) });
+}
+
+async function replayRecordedToolLoop(recorded: RecordedTurn): Promise<void> {
+  if (recorded.toolCalls.length === 0) return;
+  if (recorded.request.capabilities.evidence !== "recorded") {
+    throw new Error(
+      `cannot deterministically replay tool calls without recorded policy evidence for ${recorded.request.turnId}`,
+    );
+  }
+  const steps = [
+    ...recorded.toolCalls.map((record) => ({
+      kind: "tool_call" as const,
+      request: {
+        toolId: record.toolId,
+        schemaVersion: record.schemaVersion,
+        arguments: structuredClone(record.arguments),
+      },
+    })),
+    { kind: "final" as const, text: recorded.reply.text },
+  ];
+  let step = 0;
+  await replayToolLoop({
+    driver: {
+      nextStep: () => {
+        const next = steps[step];
+        step += 1;
+        if (!next) throw new Error(`recorded tool loop overran for ${recorded.request.turnId}`);
+        return Promise.resolve(next);
+      },
+    },
+    policy: recorded.request.capabilities,
+    records: recorded.toolCalls,
+    finalText: recorded.reply.text,
+    id: recorded.request.turnId,
+  });
 }
 
 function assertTurnRequestNoDrift(
@@ -317,6 +349,10 @@ export interface ReplayToolLoopInput {
   driver: ToolLoopDriver;
   policy: ToolCapabilityPolicy;
   records: readonly ToolCallRecord[];
+  /** Recorded final response; when provided, a differing replayed final response is drift. */
+  finalText?: string;
+  /** Identity used in drift errors; defaults to "tool-loop". */
+  id?: string;
 }
 
 export async function replayToolLoop(input: ReplayToolLoopInput): Promise<ToolLoopResult> {
@@ -370,6 +406,9 @@ export async function replayToolLoop(input: ReplayToolLoopInput): Promise<ToolLo
     throw new Error(
       `replay consumed ${String(position)} of ${String(input.records.length)} recorded tool calls`,
     );
+  }
+  if (input.finalText !== undefined) {
+    assertNoDrift(input.id ?? "tool-loop", input.finalText, result.finalText, "finalText");
   }
   return result;
 }

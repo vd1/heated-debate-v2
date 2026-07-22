@@ -633,6 +633,27 @@ async function rejectionMessage(promise: Promise<unknown>): Promise<string> {
 }
 
 describe("replayCanonicalRun tool call records", () => {
+  const SEARCH_POLICY = resolveToolPolicy({
+    policyId: "research",
+    policyVersion: "1",
+    evidence: "recorded",
+    role: { id: PROPOSER.id, version: PROPOSER.version },
+    phase: "proposal",
+    allowedTools: [{ toolId: "web-search", schemaVersion: "1", maxCalls: 2 }],
+    aggregateCallLimit: 2,
+    callTimeoutMs: 5_000,
+    maxResultBytes: 16_384,
+    deniedCallCharge: "none",
+  }, { role: { id: PROPOSER.id, version: PROPOSER.version }, phase: "proposal" });
+  const SEARCH_PROPOSAL_REQUEST: TurnRequest = {
+    ...PROPOSAL_REQUEST,
+    capabilities: SEARCH_POLICY,
+  };
+  const SEARCH_CONFIGURATION: ReplayConfiguration = {
+    ...CONFIGURATION,
+    proposer: { ...CONFIGURATION.proposer, capabilities: SEARCH_POLICY },
+  };
+
   const toolRecord = (ordinal: number): CanonicalEvent => ({
     schemaVersion: 4,
     runId: "run-1",
@@ -660,6 +681,12 @@ describe("replayCanonicalRun tool call records", () => {
 
   function withToolCalls(...ordinals: number[]): CanonicalEvent[] {
     const events = recordedRun();
+    const requested = events[1];
+    if (requested?.type !== "turn.requested") throw new Error("bad fixture");
+    requested.data = {
+      ...requested.data,
+      request: SEARCH_PROPOSAL_REQUEST,
+    };
     events.splice(2, 0, ...ordinals.map((ordinal) => toolRecord(ordinal)));
     return events.map((event, sequence) => ({ ...event, sequence }));
   }
@@ -667,10 +694,23 @@ describe("replayCanonicalRun tool call records", () => {
   test("replays a recorded run containing ordered tool call records", async () => {
     const result = await replayCanonicalRun({
       events: withToolCalls(1, 2),
-      configuration: CONFIGURATION,
+      configuration: SEARCH_CONFIGURATION,
     });
 
-    expect(result.requests).toEqual([PROPOSAL_REQUEST, REVIEW_REQUEST]);
+    expect(result.requests).toEqual([SEARCH_PROPOSAL_REQUEST, REVIEW_REQUEST]);
+  });
+
+  test("rejects recorded dispositions the recorded policy cannot reproduce", async () => {
+    const events = recordedRun();
+    events.splice(2, 0, toolRecord(1));
+    const resequenced = events.map((event, sequence) => ({ ...event, sequence }));
+
+    expect(await rejectionMessage(replayCanonicalRun({
+      events: resequenced,
+      configuration: CONFIGURATION,
+    }))).toBe(
+      "replay drift for run-1:round-1:proposer:call-1 at disposition.reason",
+    );
   });
 
   test("rejects a tool call recorded outside its requested turn", async () => {
@@ -788,6 +828,17 @@ describe("replayToolLoop", () => {
       policy: TOOL_POLICY,
       records: [recordedCall(1)],
     }))).toBe("replay consumed 0 of 1 recorded tool calls");
+  });
+
+  test("detects final-response drift when an expected final text is provided", async () => {
+    const { driver } = scriptedDriver([{ kind: "final", text: "Different answer" }]);
+
+    expect(await rejectionMessage(replayToolLoop({
+      driver,
+      policy: TOOL_POLICY,
+      records: [],
+      finalText: "Recorded proposal",
+    }))).toBe("replay drift for tool-loop at finalText");
   });
 
   test("detects recorded dispositions the policy would not reproduce", async () => {

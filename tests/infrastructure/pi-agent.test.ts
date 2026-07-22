@@ -175,8 +175,9 @@ function scriptedStream(options: ScriptedStreamOptions): {
 }
 
 interface ScriptedToolMessage {
-  stopReason: "stop" | "toolUse" | "length";
+  stopReason: "stop" | "toolUse" | "length" | "error";
   content: AssistantMessage["content"];
+  errorMessage?: string;
 }
 
 function scriptedToolStream(messages: ScriptedToolMessage[]): {
@@ -205,13 +206,18 @@ function scriptedToolStream(messages: ScriptedToolMessage[]): {
         ...assistantMessage("", requestModel),
         content: structuredClone(scripted.content),
         stopReason: scripted.stopReason,
+        ...(scripted.errorMessage === undefined ? {} : { errorMessage: scripted.errorMessage }),
       };
 
       queueMicrotask(() => {
         void (async () => {
           await streamOptions?.onResponse?.({ status: 200, headers: {} }, requestModel);
-          events.push({ type: "start", partial: { ...message, content: [] } });
-          events.push({ type: "done", reason: scripted.stopReason, message });
+          if (scripted.stopReason === "error") {
+            events.push({ type: "error", reason: "error", error: message });
+          } else {
+            events.push({ type: "start", partial: { ...message, content: [] } });
+            events.push({ type: "done", reason: scripted.stopReason, message });
+          }
           events.end();
         })();
       });
@@ -388,6 +394,55 @@ describe("PiAgent", () => {
     expect(toolResult.isError).toBe(false);
     expect(toolResult.content).toEqual([{ type: "text", text: "result" }]);
 
+    await agent.dispose();
+  });
+
+  test("preserves completed tool calls when a later model step fails", async () => {
+    const fake = scriptedToolStream([
+      {
+        stopReason: "toolUse",
+        content: [
+          { type: "toolCall", id: "pi-call-1", name: "web-search", arguments: { query: "q" } },
+        ],
+      },
+      { stopReason: "error", content: [], errorMessage: "provider failed after tool" },
+    ]);
+    const agent = new PiAgent({
+      model: MODEL,
+      modelStream: fake.stream,
+      usageEvidence: { explicitlyReported: [], source: "test" },
+      tools: [{ toolId: "web-search", schemaVersion: "1", tool: WEB_SEARCH_TOOL }],
+      now: clock(1_000, 1_010, 1_015, 1_020),
+    });
+    const request: TurnRequest = {
+      ...REQUEST,
+      capabilities: {
+        policyId: "research",
+        policyVersion: "1",
+        evidence: "recorded",
+        role: { id: "proposer", version: "1" },
+        phase: "proposal",
+        allowedTools: [{ toolId: "web-search", schemaVersion: "1", maxCalls: 1 }],
+        aggregateCallLimit: 1,
+        callTimeoutMs: 1_000,
+        maxResultBytes: 4_096,
+        deniedCallCharge: "none",
+      },
+    };
+
+    const error = await rejectionError(agent.reply(request));
+
+    expect(error).toBeInstanceOf(AgentFailure);
+    const failure = error as AgentFailure;
+    expect(failure.code).toBe("provider_failure");
+    expect(failure.toolCalls).toHaveLength(1);
+    expect(failure.toolCalls[0]?.callId).toBe("turn-1:call-1");
+    expect(failure.toolCalls[0]?.outcome).toEqual({
+      status: "succeeded",
+      output: "result",
+      outputBytes: 6,
+      truncation: null,
+    });
     await agent.dispose();
   });
 

@@ -237,6 +237,7 @@ export class PiAgent implements AgentPort {
           this.usageEvidence,
           options.signal?.aborted ? "aborted" : "failed",
         ),
+        ...(dispatcher === undefined ? {} : { toolCalls: dispatcher.trace() }),
       });
     } finally {
       options.signal?.removeEventListener("abort", onAbort);
@@ -255,6 +256,7 @@ export class PiAgent implements AgentPort {
         code: message.stopReason === "aborted" ? "cancelled" : "provider_failure",
         message: message.errorMessage ?? `provider stopped with ${message.stopReason}`,
         trace,
+        ...(dispatcher === undefined ? {} : { toolCalls: dispatcher.trace() }),
       });
     }
     const model = responseModelIdentity(message);
