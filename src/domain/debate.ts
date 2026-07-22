@@ -284,7 +284,7 @@ export async function runDebate(input: RunDebateInput): Promise<DebateResult> {
     const scheduledResult = scheduler.result();
     const result: DebateResult = Object.freeze({
       ...scheduledResult,
-      controls: structuredClone(runControls),
+      controls: runControls,
     });
     if (input.recording) {
       await emit({

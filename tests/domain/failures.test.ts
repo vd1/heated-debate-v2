@@ -231,7 +231,7 @@ describe("runDebate failure semantics", () => {
     });
   });
 
-  test("snapshots run controls once for enforcement and post-hoc projection", async () => {
+  test("snapshots and freezes run controls once for enforcement and post-hoc projection", async () => {
     const mutableBudget = { maxTurns: 2, maxTokens: 100 };
     const oneToken = usageTrace({ outputTokens: 1 });
     const proposer = new ScenarioAgent(() => {
@@ -251,6 +251,11 @@ describe("runDebate failure semantics", () => {
 
     expect(proposer.calls).toBe(1);
     expect(reviewer.calls).toBe(1);
+    expect(Object.isFrozen(result.controls)).toBe(true);
+    expect(Object.isFrozen(result.controls.budget)).toBe(true);
+    expect(Reflect.set(result.controls, "turnTimeoutMs", 999)).toBe(false);
+    if (result.controls.budget === null) throw new Error("missing run budget snapshot");
+    expect(Reflect.set(result.controls.budget, "maxTokens", 0)).toBe(false);
     expect(start.data.controls).toEqual({
       policyId: "run-controls",
       policyVersion: "1",
