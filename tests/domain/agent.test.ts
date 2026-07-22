@@ -7,6 +7,7 @@ import {
   type ModelIdentity,
   type TurnRequest,
 } from "../../src/domain/agent";
+import { createDenyAllToolPolicy } from "../../src/domain/tool-policy";
 
 const MODEL: ModelIdentity = {
   providerId: "openai-codex",
@@ -40,9 +41,10 @@ const REQUEST: TurnRequest = {
     temperature: 0.7,
     maxOutputTokens: 512,
   },
-  capabilities: {
-    toolNames: [],
-  },
+  capabilities: createDenyAllToolPolicy({
+    role: { id: "proposer", version: "1" },
+    phase: "proposal",
+  }),
 };
 
 const CONTROL_REPORT: ControlReport = {

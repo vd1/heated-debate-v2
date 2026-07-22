@@ -1,6 +1,7 @@
 import type { ContextDecision } from "./context";
 import type { CreativitySelection } from "./dial";
 import type { RoleDefinition } from "./roles";
+import type { TurnCapabilityPolicy } from "./tool-policy";
 
 export interface ModelIdentity {
   providerId: string;
@@ -36,9 +37,7 @@ export interface ControlReport {
   maxOutputTokens?: ControlTrace<number>;
 }
 
-export interface CapabilityPolicy {
-  toolNames: readonly string[];
-}
+export type CapabilityPolicy = TurnCapabilityPolicy;
 
 export interface TurnRequest {
   turnId: string;

@@ -15,8 +15,12 @@ import type {
 import type { ContextDecision } from "./context";
 import type { CreativitySelection } from "./dial";
 import type { RoleDefinition } from "./roles";
+import {
+  assertToolCapabilityPolicy,
+  type UnrecordedToolCapabilityPolicy,
+} from "./tool-policy";
 
-export const CANONICAL_SCHEMA_VERSION = 2 as const;
+export const CANONICAL_SCHEMA_VERSION = 3 as const;
 
 export type CanonicalRunControls =
   | {
@@ -162,7 +166,7 @@ export function sanitizeFailure(
 function migrateHistoricalEvent(value: unknown): unknown {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return value;
   const event = value as Record<string, unknown>;
-  if (event.schemaVersion !== 1) return value;
+  if (event.schemaVersion !== 1 && event.schemaVersion !== 2) return value;
   const migrated = structuredClone(event);
   migrated.schemaVersion = CANONICAL_SCHEMA_VERSION;
   if (migrated.type === "run.started"
@@ -184,7 +188,31 @@ function migrateHistoricalEvent(value: unknown): unknown {
       if (!hasOwn(controls, "wholeRunTimeoutMs")) controls.wholeRunTimeoutMs = null;
     }
   }
+  migrateHistoricalCapabilities(migrated);
   return migrated;
+}
+
+function migrateHistoricalCapabilities(event: Record<string, unknown>): void {
+  if (event.type !== "turn.requested"
+    || typeof event.data !== "object"
+    || event.data === null
+    || Array.isArray(event.data)) return;
+  const data = event.data as Record<string, unknown>;
+  if (typeof data.request !== "object"
+    || data.request === null
+    || Array.isArray(data.request)) return;
+  const request = data.request as Record<string, unknown>;
+  if (typeof request.capabilities !== "object"
+    || request.capabilities === null
+    || Array.isArray(request.capabilities)) return;
+  const capabilities = request.capabilities as Record<string, unknown>;
+  if (!hasOwn(capabilities, "toolNames")) return;
+  request.capabilities = {
+    policyId: "legacy-tool-names",
+    policyVersion: "1",
+    evidence: "unrecorded",
+    toolNames: structuredClone(capabilities.toolNames) as readonly string[],
+  } satisfies UnrecordedToolCapabilityPolicy;
 }
 
 function redactFailureSecrets(event: CanonicalEvent, secrets: readonly string[]): void {
@@ -344,6 +372,11 @@ function validateTurnRequest(value: unknown): asserts value is TurnRequest {
   validateContext(request.context);
   validateRequestedControls(request.controls);
   validateCapabilities(request.capabilities);
+  if (request.capabilities.evidence === "recorded"
+    && (request.capabilities.role.id !== request.role.id
+      || request.capabilities.role.version !== request.role.version)) {
+    throw new Error("tool policy role does not match turn request role");
+  }
 }
 
 function validateRole(value: unknown): asserts value is RoleDefinition {
@@ -407,10 +440,23 @@ function validateRequestedControls(value: unknown): asserts value is RequestedCo
 
 function validateCapabilities(value: unknown): asserts value is CapabilityPolicy {
   const capabilities = assertRecord(value, "capabilities");
-  assertExactFields(capabilities, ["toolNames"], [], "capabilities");
-  if (!Array.isArray(capabilities.toolNames) || !capabilities.toolNames.every((name) => typeof name === "string")) {
-    throw new Error("capabilities.toolNames must be a string array");
+  if (capabilities.evidence === "unrecorded") {
+    assertExactFields(
+      capabilities,
+      ["policyId", "policyVersion", "evidence", "toolNames"],
+      [],
+      "capabilities",
+    );
+    if (capabilities.policyId !== "legacy-tool-names" || capabilities.policyVersion !== "1") {
+      throw new Error("unrecorded capabilities must use legacy-tool-names@1");
+    }
+    if (!Array.isArray(capabilities.toolNames)
+      || !capabilities.toolNames.every((name) => typeof name === "string")) {
+      throw new Error("capabilities.toolNames must be a string array");
+    }
+    return;
   }
+  assertToolCapabilityPolicy(value);
 }
 
 function validateCanonicalReply(value: unknown): asserts value is CanonicalTurnReply {

@@ -1,5 +1,6 @@
 import type { DebateResult } from "./debate";
 import {
+  CANONICAL_SCHEMA_VERSION,
   assertCanonicalEvent,
   type CanonicalEvent,
   type CanonicalTurnReply,
@@ -18,7 +19,7 @@ export function projectDebateEvents(
   };
 
   append({
-    schemaVersion: 2,
+    schemaVersion: CANONICAL_SCHEMA_VERSION,
     runId: artifactRunId,
     sequence,
     type: "run.started",
@@ -33,7 +34,7 @@ export function projectDebateEvents(
   for (const round of result.rounds) {
     for (const turn of [round.exchange.proposal, round.exchange.review]) {
       append({
-        schemaVersion: 2,
+        schemaVersion: CANONICAL_SCHEMA_VERSION,
         runId: artifactRunId,
         sequence,
         type: "turn.requested",
@@ -44,7 +45,7 @@ export function projectDebateEvents(
       });
       for (const attempt of turn.reply.trace.attempts) {
         append({
-          schemaVersion: 2,
+          schemaVersion: CANONICAL_SCHEMA_VERSION,
           runId: artifactRunId,
           sequence,
           type: "adapter.attempt",
@@ -61,7 +62,7 @@ export function projectDebateEvents(
         controls: structuredClone(turn.reply.controls),
       };
       append({
-        schemaVersion: 2,
+        schemaVersion: CANONICAL_SCHEMA_VERSION,
         runId: artifactRunId,
         sequence,
         type: "turn.completed",
@@ -71,7 +72,7 @@ export function projectDebateEvents(
   }
 
   append({
-    schemaVersion: 2,
+    schemaVersion: CANONICAL_SCHEMA_VERSION,
     runId: artifactRunId,
     sequence,
     type: "run.completed",

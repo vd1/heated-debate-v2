@@ -11,6 +11,7 @@ import {
   validateCanonicalSequence,
   type CanonicalEvent,
 } from "../../src/domain/events";
+import { createDenyAllToolPolicy } from "../../src/domain/tool-policy";
 
 const REQUEST: TurnRequest = {
   turnId: "run-1:round-1:proposer",
@@ -31,7 +32,10 @@ const REQUEST: TurnRequest = {
     thinkingLevel: "high",
     maxOutputTokens: 128,
   },
-  capabilities: { toolNames: [] },
+  capabilities: createDenyAllToolPolicy({
+    role: { id: "proposer", version: "1" },
+    phase: "proposal",
+  }),
 };
 
 const REPLY: AgentReply = {
@@ -53,7 +57,7 @@ const REPLY: AgentReply = {
 function events(): CanonicalEvent[] {
   return [
     {
-      schemaVersion: 2,
+      schemaVersion: 3,
       runId: "run-1",
       sequence: 0,
       type: "run.started",
@@ -72,14 +76,14 @@ function events(): CanonicalEvent[] {
       },
     },
     {
-      schemaVersion: 2,
+      schemaVersion: 3,
       runId: "run-1",
       sequence: 1,
       type: "turn.requested",
       data: { roundNumber: 1, request: REQUEST },
     },
     {
-      schemaVersion: 2,
+      schemaVersion: 3,
       runId: "run-1",
       sequence: 2,
       type: "adapter.attempt",
@@ -98,7 +102,7 @@ function events(): CanonicalEvent[] {
       },
     },
     {
-      schemaVersion: 2,
+      schemaVersion: 3,
       runId: "run-1",
       sequence: 3,
       type: "turn.completed",
@@ -113,7 +117,7 @@ function events(): CanonicalEvent[] {
       },
     },
     {
-      schemaVersion: 2,
+      schemaVersion: 3,
       runId: "run-1",
       sequence: 4,
       type: "run.completed",
@@ -122,7 +126,7 @@ function events(): CanonicalEvent[] {
   ];
 }
 
-describe("canonical event schema v2", () => {
+describe("canonical event schema v3", () => {
   test("round-trips every successful-run event without losing absent usage", () => {
     for (const event of events()) {
       expect(parseCanonicalEvent(serializeCanonicalEvent(event, { secrets: [] }))).toEqual(event);
@@ -139,14 +143,14 @@ describe("canonical event schema v2", () => {
     );
     const failureEvents: CanonicalEvent[] = [
       {
-        schemaVersion: 2,
+        schemaVersion: 3,
         runId: "run-1",
         sequence: 0,
         type: "turn.failed",
         data: { turnId: REQUEST.turnId, failure },
       },
       {
-        schemaVersion: 2,
+        schemaVersion: 3,
         runId: "run-1",
         sequence: 0,
         type: "run.failed",
@@ -164,7 +168,7 @@ describe("canonical event schema v2", () => {
 
   test("redacts configured secrets from a directly constructed failure", () => {
     const event: CanonicalEvent = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       runId: "run-1",
       sequence: 0,
       type: "run.failed",
@@ -214,7 +218,7 @@ describe("canonical event schema v2", () => {
 
     const migrated = parseCanonicalEvent(historical);
 
-    expect(migrated.schemaVersion).toBe(2);
+    expect(migrated.schemaVersion).toBe(3);
     expect(migrated.type).toBe("run.started");
     if (migrated.type !== "run.started") throw new Error("migration failed");
     expect(migrated.data.controls).toEqual({
@@ -223,7 +227,28 @@ describe("canonical event schema v2", () => {
       evidence: "unrecorded",
     });
     expect(JSON.parse(serializeCanonicalEvent(migrated, { secrets: [] }))).toMatchObject({
-      schemaVersion: 2,
+      schemaVersion: 3,
+    });
+  });
+
+  test("migrates schema-v2 name allowlists without inventing policy evidence", () => {
+    const requested = events()[1];
+    if (requested?.type !== "turn.requested") throw new Error("bad fixture");
+    const historical = structuredClone(requested) as unknown as Record<string, unknown>;
+    historical.schemaVersion = 2;
+    const data = historical.data as { request: { capabilities: unknown } };
+    data.request.capabilities = { toolNames: ["web-search"] };
+
+    const migrated = parseCanonicalEvent(JSON.stringify(historical));
+
+    expect(migrated.schemaVersion).toBe(3);
+    expect(migrated.type).toBe("turn.requested");
+    if (migrated.type !== "turn.requested") throw new Error("migration failed");
+    expect(migrated.data.request.capabilities).toEqual({
+      policyId: "legacy-tool-names",
+      policyVersion: "1",
+      evidence: "unrecorded",
+      toolNames: ["web-search"],
     });
   });
 
@@ -232,8 +257,8 @@ describe("canonical event schema v2", () => {
     if (!first) throw new Error("bad fixture");
     const valid = JSON.parse(serializeCanonicalEvent(first, { secrets: [] })) as Record<string, unknown>;
 
-    expect(() => parseCanonicalEvent(JSON.stringify({ ...valid, schemaVersion: 3 }))).toThrow(
-      "unsupported schema version: 3",
+    expect(() => parseCanonicalEvent(JSON.stringify({ ...valid, schemaVersion: 4 }))).toThrow(
+      "unsupported schema version: 4",
     );
     expect(() => parseCanonicalEvent(JSON.stringify({ ...valid, type: "future.event" }))).toThrow(
       "unknown event type: future.event",
@@ -266,7 +291,7 @@ describe("canonical event schema v2", () => {
     })).toThrow("event must be a plain object");
   });
 
-  test("rejects creativity identities outside canonical schema v2", () => {
+  test("rejects creativity identities outside canonical schema v3", () => {
     const requested = events()[1];
     if (requested?.type !== "turn.requested") throw new Error("bad fixture");
     const serialized = serializeCanonicalEvent(requested, { secrets: [] });
@@ -278,6 +303,31 @@ describe("canonical event schema v2", () => {
 
     expect(() => parseCanonicalEvent(JSON.stringify(value))).toThrow(
       "canonical creativity schedule must be linear-cooling@1",
+    );
+  });
+
+  test("rejects a recorded tool policy bound to a different request role", () => {
+    const requested = events()[1];
+    if (requested?.type !== "turn.requested") throw new Error("bad fixture");
+    if (requested.data.request.capabilities.evidence !== "recorded") {
+      throw new Error("bad capability fixture");
+    }
+    const invalid: CanonicalEvent = {
+      ...requested,
+      data: {
+        ...requested.data,
+        request: {
+          ...requested.data.request,
+          capabilities: {
+            ...requested.data.request.capabilities,
+            role: { id: "reviewer", version: "1" },
+          },
+        },
+      },
+    };
+
+    expect(() => serializeCanonicalEvent(invalid, { secrets: [] })).toThrow(
+      "tool policy role does not match turn request role",
     );
   });
 

@@ -13,10 +13,12 @@ import {
 } from "./events";
 import type { RoleDefinition } from "./roles";
 import { DebateScheduler } from "./scheduler";
+import type { ToolCapabilityPolicy } from "./tool-policy";
 
 export interface ReplayParticipantConfiguration {
   role: RoleDefinition;
   controls: RequestedControls;
+  capabilities?: ToolCapabilityPolicy;
 }
 
 export interface ReplayConfiguration {
@@ -103,7 +105,7 @@ function replayCanonicalRunSync(input: ReplayCanonicalRunInput): ReplayResult {
       );
     }
     assertNoDrift(recorded.request.turnId, recorded.roundNumber, replayed.roundNumber, "roundNumber");
-    assertNoDrift(recorded.request.turnId, recorded.request, replayed.request);
+    assertTurnRequestNoDrift(recorded.request, replayed.request);
     reconstructed.push(replayed.request);
     scheduler.acceptReply(toReplayReply(recorded.reply));
   }
@@ -113,6 +115,30 @@ function replayCanonicalRunSync(input: ReplayCanonicalRunInput): ReplayResult {
   scheduler.result();
 
   return Object.freeze({ requests: Object.freeze(reconstructed) });
+}
+
+function assertTurnRequestNoDrift(
+  recorded: TurnRequest,
+  replayed: DeepReadonly<TurnRequest>,
+): void {
+  const { capabilities: recordedCapabilities, ...recordedProtocol } = recorded;
+  const { capabilities: replayedCapabilities, ...replayedProtocol } = replayed;
+  assertNoDrift(recorded.turnId, recordedProtocol, replayedProtocol);
+
+  if (recordedCapabilities.evidence === "unrecorded") {
+    if (recordedCapabilities.toolNames.length > 0) {
+      throw new Error(
+        `cannot deterministically replay unrecorded tool capabilities for ${recorded.turnId}`,
+      );
+    }
+    return;
+  }
+  assertNoDrift(
+    recorded.turnId,
+    recordedCapabilities,
+    replayedCapabilities,
+    "capabilities",
+  );
 }
 
 function readSuccessfulTrace(events: readonly CanonicalEvent[]): {

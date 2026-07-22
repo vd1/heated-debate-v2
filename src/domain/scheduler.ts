@@ -4,10 +4,23 @@ import type { DebateResult } from "./debate";
 import { selectCreativity } from "./dial";
 import type { DeepReadonly, ExchangeResult, PriorExchange } from "./exchange";
 import type { RoleDefinition } from "./roles";
+import {
+  createDenyAllToolPolicy,
+  resolveToolPolicy,
+  type ToolCapabilityPolicy,
+  type ToolProtocolPhase,
+} from "./tool-policy";
 
 export interface ScheduledParticipant {
   role: RoleDefinition;
   controls: RequestedControls;
+  capabilities?: ToolCapabilityPolicy;
+}
+
+interface ResolvedScheduledParticipant {
+  role: RoleDefinition;
+  controls: RequestedControls;
+  capabilities: ToolCapabilityPolicy;
 }
 
 export interface DebateSchedulerInput {
@@ -33,8 +46,8 @@ export class DebateScheduler {
   private readonly debateId: string;
   private readonly topic: string;
   private readonly roundCount: number;
-  private readonly proposer: ScheduledParticipant;
-  private readonly reviewer: ScheduledParticipant;
+  private readonly proposer: ResolvedScheduledParticipant;
+  private readonly reviewer: ResolvedScheduledParticipant;
   private readonly rounds: Array<{ readonly roundNumber: number; readonly exchange: ExchangeResult }> = [];
   private roundNumber = 1;
   private side: "proposer" | "reviewer" = "proposer";
@@ -49,14 +62,8 @@ export class DebateScheduler {
     this.debateId = input.debateId;
     this.topic = input.topic;
     this.roundCount = input.roundCount;
-    this.proposer = {
-      role: structuredClone(input.proposer.role),
-      controls: structuredClone(input.proposer.controls),
-    };
-    this.reviewer = {
-      role: structuredClone(input.reviewer.role),
-      controls: structuredClone(input.reviewer.controls),
-    };
+    this.proposer = resolveParticipant(input.proposer, "proposal");
+    this.reviewer = resolveParticipant(input.reviewer, "review");
   }
 
   nextTurn(): ScheduledTurn | undefined {
@@ -95,7 +102,7 @@ export class DebateScheduler {
                 }),
           }),
       controls: structuredClone(participant.controls),
-      capabilities: { toolNames: [] },
+      capabilities: structuredClone(participant.capabilities),
     };
     const turn = deepFreeze({
       side: this.side,
@@ -157,6 +164,21 @@ export class DebateScheduler {
     if (!this.proposal) throw new Error("reviewer turn requires a proposal reply");
     return this.proposal;
   }
+}
+
+function resolveParticipant(
+  participant: ScheduledParticipant,
+  phase: ToolProtocolPhase,
+): ResolvedScheduledParticipant {
+  const role = structuredClone(participant.role);
+  const binding = { role: { id: role.id, version: role.version }, phase };
+  return {
+    role,
+    controls: structuredClone(participant.controls),
+    capabilities: participant.capabilities === undefined
+      ? createDenyAllToolPolicy(binding)
+      : resolveToolPolicy(participant.capabilities, binding),
+  };
 }
 
 function deepFreeze<T>(value: T): DeepReadonly<T> {

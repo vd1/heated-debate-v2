@@ -11,7 +11,7 @@ fail, and the projection retains the recorded timeout and budget values.
 
 The earlier review findings remain closed:
 
-- Canonical schema v2 has an explicit schema-v1 migration path that marks missing historical
+- Canonical schema v3 retains the explicit schema-v1 migration path that marks missing historical
   control evidence as unrecorded.
 - Timeout and budget controls are validated and snapshotted before execution, then reused for
   enforcement, results, replay, Markdown projection, and canonical events.

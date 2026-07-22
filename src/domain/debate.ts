@@ -6,6 +6,7 @@ import {
   type NormalizedUsage,
 } from "./agent";
 import {
+  CANONICAL_SCHEMA_VERSION,
   sanitizeFailure,
   type CanonicalEvent,
   type CanonicalRunControls,
@@ -127,7 +128,7 @@ export async function runDebate(input: RunDebateInput): Promise<DebateResult> {
     for (const attempt of trace.attempts) {
       if (input.recording) {
         await emit({
-          schemaVersion: 2,
+          schemaVersion: CANONICAL_SCHEMA_VERSION,
           runId: input.recording.runId,
           sequence,
           type: "adapter.attempt",
@@ -147,7 +148,7 @@ export async function runDebate(input: RunDebateInput): Promise<DebateResult> {
       });
       if (failure.turnId !== undefined) {
         await emit({
-          schemaVersion: 2,
+          schemaVersion: CANONICAL_SCHEMA_VERSION,
           runId: input.recording.runId,
           sequence,
           type: "turn.failed",
@@ -155,7 +156,7 @@ export async function runDebate(input: RunDebateInput): Promise<DebateResult> {
         }, false);
       }
       await emit({
-        schemaVersion: 2,
+        schemaVersion: CANONICAL_SCHEMA_VERSION,
         runId: input.recording.runId,
         sequence,
         type: "run.failed",
@@ -171,7 +172,7 @@ export async function runDebate(input: RunDebateInput): Promise<DebateResult> {
   try {
     if (input.recording) {
       await emit({
-        schemaVersion: 2,
+        schemaVersion: CANONICAL_SCHEMA_VERSION,
         runId: input.recording.runId,
         sequence,
         type: "run.started",
@@ -212,7 +213,7 @@ export async function runDebate(input: RunDebateInput): Promise<DebateResult> {
 
       if (input.recording) {
         await emit({
-          schemaVersion: 2,
+          schemaVersion: CANONICAL_SCHEMA_VERSION,
           runId: input.recording.runId,
           sequence,
           type: "turn.requested",
@@ -272,7 +273,7 @@ export async function runDebate(input: RunDebateInput): Promise<DebateResult> {
           controls: structuredClone(reply.controls),
         };
         await emit({
-          schemaVersion: 2,
+          schemaVersion: CANONICAL_SCHEMA_VERSION,
           runId: input.recording.runId,
           sequence,
           type: "turn.completed",
@@ -288,7 +289,7 @@ export async function runDebate(input: RunDebateInput): Promise<DebateResult> {
     });
     if (input.recording) {
       await emit({
-        schemaVersion: 2,
+        schemaVersion: CANONICAL_SCHEMA_VERSION,
         runId: input.recording.runId,
         sequence,
         type: "run.completed",

@@ -7,11 +7,18 @@ import type {
 import { selectLastExchangeContext } from "./context";
 import type { CreativitySelection } from "./dial";
 import type { RoleDefinition } from "./roles";
+import {
+  createDenyAllToolPolicy,
+  resolveToolPolicy,
+  type ToolCapabilityPolicy,
+  type ToolProtocolPhase,
+} from "./tool-policy";
 
 export interface ExchangeParticipant {
   agent: AgentPort;
   role: RoleDefinition;
   controls: RequestedControls;
+  capabilities?: ToolCapabilityPolicy;
 }
 
 export interface PriorExchange {
@@ -59,11 +66,13 @@ export async function runExchange(input: RunExchangeInput): Promise<ExchangeResu
     agent: input.proposer.agent,
     role: structuredClone(input.proposer.role),
     controls: structuredClone(input.proposer.controls),
+    capabilities: participantToolPolicy(input.proposer, "proposal"),
   };
   const reviewer = {
     agent: input.reviewer.agent,
     role: structuredClone(input.reviewer.role),
     controls: structuredClone(input.reviewer.controls),
+    capabilities: participantToolPolicy(input.reviewer, "review"),
   };
 
   const proposalRequest: TurnRequest = {
@@ -82,7 +91,7 @@ export async function runExchange(input: RunExchangeInput): Promise<ExchangeResu
           }),
     }),
     controls: proposer.controls,
-    capabilities: { toolNames: [] },
+    capabilities: structuredClone(proposer.capabilities),
   };
   const proposalRequestSnapshot = structuredClone(proposalRequest);
   const proposalReply = structuredClone(await proposer.agent.reply(proposalRequest));
@@ -104,7 +113,7 @@ export async function runExchange(input: RunExchangeInput): Promise<ExchangeResu
           }),
     }),
     controls: reviewer.controls,
-    capabilities: { toolNames: [] },
+    capabilities: structuredClone(reviewer.capabilities),
   };
   const reviewRequestSnapshot = structuredClone(reviewRequest);
   const reviewReply = structuredClone(await reviewer.agent.reply(reviewRequest));
@@ -125,6 +134,22 @@ export async function runExchange(input: RunExchangeInput): Promise<ExchangeResu
 
 function turnId(exchangeId: string, role: "proposer" | "reviewer"): string {
   return `${exchangeId}:${role}`;
+}
+
+function participantToolPolicy(
+  participant: ExchangeParticipant,
+  phase: ToolProtocolPhase,
+): ToolCapabilityPolicy {
+  const binding = {
+    role: {
+      id: participant.role.id,
+      version: participant.role.version,
+    },
+    phase,
+  };
+  return participant.capabilities === undefined
+    ? createDenyAllToolPolicy(binding)
+    : resolveToolPolicy(participant.capabilities, binding);
 }
 
 function deepFreeze<T>(value: T): DeepReadonly<T> {

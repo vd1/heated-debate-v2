@@ -10,6 +10,7 @@ import {
 import { runDebate } from "../../src/domain/debate";
 import type { ExchangeParticipant } from "../../src/domain/exchange";
 import { PROPOSER_ROLE, REVIEWER_ROLE } from "../../src/domain/roles";
+import type { ToolCapabilityPolicy } from "../../src/domain/tool-policy";
 
 const PROPOSER_CONTROLS: RequestedControls = {
   model: { providerId: "test", modelId: "proposer" },
@@ -69,6 +70,48 @@ function participant(
 }
 
 describe("runDebate", () => {
+  test("records the resolved policy for each role and protocol phase", async () => {
+    const order: string[] = [];
+    const proposer = participant("proposer", PROPOSER_CONTROLS, ["P1"], order);
+    const reviewer = participant("reviewer", REVIEWER_CONTROLS, ["R1"], order);
+    const proposerPolicy: ToolCapabilityPolicy = {
+      policyId: "proposal-research",
+      policyVersion: "1",
+      evidence: "recorded",
+      role: { id: "proposer", version: "1" },
+      phase: "proposal",
+      allowedTools: [{ toolId: "web-search", schemaVersion: "1", maxCalls: 2 }],
+      aggregateCallLimit: 2,
+      callTimeoutMs: 4_000,
+      maxResultBytes: 8_192,
+      deniedCallCharge: "none",
+    };
+    const reviewerPolicy: ToolCapabilityPolicy = {
+      policyId: "review-tools",
+      policyVersion: "1",
+      evidence: "recorded",
+      role: { id: "reviewer", version: "1" },
+      phase: "review",
+      allowedTools: [],
+      aggregateCallLimit: 0,
+      callTimeoutMs: 3_000,
+      maxResultBytes: 4_096,
+      deniedCallCharge: "aggregate",
+    };
+
+    await runDebate({
+      debateId: "policy",
+      topic: "Audit tools.",
+      roundCount: 1,
+      proposer: { ...proposer.config, capabilities: proposerPolicy },
+      reviewer: { ...reviewer.config, capabilities: reviewerPolicy },
+    });
+
+    expect(proposer.agent.requests[0]?.capabilities).toEqual(proposerPolicy);
+    expect(reviewer.agent.requests[0]?.capabilities).toEqual(reviewerPolicy);
+    expect(Object.isFrozen(proposer.agent.requests[0]?.capabilities)).toBe(false);
+  });
+
   test("runs two chronological rounds with exactly four policy-selected turns", async () => {
     const order: string[] = [];
     const proposer = participant("proposer", PROPOSER_CONTROLS, ["P1", "P2"], order);

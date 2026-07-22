@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { AgentTool } from "@earendil-works/pi-agent-core";
 import {
   createAssistantMessageEventStream,
   InMemoryCredentialStore,
@@ -8,6 +9,7 @@ import {
   type Message,
   type Model,
   type SimpleStreamOptions,
+  Type,
 } from "@earendil-works/pi-ai";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 
@@ -23,6 +25,7 @@ import {
   streamFromModelRuntime,
   type ModelStream,
 } from "../../src/infrastructure/pi-agent";
+import { createDenyAllToolPolicy } from "../../src/domain/tool-policy";
 
 const MODEL: Model<"anthropic-messages"> = {
   id: "test-model",
@@ -76,7 +79,18 @@ const REQUEST: TurnRequest = {
     temperature: 0.7,
     maxOutputTokens: 512,
   },
-  capabilities: { toolNames: [] },
+  capabilities: createDenyAllToolPolicy({
+    role: { id: "proposer", version: "1" },
+    phase: "proposal",
+  }),
+};
+
+const WEB_SEARCH_TOOL: AgentTool = {
+  name: "web-search",
+  label: "Web search",
+  description: "Search a test index.",
+  parameters: Type.Object({}),
+  execute: () => Promise.resolve({ content: [{ type: "text", text: "result" }], details: {} }),
 };
 
 interface StreamCall {
@@ -125,7 +139,14 @@ function scriptedStream(options: ScriptedStreamOptions): {
     calls,
     emittedPayloads,
     stream: (requestModel, context, streamOptions) => {
-      calls.push({ context: structuredClone(context), options: streamOptions });
+      const { tools, ...serializableContext } = context;
+      calls.push({
+        context: {
+          ...structuredClone(serializableContext),
+          ...(tools === undefined ? {} : { tools: [...tools] }),
+        },
+        options: streamOptions,
+      });
       const events = createAssistantMessageEventStream();
       const text = options.replies[replyIndex] ?? "unexpected";
       replyIndex += 1;
@@ -253,6 +274,91 @@ describe("PiAgent", () => {
     });
 
     await Promise.all([scripted.dispose(), agent.dispose()]);
+  });
+
+  test("blocks registered policy tools until the project dispatcher owns execution", async () => {
+    const fake = scriptedStream({ replies: ["Used the declared capability."] });
+    const agent = new PiAgent({
+      model: MODEL,
+      modelStream: fake.stream,
+      usageEvidence: { explicitlyReported: [], source: "test" },
+      tools: [{ toolId: "web-search", schemaVersion: "1", tool: WEB_SEARCH_TOOL }],
+    });
+    const request: TurnRequest = {
+      ...REQUEST,
+      capabilities: {
+        policyId: "research",
+        policyVersion: "1",
+        evidence: "recorded",
+        role: { id: "proposer", version: "1" },
+        phase: "proposal",
+        allowedTools: [{ toolId: "web-search", schemaVersion: "1", maxCalls: 1 }],
+        aggregateCallLimit: 1,
+        callTimeoutMs: 1_000,
+        maxResultBytes: 4_096,
+        deniedCallCharge: "none",
+      },
+    };
+
+    expect((await rejectionError(agent.reply(request))).message).toBe(
+      "tool-enabled policies require the project dispatcher",
+    );
+    expect(fake.calls).toHaveLength(0);
+    await agent.dispose();
+  });
+
+  test("rejects a policy tool that is unavailable at the requested schema version", async () => {
+    const fake = scriptedStream({ replies: ["unused"] });
+    const agent = new PiAgent({
+      model: MODEL,
+      modelStream: fake.stream,
+      usageEvidence: { explicitlyReported: [], source: "test" },
+      tools: [{ toolId: "web-search", schemaVersion: "2", tool: WEB_SEARCH_TOOL }],
+    });
+    const request: TurnRequest = {
+      ...REQUEST,
+      capabilities: {
+        policyId: "research",
+        policyVersion: "1",
+        evidence: "recorded",
+        role: { id: "proposer", version: "1" },
+        phase: "proposal",
+        allowedTools: [{ toolId: "web-search", schemaVersion: "1", maxCalls: 1 }],
+        aggregateCallLimit: 1,
+        callTimeoutMs: 1_000,
+        maxResultBytes: 4_096,
+        deniedCallCharge: "none",
+      },
+    };
+
+    expect((await rejectionError(agent.reply(request))).message).toBe(
+      "tool is unavailable in environment: web-search@1",
+    );
+    expect(fake.calls).toHaveLength(0);
+    await agent.dispose();
+  });
+
+  test("rejects a recorded policy bound to a different request role", async () => {
+    const fake = scriptedStream({ replies: ["unused"] });
+    const agent = new PiAgent({
+      model: MODEL,
+      modelStream: fake.stream,
+      usageEvidence: { explicitlyReported: [], source: "test" },
+    });
+    if (REQUEST.capabilities.evidence !== "recorded") throw new Error("bad fixture");
+    const request: TurnRequest = {
+      ...REQUEST,
+      capabilities: {
+        ...REQUEST.capabilities,
+        role: { id: "reviewer", version: "1" },
+      },
+    };
+
+    expect((await rejectionError(agent.reply(request))).message).toBe(
+      "tool policy role must match proposer@1",
+    );
+    expect(fake.calls).toHaveLength(0);
+    await agent.dispose();
   });
 
   test("accounts for failed HTTP attempts before the successful attempt", async () => {

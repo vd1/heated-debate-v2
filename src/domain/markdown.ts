@@ -128,9 +128,6 @@ export function renderDebateMarkdown(events: readonly CanonicalEvent[]): string 
 
 function renderTurn(lines: string[], turn: TranscriptTurn): void {
   const request = turn.request;
-  const tools = request.capabilities.toolNames.length === 0
-    ? "none"
-    : request.capabilities.toolNames.map(inlineCode).join(", ");
   lines.push(
     "",
     `### ${headingText(titleCase(request.role.id))} — ${inlineCode(request.turnId)}`,
@@ -147,8 +144,8 @@ function renderTurn(lines: string[], turn: TranscriptTurn): void {
   if (request.controls.maxOutputTokens !== undefined) {
     lines.push(`- Requested max output tokens: ${String(request.controls.maxOutputTokens)}`);
   }
+  renderCapabilities(lines, request.capabilities);
   lines.push(
-    `- Tools: ${tools}`,
     "",
     "#### System prompt",
     "",
@@ -220,6 +217,41 @@ function renderAttempts(lines: string[], attempts: readonly AttemptTrace[]): voi
       `${escapeTableCell(attempt.usageEvidence.source)} |`,
     ].join(" | "));
   }
+}
+
+function renderCapabilities(
+  lines: string[],
+  capabilities: TurnRequest["capabilities"],
+): void {
+  lines.push(
+    `- Tool policy: ${inlineCode(`${capabilities.policyId}@${capabilities.policyVersion}`)}`,
+  );
+  if (capabilities.evidence === "unrecorded") {
+    const names = capabilities.toolNames.length === 0
+      ? "none"
+      : capabilities.toolNames.map(inlineCode).join(", ");
+    lines.push(
+      "- Tool policy evidence: _unrecorded in historical schema_",
+      `- Legacy tool names: ${names}`,
+    );
+    return;
+  }
+
+  const allowedTools = capabilities.allowedTools.length === 0
+    ? "none"
+    : capabilities.allowedTools.map((tool) => (
+        `${inlineCode(`${tool.toolId}@${tool.schemaVersion}`)} (max calls: ${String(tool.maxCalls)})`
+      )).join(", ");
+  lines.push(
+    "- Tool policy evidence: recorded",
+    `- Tool policy role: ${inlineCode(`${capabilities.role.id}@${capabilities.role.version}`)}`,
+    `- Tool policy phase: ${inlineCode(capabilities.phase)}`,
+    `- Allowed tools: ${allowedTools}`,
+    `- Aggregate tool call limit: ${String(capabilities.aggregateCallLimit)}`,
+    `- Tool call timeout: ${String(capabilities.callTimeoutMs)} ms`,
+    `- Maximum tool result: ${String(capabilities.maxResultBytes)} bytes`,
+    `- Denied call charge: ${inlineCode(capabilities.deniedCallCharge)}`,
+  );
 }
 
 function renderControl<T>(

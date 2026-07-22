@@ -8,7 +8,7 @@ import { renderDebateMarkdown } from "../../src/domain/markdown";
 
 const EVENTS: CanonicalEvent[] = [
   {
-    schemaVersion: 2,
+    schemaVersion: 3,
     runId: "artifact-1",
     sequence: 0,
     type: "run.started",
@@ -27,7 +27,7 @@ const EVENTS: CanonicalEvent[] = [
     },
   },
   {
-    schemaVersion: 2,
+    schemaVersion: 3,
     runId: "artifact-1",
     sequence: 1,
     type: "turn.requested",
@@ -52,12 +52,23 @@ const EVENTS: CanonicalEvent[] = [
           thinkingLevel: "high",
           maxOutputTokens: 4_096,
         },
-        capabilities: { toolNames: [] },
+        capabilities: {
+          policyId: "proposal-research",
+          policyVersion: "1",
+          evidence: "recorded",
+          role: { id: "proposer", version: "1" },
+          phase: "proposal",
+          allowedTools: [{ toolId: "web-search", schemaVersion: "1", maxCalls: 2 }],
+          aggregateCallLimit: 2,
+          callTimeoutMs: 4_000,
+          maxResultBytes: 8_192,
+          deniedCallCharge: "none",
+        },
       },
     },
   },
   {
-    schemaVersion: 2,
+    schemaVersion: 3,
     runId: "artifact-1",
     sequence: 2,
     type: "adapter.attempt",
@@ -73,7 +84,7 @@ const EVENTS: CanonicalEvent[] = [
     },
   },
   {
-    schemaVersion: 2,
+    schemaVersion: 3,
     runId: "artifact-1",
     sequence: 3,
     type: "turn.completed",
@@ -98,7 +109,7 @@ const EVENTS: CanonicalEvent[] = [
     },
   },
   {
-    schemaVersion: 2,
+    schemaVersion: 3,
     runId: "artifact-1",
     sequence: 4,
     type: "run.completed",
@@ -137,7 +148,15 @@ Choose \`A\` or B.
 - Requested model: \`test/model\`
 - Requested thinking: \`high\`
 - Requested max output tokens: 4096
-- Tools: none
+- Tool policy: \`proposal-research@1\`
+- Tool policy evidence: recorded
+- Tool policy role: \`proposer@1\`
+- Tool policy phase: \`proposal\`
+- Allowed tools: \`web-search@1\` (max calls: 2)
+- Aggregate tool call limit: 2
+- Tool call timeout: 4000 ms
+- Maximum tool result: 8192 bytes
+- Denied call charge: \`none\`
 
 #### System prompt
 
@@ -247,6 +266,23 @@ Completed 1 turn.
     expect(markdown).not.toContain("Turn timeout: _not configured_");
   });
 
+  test("renders legacy tool names without inventing policy limits", () => {
+    const requested = EVENTS[1];
+    const start = EVENTS[0];
+    if (!start || requested?.type !== "turn.requested") throw new Error("bad fixture");
+    const raw = structuredClone(requested) as unknown as Record<string, unknown>;
+    raw.schemaVersion = 2;
+    const data = raw.data as { request: { capabilities: unknown } };
+    data.request.capabilities = { toolNames: ["web-search"] };
+    const migrated = parseCanonicalEvent(JSON.stringify(raw));
+
+    const markdown = renderDebateMarkdown([start, migrated]);
+
+    expect(markdown).toContain("Tool policy evidence: _unrecorded in historical schema_");
+    expect(markdown).toContain("Legacy tool names: `web-search`");
+    expect(markdown).not.toContain("Aggregate tool call limit:");
+  });
+
   test("renders a sanitized failed turn without requiring a completion", () => {
     const start = EVENTS[0];
     const request = EVENTS[1];
@@ -255,7 +291,7 @@ Completed 1 turn.
       start,
       request,
       {
-        schemaVersion: 2,
+        schemaVersion: 3,
         runId: "artifact-1",
         sequence: 2,
         type: "turn.failed",
@@ -265,7 +301,7 @@ Completed 1 turn.
         },
       },
       {
-        schemaVersion: 2,
+        schemaVersion: 3,
         runId: "artifact-1",
         sequence: 3,
         type: "run.failed",

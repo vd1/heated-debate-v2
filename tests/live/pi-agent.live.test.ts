@@ -3,6 +3,7 @@ import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 
 import type { TurnRequest } from "../../src/domain/agent";
 import { createPiAgentFromRuntime } from "../../src/infrastructure/pi-agent";
+import { createDenyAllToolPolicy } from "../../src/domain/tool-policy";
 import {
   LIVE_ENABLED,
   LIVE_MAX_OUTPUT_TOKENS,
@@ -49,7 +50,10 @@ describe("PiAgent live provider smoke", () => {
         thinkingLevel: "high",
         maxOutputTokens: LIVE_MAX_OUTPUT_TOKENS,
       },
-      capabilities: { toolNames: [] },
+      capabilities: createDenyAllToolPolicy({
+        role: { id: "live-smoke", version: "1" },
+        phase: "proposal",
+      }),
     };
 
     try {

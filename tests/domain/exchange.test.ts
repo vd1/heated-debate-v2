@@ -11,6 +11,7 @@ import {
   runExchange,
   type ExchangeParticipant,
 } from "../../src/domain/exchange";
+import { createDenyAllToolPolicy } from "../../src/domain/tool-policy";
 
 const PROPOSER_CONTROLS: RequestedControls = {
   model: { providerId: "provider-a", modelId: "architect-model" },
@@ -172,7 +173,10 @@ describe("runExchange", () => {
         }],
       },
       controls: PROPOSER_CONTROLS,
-      capabilities: { toolNames: [] },
+      capabilities: createDenyAllToolPolicy({
+        role: { id: "proposer", version: "test" },
+        phase: "proposal",
+      }),
     };
     const expectedReviewRequest: TurnRequest = {
       turnId: "exchange-42:reviewer",
@@ -199,7 +203,10 @@ describe("runExchange", () => {
         }],
       },
       controls: REVIEWER_CONTROLS,
-      capabilities: { toolNames: [] },
+      capabilities: createDenyAllToolPolicy({
+        role: { id: "reviewer", version: "test" },
+        phase: "review",
+      }),
     };
 
     expect(order).toEqual(["proposer", "reviewer"]);
@@ -307,7 +314,10 @@ describe("runExchange", () => {
         }],
       },
       controls: REVIEWER_CONTROLS,
-      capabilities: { toolNames: [] },
+      capabilities: createDenyAllToolPolicy({
+        role: { id: "reviewer", version: "1" },
+        phase: "review",
+      }),
     });
 
     mutableProposal.text = "Mutated proposal";

@@ -12,6 +12,7 @@ import {
   type ReplayConfiguration,
 } from "../../src/domain/replay";
 import type { RoleDefinition } from "../../src/domain/roles";
+import { createDenyAllToolPolicy } from "../../src/domain/tool-policy";
 
 const PROPOSER: RoleDefinition = {
   id: "proposer",
@@ -43,6 +44,14 @@ const CONFIGURATION: ReplayConfiguration = {
   proposer: { role: PROPOSER, controls: CONTROLS },
   reviewer: { role: REVIEWER, controls: CONTROLS },
 };
+const PROPOSER_POLICY = createDenyAllToolPolicy({
+  role: { id: PROPOSER.id, version: PROPOSER.version },
+  phase: "proposal",
+});
+const REVIEWER_POLICY = createDenyAllToolPolicy({
+  role: { id: REVIEWER.id, version: REVIEWER.version },
+  phase: "review",
+});
 
 const PROPOSAL_REQUEST: TurnRequest = {
   turnId: "run-1:round-1:proposer",
@@ -57,7 +66,7 @@ const PROPOSAL_REQUEST: TurnRequest = {
     }],
   },
   controls: CONTROLS,
-  capabilities: { toolNames: [] },
+  capabilities: PROPOSER_POLICY,
 };
 
 const REVIEW_REQUEST: TurnRequest = {
@@ -73,7 +82,7 @@ const REVIEW_REQUEST: TurnRequest = {
     }],
   },
   controls: CONTROLS,
-  capabilities: { toolNames: [] },
+  capabilities: REVIEWER_POLICY,
 };
 
 const FINAL_CREATIVITY = {
@@ -96,7 +105,7 @@ const SECOND_PROPOSAL_REQUEST: TurnRequest = {
     }],
   },
   controls: CONTROLS,
-  capabilities: { toolNames: [] },
+  capabilities: PROPOSER_POLICY,
 };
 const SECOND_REVIEW_REQUEST: TurnRequest = {
   turnId: "run-1:round-2:reviewer",
@@ -111,7 +120,7 @@ const SECOND_REVIEW_REQUEST: TurnRequest = {
     }],
   },
   controls: CONTROLS,
-  capabilities: { toolNames: [] },
+  capabilities: REVIEWER_POLICY,
 };
 
 function reply(text: string): CanonicalTurnReply {
@@ -130,7 +139,7 @@ function reply(text: string): CanonicalTurnReply {
 function recordedRun(): CanonicalEvent[] {
   return [
     {
-      schemaVersion: 2,
+      schemaVersion: 3,
       runId: "run-1",
       sequence: 0,
       type: "run.started",
@@ -149,35 +158,35 @@ function recordedRun(): CanonicalEvent[] {
       },
     },
     {
-      schemaVersion: 2,
+      schemaVersion: 3,
       runId: "run-1",
       sequence: 1,
       type: "turn.requested",
       data: { roundNumber: 1, request: PROPOSAL_REQUEST },
     },
     {
-      schemaVersion: 2,
+      schemaVersion: 3,
       runId: "run-1",
       sequence: 2,
       type: "turn.completed",
       data: { turnId: PROPOSAL_REQUEST.turnId, reply: reply("Recorded proposal") },
     },
     {
-      schemaVersion: 2,
+      schemaVersion: 3,
       runId: "run-1",
       sequence: 3,
       type: "turn.requested",
       data: { roundNumber: 1, request: REVIEW_REQUEST },
     },
     {
-      schemaVersion: 2,
+      schemaVersion: 3,
       runId: "run-1",
       sequence: 4,
       type: "turn.completed",
       data: { turnId: REVIEW_REQUEST.turnId, reply: reply("Recorded review") },
     },
     {
-      schemaVersion: 2,
+      schemaVersion: 3,
       runId: "run-1",
       sequence: 5,
       type: "run.completed",
@@ -194,35 +203,35 @@ function recordedTwoRoundRun(): CanonicalEvent[] {
     { ...start, data: { ...start.data, roundCount: 2 } },
     ...firstRound.slice(1),
     {
-      schemaVersion: 2,
+      schemaVersion: 3,
       runId: "run-1",
       sequence: 5,
       type: "turn.requested",
       data: { roundNumber: 2, request: SECOND_PROPOSAL_REQUEST },
     },
     {
-      schemaVersion: 2,
+      schemaVersion: 3,
       runId: "run-1",
       sequence: 6,
       type: "turn.completed",
       data: { turnId: SECOND_PROPOSAL_REQUEST.turnId, reply: reply("Second proposal") },
     },
     {
-      schemaVersion: 2,
+      schemaVersion: 3,
       runId: "run-1",
       sequence: 7,
       type: "turn.requested",
       data: { roundNumber: 2, request: SECOND_REVIEW_REQUEST },
     },
     {
-      schemaVersion: 2,
+      schemaVersion: 3,
       runId: "run-1",
       sequence: 8,
       type: "turn.completed",
       data: { turnId: SECOND_REVIEW_REQUEST.turnId, reply: reply("Second review") },
     },
     {
-      schemaVersion: 2,
+      schemaVersion: 3,
       runId: "run-1",
       sequence: 9,
       type: "run.completed",
@@ -250,6 +259,9 @@ describe("replayCanonicalRun", () => {
       if (raw.type === "run.started") {
         const data = raw.data as Record<string, unknown>;
         delete data.controls;
+      } else if (raw.type === "turn.requested") {
+        const data = raw.data as { request: { capabilities: unknown } };
+        data.request.capabilities = { toolNames: [] };
       }
       return parseCanonicalEvent(JSON.stringify(raw));
     });
@@ -260,6 +272,27 @@ describe("replayCanonicalRun", () => {
     });
 
     expect(result.requests).toEqual([PROPOSAL_REQUEST, REVIEW_REQUEST]);
+  });
+
+  test("rejects replay when a historical non-empty allowlist lacks policy evidence", async () => {
+    const historical = recordedRun().map((event) => {
+      const raw = structuredClone(event) as unknown as Record<string, unknown>;
+      raw.schemaVersion = 2;
+      if (raw.type === "turn.requested") {
+        const data = raw.data as { request: { capabilities: unknown } };
+        data.request.capabilities = {
+          toolNames: raw.sequence === 1 ? ["web-search"] : [],
+        };
+      }
+      return parseCanonicalEvent(JSON.stringify(raw));
+    });
+
+    expect(await rejectionMessage(replayCanonicalRun({
+      events: historical,
+      configuration: CONFIGURATION,
+    }))).toBe(
+      "cannot deterministically replay unrecorded tool capabilities for run-1:round-1:proposer",
+    );
   });
 
   test("reconstructs ordered prior-exchange context across two rounds", async () => {
@@ -436,9 +469,12 @@ describe("replayCanonicalRun", () => {
       {
         mutate: (request) => ({
           ...request,
-          capabilities: { toolNames: ["unexpected-tool"] },
+          capabilities: {
+            ...PROPOSER_POLICY,
+            allowedTools: [{ toolId: "unexpected-tool", schemaVersion: "1", maxCalls: 1 }],
+          },
         }),
-        path: "capabilities.toolNames.length",
+        path: "capabilities.allowedTools.length",
       },
     ];
 
@@ -487,7 +523,7 @@ describe("replayCanonicalRun", () => {
     const completion = events[2];
     if (completion?.type !== "turn.completed") throw new Error("bad fixture");
     events[2] = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       runId: "run-1",
       sequence: 2,
       type: "adapter.attempt",
@@ -518,7 +554,7 @@ describe("replayCanonicalRun", () => {
   test("explicitly rejects turn failure, run failure, and a missing terminal event", async () => {
     const turnFailure = recordedRun();
     turnFailure[2] = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       runId: "run-1",
       sequence: 2,
       type: "turn.failed",
@@ -537,7 +573,7 @@ describe("replayCanonicalRun", () => {
     const runFailure: CanonicalEvent[] = [
       start,
       {
-        schemaVersion: 2,
+        schemaVersion: 3,
         runId: "run-1",
         sequence: 1,
         type: "run.failed",

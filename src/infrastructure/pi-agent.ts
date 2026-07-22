@@ -33,8 +33,15 @@ import {
   type UsageObservation,
 } from "../domain/agent";
 import type { ContextDecision, ModelInputMessage } from "../domain/context";
+import { resolveToolPolicy } from "../domain/tool-policy";
 
 export type ModelStream = StreamFn;
+
+export interface PiToolRegistration {
+  toolId: string;
+  schemaVersion: string;
+  tool: AgentTool;
+}
 
 export interface PiModelRuntime {
   getModel(providerId: string, modelId: string): Model<Api> | undefined;
@@ -46,7 +53,7 @@ export interface PiAgentOptions {
   model: Model<Api>;
   modelStream: ModelStream;
   usageEvidence: UsageEvidence;
-  tools?: readonly AgentTool[];
+  tools?: readonly PiToolRegistration[];
   now?: () => number;
 }
 
@@ -54,7 +61,7 @@ export interface CreatePiAgentFromRuntimeOptions {
   runtime: PiModelRuntime;
   model: ModelIdentity;
   usageEvidence?: UsageEvidence;
-  tools?: readonly AgentTool[];
+  tools?: readonly PiToolRegistration[];
   now?: () => number;
 }
 
@@ -104,7 +111,7 @@ export class PiAgent implements AgentPort {
   private readonly unsubscribe: () => void;
   private readonly model: Model<Api>;
   private readonly usageEvidence: UsageEvidence;
-  private readonly toolsByName: ReadonlyMap<string, AgentTool>;
+  private readonly toolsByIdentity: ReadonlyMap<string, AgentTool>;
   private readonly now: () => number;
   private activeResponses: ProviderResponse[] | undefined;
   private activeReply: Promise<AgentReply> | undefined;
@@ -113,7 +120,7 @@ export class PiAgent implements AgentPort {
   constructor(options: PiAgentOptions) {
     this.model = options.model;
     this.usageEvidence = structuredClone(options.usageEvidence);
-    this.toolsByName = new Map((options.tools ?? []).map((tool) => [tool.name, tool]));
+    this.toolsByIdentity = toolRegistrationMap(options.tools ?? []);
     this.now = options.now ?? Date.now;
     this.baseStream = (model, context, streamOptions) => options.modelStream(
       model,
@@ -182,11 +189,27 @@ export class PiAgent implements AgentPort {
 
   private async runReply(request: TurnRequest, options: AgentReplyOptions): Promise<AgentReply> {
     const controls = resolveControls(this.model, request.controls);
-    const tools = request.capabilities.toolNames.map((name) => {
-      const tool = this.toolsByName.get(name);
-      if (!tool) throw new Error(`unknown or unavailable tool: ${name}`);
+    if (request.capabilities.evidence === "unrecorded") {
+      if (request.capabilities.toolNames.length > 0) {
+        throw new Error("cannot execute unrecorded tool capabilities");
+      }
+    }
+    const allowedTools = request.capabilities.evidence === "recorded"
+      ? resolveToolPolicy(request.capabilities, {
+          role: { id: request.role.id, version: request.role.version },
+          phase: request.capabilities.phase,
+        }).allowedTools
+      : [];
+    const tools = allowedTools.map(({ toolId, schemaVersion }) => {
+      const tool = this.toolsByIdentity.get(toolIdentityKey(toolId, schemaVersion));
+      if (!tool) {
+        throw new Error(`tool is unavailable in environment: ${toolId}@${schemaVersion}`);
+      }
       return tool;
     });
+    if (tools.length > 0) {
+      throw new Error("tool-enabled policies require the project dispatcher");
+    }
 
     this.agent.state.systemPrompt = request.role.systemPrompt;
     this.agent.state.model = this.model;
@@ -282,6 +305,30 @@ export class PiAgent implements AgentPort {
       ...(controls.maxTokens === undefined ? {} : { maxTokens: controls.maxTokens }),
     });
   }
+}
+
+function toolRegistrationMap(
+  registrations: readonly PiToolRegistration[],
+): ReadonlyMap<string, AgentTool> {
+  const tools = new Map<string, AgentTool>();
+  for (const registration of registrations) {
+    if (registration.toolId.trim().length === 0 || registration.schemaVersion.trim().length === 0) {
+      throw new Error("tool registration identity must be non-empty");
+    }
+    if (registration.tool.name !== registration.toolId) {
+      throw new Error(`registered tool name must match tool ID: ${registration.toolId}`);
+    }
+    const key = toolIdentityKey(registration.toolId, registration.schemaVersion);
+    if (tools.has(key)) {
+      throw new Error(`duplicate tool registration: ${registration.toolId}@${registration.schemaVersion}`);
+    }
+    tools.set(key, registration.tool);
+  }
+  return tools;
+}
+
+function toolIdentityKey(toolId: string, schemaVersion: string): string {
+  return JSON.stringify([toolId, schemaVersion]);
 }
 
 function resolveControls(model: Model<Api>, requested: RequestedControls): ResolvedControls {
