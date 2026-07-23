@@ -1,5 +1,6 @@
 export * from "./domain/agent";
 export * from "./domain/context";
+export * from "./domain/control-dimensions";
 export * from "./domain/debate";
 export * from "./domain/debate-events";
 export * from "./domain/dial";

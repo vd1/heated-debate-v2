@@ -1,13 +1,13 @@
 # Implementation concerns for Fable
 
 Status: concerns 1-13, 16-18, and 20 are resolved. Concerns 14, 15, and 19 are
-partially resolved. Concerns 21 and 22 are open.
+partially resolved. Concerns 21-28 are open.
 
-Updated on 2026-07-23 after reviewing through commit `3829d42`.
+Updated on 2026-07-23 after reviewing through commit `86dd7ba`.
 
-Validation at `3829d42`:
+Validation at `86dd7ba`:
 
-- `bun test`: 215 passed, 3 skipped, 0 failed.
+- `bun test`: 223 passed, 3 skipped, 0 failed.
 - `bun run typecheck`: passed.
 - `bun run lint`: passed.
 
@@ -135,6 +135,117 @@ writing the invalid evidence. Add a recording test for duplicate and mixed posit
 one `turn.failed`, one `run.failed`, no invalid attempt or tool-call event, and successful artifact
 parsing after closure.
 
+### 23. Canonical config collapses omitted controls into explicit defaults
+
+Severity: high
+
+The D-CONFIG contract explicitly requires canonical serialization to distinguish omitted optional
+controls from explicit values. `parseExperimentConfig` instead materializes defaults directly into
+both role assignments and omits any source-presence information.
+
+A minimal config and a config that explicitly supplies the default model, thinking level `high`,
+and `last-exchange@1` context policy produce byte-identical canonical JSON and the same
+`experimentConfigHash`. The current omission test uses explicit thinking level `low`, so it proves
+that different values differ rather than that omission differs from an explicit default.
+
+Acceptance check: preserve whether each optional source control was omitted or explicitly set,
+while also exposing a resolved value for execution. Add omitted-versus-explicit-default rows for
+model, thinking level, context policy, and applicable per-role overrides, and require distinct
+canonical representations and hashes.
+
+### 24. Config count fields accept fractional or unsafe token and turn values
+
+Severity: medium
+
+Several count fields use `Number.isInteger`, which accepts integers beyond JavaScript's safe range,
+and `budget.maxTokens` accepts any finite non-negative number. Direct reproductions show that the
+parser accepts:
+
+```text
+roundCount: Number.MAX_SAFE_INTEGER + 1
+controls.maxOutputTokens: Number.MAX_SAFE_INTEGER + 1
+budget.maxTokens: 0.5
+```
+
+`budget.maxTurns` has the same unsafe-integer gap. These are untrusted configuration values used
+for scheduling and accounting, so accepting them can produce impractical schedules and thresholds
+that cannot represent token counts exactly.
+
+Acceptance check: require safe integers for round, turn, output-token, and token-budget counts.
+Add fractional, unsafe-integer, and maximum-safe-integer boundary rows for each applicable field.
+
+### 25. A parsed monetary config can be rejected before its first run dispatch
+
+Severity: high
+
+`parseBudget` checks that `maxAmount` is finite and non-negative but does not apply the decimal
+scale enforced by D-PRICING. A config with `maxAmount: 0.1234567` parses, freezes, serializes, and
+hashes successfully. Passing its mapped input to `runDebate` immediately throws:
+
+```text
+budget.monetary.maxAmount must have at most 6 decimal places
+```
+
+The output of a validated config parser should not fail a stricter validation of the same field at
+the runner boundary.
+
+Acceptance check: share the monetary amount validator between D-CONFIG and D-PRICING, and reject an
+unrepresentable amount during parsing. Add a test that every accepted monetary config maps to a
+runner input that passes pre-dispatch validation.
+
+### 26. Unknown fields inside reasoning billing rules are accepted
+
+Severity: medium
+
+Commit `86dd7ba` adds exact-field checks for a pricing snapshot, its entries, and model identities,
+but not for `reasoningBilling`. This untrusted nested object is cast through the snapshot type.
+For example, the following value is accepted and retained in the frozen canonical config:
+
+```text
+reasoningBilling: { mode: "included-in-output", note: "extra" }
+```
+
+This contradicts the D-CONFIG review claim that unknown fields are rejected at every level.
+
+Acceptance check: validate `reasoningBilling` as a discriminated exact object. Included and
+unbilled rules should contain only `mode`; separate-rate should require exactly `mode` and
+`ratePerMillionTokens`. Add unknown, missing, and mode-incompatible field rows.
+
+### 27. Case and config identity disappear when the config becomes a run
+
+Severity: high
+
+`caseId` participates in canonical config JSON and its hash, but `experimentDebateInput` drops it.
+The config hash is not added to `RunDebateInput`, `run.started`, or another canonical event either.
+Two configs with the same run ID and topic but different case IDs have different config hashes and
+produce JSON-identical runner inputs.
+
+The resulting canonical run cannot prove which case reference or exact `ExperimentConfig` produced
+it. This is especially risky once cases can share topic text or evolve independently.
+
+Acceptance check: carry the case reference and immutable experiment-config identity into the run
+boundary and canonical `run.started` evidence. Add a pair of same-topic, different-case configs
+whose runner inputs and run artifacts remain distinguishable, plus replay drift checks for case
+and config identity.
+
+### 28. Protocol and creativity schedule identity are not part of ExperimentConfig
+
+Severity: high
+
+The task requires protocol, round, and context settings. The config records round count and a
+fixed context-policy identity, but it has no debate protocol identity/version or creativity
+schedule identity/version. `DebateScheduler` selects `linear-cooling@1` directly in code, and the
+accepted context policy is not passed through `experimentDebateInput`; the scheduler also selects
+that implementation directly.
+
+An identical config hash can therefore resolve to changed protocol scheduling or creativity
+behavior after an implementation change. Per-turn events reveal the selected creativity after the
+fact, but the input config does not pin what was requested.
+
+Acceptance check: add explicit versioned protocol and creativity-schedule selections to the
+validated config, resolve only supported identities, and route them into scheduling. Prove
+canonical round trips and hashes distinguish protocol or schedule drift before a run starts.
+
 ## Resolved concerns
 
 ### 1-4, 6-9, and 11
@@ -190,4 +301,5 @@ behavior.
 
 Milestone C should not be declared complete while concerns 14, 15, and 22 remain.
 D-PRICING should not be declared complete while concerns 19 and 21 remain.
-The `3829d42` review-file claim that all twenty concerns are resolved is therefore premature.
+D-CONFIG should not be declared complete while concerns 23-28 remain.
+The D-CONFIG pass claim in `plans/d-config-review.md` is therefore premature.
