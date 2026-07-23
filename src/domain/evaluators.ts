@@ -36,10 +36,15 @@ export type DeterministicScore =
  EvaluationResult;
 
 /** Shared evaluator boundary; E-JUDGE implements the same port. */
-export interface EvaluatorPort {
+/**
+ * The shared asynchronous evaluator contract. The evaluation type is explicit
+ * so richer evaluators (like the judge, which pairs a result with its
+ * persisted record) implement the same port as the deterministic ones.
+ */
+export interface EvaluatorPort<TEvaluation = EvaluationResult> {
   evaluatorId: string;
   evaluatorVersion: string;
-  evaluate(events: readonly CanonicalEvent[], configuration?: unknown): EvaluationResult;
+  evaluate(events: readonly CanonicalEvent[]): Promise<TEvaluation>;
 }
 
 const OPTION_KEYS = ["contractMarkers", "outputShape", "tokenBudget", "latencyTargetMs"];
@@ -51,11 +56,27 @@ export function validateEvaluatorOptions(
   for (const key of Object.keys(options)) {
     if (!OPTION_KEYS.includes(key)) throw new Error(`unknown evaluator option: ${key}`);
   }
-  const numeric = [options.tokenBudget, options.latencyTargetMs];
-  for (const value of numeric) {
-    if (value !== undefined && (typeof value !== "number" || Number.isNaN(value))) {
-      throw new Error("evaluator numeric options must be numbers");
+  // Unsupported values are rejected for every evaluator, including ones that
+  // do not consume the field; identical identities must mean identical configs.
+  if (options.tokenBudget !== undefined
+    && (!Number.isSafeInteger(options.tokenBudget) || options.tokenBudget <= 0)) {
+    throw new Error("tokenBudget must be a positive safe integer");
+  }
+  const latency = options.latencyTargetMs;
+  if (latency !== undefined
+    && (typeof latency !== "number" || !Number.isFinite(latency) || latency <= 0)) {
+    throw new Error("latencyTargetMs must be a finite positive number");
+  }
+  if (options.outputShape !== undefined) {
+    const { minChars, maxChars } = options.outputShape;
+    if (!Number.isSafeInteger(minChars) || !Number.isSafeInteger(maxChars)
+      || minChars < 0 || maxChars < minChars) {
+      throw new Error("outputShape must declare 0 <= minChars <= maxChars as integers");
     }
+  }
+  if (options.contractMarkers !== undefined
+    && options.contractMarkers.some((marker) => marker.trim().length === 0)) {
+    throw new Error("contractMarkers must be non-empty strings");
   }
   return options;
 }
@@ -68,7 +89,7 @@ export function evaluatorConfigurationId(options: DeterministicEvaluatorOptions)
       (key) => `${JSON.stringify(key)}:${canonical(Reflect.get(input, key))}`,
     ).join(",")}}`;
   };
-  return createHash("sha256").update(canonical(options)).digest("hex").slice(0, 12);
+  return createHash("sha256").update(canonical(options)).digest("hex");
 }
 
 export interface DeterministicEvaluatorOptions {
@@ -196,7 +217,19 @@ export function evaluateCompletion(
   events: readonly CanonicalEvent[],
   options: DeterministicEvaluatorOptions = {},
 ): DeterministicScore {
+  validateEvaluatorOptions(options);
   const view = readRun(events);
+  // Completion comes from terminal evidence; a plausible prefix without a
+  // terminal event is unavailable, never a known score.
+  if (view.terminalSequence === null) {
+    return unavailableResult(
+      "deterministic-completion",
+      options,
+      view.runId,
+      view.completedTexts.map((turn) => turn.sequence),
+      "no terminal event recorded",
+    );
+  }
   const fraction = view.expectedTurns === 0
     ? 0
     : view.completedTexts.length / view.expectedTurns;
@@ -207,12 +240,9 @@ export function evaluateCompletion(
     view.runId,
     score,
     view.completedTexts.length,
-    [
-      ...view.completedTexts.map((turn) => turn.sequence),
-      ...(view.terminalSequence === null ? [] : [view.terminalSequence]),
-    ],
+    [...view.completedTexts.map((turn) => turn.sequence), view.terminalSequence],
     `${String(view.completedTexts.length)} of ${String(view.expectedTurns)} turns completed;`
-      + ` terminal ${view.completed ? "run.completed" : "run.failed or missing"}`,
+      + ` terminal ${view.completed ? "run.completed" : "run.failed"}`,
   );
 }
 
@@ -220,6 +250,7 @@ export function evaluateContractMarkers(
   events: readonly CanonicalEvent[],
   options: DeterministicEvaluatorOptions = {},
 ): DeterministicScore {
+  validateEvaluatorOptions(options);
   const markers = options.contractMarkers ?? ["- "];
   if (markers.length === 0 || markers.some((marker) => marker.length === 0)) {
     throw new Error("contractMarkers must be non-empty strings");
@@ -252,6 +283,7 @@ export function evaluateRepetition(
   events: readonly CanonicalEvent[],
   options: DeterministicEvaluatorOptions = {},
 ): DeterministicScore {
+  validateEvaluatorOptions(options);
   const view = readRun(events);
   let comparisons = 0;
   const byRole = new Map<string, string[]>();
@@ -296,6 +328,7 @@ export function evaluateOutputShape(
   events: readonly CanonicalEvent[],
   options: DeterministicEvaluatorOptions = {},
 ): DeterministicScore {
+  validateEvaluatorOptions(options);
   const bounds = options.outputShape ?? { minChars: 1, maxChars: 20_000 };
   if (!Number.isSafeInteger(bounds.minChars) || bounds.minChars < 0
     || !Number.isSafeInteger(bounds.maxChars) || bounds.maxChars < bounds.minChars) {
@@ -332,6 +365,7 @@ export function evaluateTokenUsage(
   events: readonly CanonicalEvent[],
   options: DeterministicEvaluatorOptions = {},
 ): DeterministicScore {
+  validateEvaluatorOptions(options);
   const view = readRun(events);
   const budget = options.tokenBudget;
   if (budget === undefined) {
@@ -379,6 +413,7 @@ export function evaluateLatency(
   events: readonly CanonicalEvent[],
   options: DeterministicEvaluatorOptions = {},
 ): DeterministicScore {
+  validateEvaluatorOptions(options);
   const view = readRun(events);
   const total = view.completedTexts.reduce((sum, turn) => sum + turn.durationMs, 0);
   const mean = view.completedTexts.length === 0 ? 0 : total / view.completedTexts.length;
@@ -415,29 +450,33 @@ export function evaluateLatency(
   );
 }
 
-export const DETERMINISTIC_EVALUATORS: readonly EvaluatorPort[] = Object.freeze([
-  { evaluatorId: "deterministic-completion", evaluatorVersion: "3", evaluate: evaluateCompletion },
-  {
-    evaluatorId: "deterministic-contract-markers",
-    evaluatorVersion: "3",
-    evaluate: evaluateContractMarkers,
-  },
-  { evaluatorId: "deterministic-repetition", evaluatorVersion: "3", evaluate: evaluateRepetition },
-  {
-    evaluatorId: "deterministic-output-shape",
-    evaluatorVersion: "3",
-    evaluate: evaluateOutputShape,
-  },
-  { evaluatorId: "deterministic-token-usage", evaluatorVersion: "3", evaluate: evaluateTokenUsage },
-  { evaluatorId: "deterministic-latency", evaluatorVersion: "3", evaluate: evaluateLatency },
+const DETERMINISTIC_FUNCTIONS = Object.freeze([
+  { evaluatorId: "deterministic-completion", run: evaluateCompletion },
+  { evaluatorId: "deterministic-contract-markers", run: evaluateContractMarkers },
+  { evaluatorId: "deterministic-repetition", run: evaluateRepetition },
+  { evaluatorId: "deterministic-output-shape", run: evaluateOutputShape },
+  { evaluatorId: "deterministic-token-usage", run: evaluateTokenUsage },
+  { evaluatorId: "deterministic-latency", run: evaluateLatency },
 ]);
+
+/** Binds a validated configuration snapshot into asynchronous evaluator ports. */
+export function deterministicEvaluators(
+  options: DeterministicEvaluatorOptions = {},
+): readonly EvaluatorPort[] {
+  const snapshot = Object.freeze(structuredClone(validateEvaluatorOptions(options)));
+  return Object.freeze(DETERMINISTIC_FUNCTIONS.map(({ evaluatorId, run }) => ({
+    evaluatorId,
+    evaluatorVersion: "3",
+    evaluate: (events: readonly CanonicalEvent[]) => Promise.resolve(run(events, snapshot)),
+  })));
+}
 
 export function runDeterministicEvaluators(
   events: readonly CanonicalEvent[],
   options: DeterministicEvaluatorOptions = {},
 ): readonly DeterministicScore[] {
   return Object.freeze(
-    DETERMINISTIC_EVALUATORS.map((port) => port.evaluate(events, options)),
+    DETERMINISTIC_FUNCTIONS.map(({ run }) => run(events, options)),
   );
 }
 

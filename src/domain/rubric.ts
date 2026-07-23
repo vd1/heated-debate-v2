@@ -8,7 +8,7 @@ import type {
   NormalizedUsage,
   RequestedControls,
 } from "./agent";
-import type { SanitizedFailure } from "./events";
+import { validateRequestedControls, type SanitizedFailure } from "./events";
 
 export interface RubricDimension {
   dimensionId: string;
@@ -96,6 +96,12 @@ export function parseJudgeOutput(
   rawText: string,
   options: { sourceText?: string } = {},
 ): JudgeOutputOutcome {
+  if (options.sourceText === undefined
+    && rubric.dimensions.some((dimension) => dimension.requiredEvidence === "quote")) {
+    throw new Error(
+      "rubric requires quote evidence; the declared sourceText must be provided",
+    );
+  }
   let parsed: unknown;
   try {
     parsed = JSON.parse(rawText);
@@ -107,6 +113,12 @@ export function parseJudgeOutput(
   }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
     return { status: "malformed", reason: "judge output must be a JSON object" };
+  }
+  // Documented duplicate-key policy: duplicates are malformed, never
+  // last-key-wins.
+  const duplicate = findDuplicateKey(rawText);
+  if (duplicate !== null) {
+    return { status: "malformed", reason: `duplicate key ${JSON.stringify(duplicate)} in judge output` };
   }
   const outer = parsed as Record<string, unknown>;
   for (const key of Object.keys(outer)) {
@@ -158,6 +170,14 @@ export function parseJudgeOutput(
       continue;
     }
     const evidence = item.evidence;
+    if (evidence !== undefined && (typeof evidence !== "string" || evidence.length === 0)) {
+      // A present evidence field must use the declared representation.
+      missing.push({
+        dimensionId: dimension.dimensionId,
+        reason: "evidence must be a non-empty verbatim string",
+      });
+      continue;
+    }
     if (dimension.requiredEvidence === "quote") {
       if (typeof evidence !== "string" || evidence.trim().length === 0) {
         missing.push({
@@ -213,8 +233,6 @@ export interface EvaluationRecord {
   failure: SanitizedFailure | null;
 }
 
-const THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
-
 /**
  * Validates and freezes a canonical evaluation record. The parsing outcome is
  * derived from the stored raw response and rubric, never supplied, so a forged
@@ -249,6 +267,10 @@ export function createEvaluationRecord(input: {
       throw new Error(`duplicate declared input ${reference}`);
     }
     seenInputs.add(reference);
+    if (reference !== input.sourceArtifact.runId
+      && reference !== input.sourceArtifact.artifactHash) {
+      throw new Error(`declared input ${reference} does not reference the source artifact`);
+    }
   }
   if (input.messages.length === 0) {
     throw new Error("messages must contain the exact judge prompt");
@@ -259,13 +281,16 @@ export function createEvaluationRecord(input: {
       || typeof message.content !== "string" || message.content.length === 0) {
       throw new Error("messages must be user/assistant entries with non-empty content");
     }
+    for (const key of Object.keys(message)) {
+      if (key !== "role" && key !== "content" && key !== "thinking") {
+        throw new Error(`unknown field in message: ${key}`);
+      }
+    }
   }
   if (input.controls !== undefined) {
-    nonEmpty(input.controls.model.providerId, "controls.model.providerId");
-    nonEmpty(input.controls.model.modelId, "controls.model.modelId");
-    if (!THINKING_LEVELS.has(input.controls.thinkingLevel)) {
-      throw new Error("controls.thinkingLevel is invalid");
-    }
+    // The exact canonical requested-control parser; NaN temperatures or
+    // negative token limits can never create duplicate hashed identities.
+    validateRequestedControls(input.controls);
   }
   if (input.execution !== undefined) {
     nonEmpty(input.execution.returnedModel.providerId, "execution.returnedModel.providerId");
@@ -311,6 +336,40 @@ export function createEvaluationRecord(input: {
 
 export function evaluationRecordHash(recordValue: EvaluationRecord): string {
   return createHash("sha256").update(canonicalJson(recordValue)).digest("hex");
+}
+
+/**
+ * Scans already-valid JSON text for duplicate object keys. JSON.parse keeps
+ * the last value silently; the judge contract rejects the output instead.
+ */
+function findDuplicateKey(raw: string): string | null {
+  const containers: (Set<string> | null)[] = [];
+  let index = 0;
+  while (index < raw.length) {
+    const char = raw[index];
+    if (char === '"') {
+      let end = index + 1;
+      while (end < raw.length && raw[end] !== '"') {
+        end += raw[end] === "\\" ? 2 : 1;
+      }
+      const key = JSON.parse(raw.slice(index, end + 1)) as string;
+      index = end + 1;
+      while (index < raw.length && /\s/.test(raw[index] ?? "")) index += 1;
+      if (raw[index] === ":") {
+        const top = containers.at(-1);
+        if (top instanceof Set) {
+          if (top.has(key)) return key;
+          top.add(key);
+        }
+      }
+      continue;
+    }
+    if (char === "{") containers.push(new Set());
+    else if (char === "[") containers.push(null);
+    else if (char === "}" || char === "]") containers.pop();
+    index += 1;
+  }
+  return null;
 }
 
 function canonicalJson(value: unknown): string {

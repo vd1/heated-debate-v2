@@ -15,6 +15,9 @@ import {
   evaluateRepetition,
   evaluateTokenUsage,
   runDeterministicEvaluators,
+  deterministicEvaluators,
+  validateEvaluatorOptions,
+  type EvaluatorPort,
 } from "../../src/domain/evaluators";
 import type { DeterministicScore } from "../../src/domain/evaluators";
 import type { CanonicalEvent } from "../../src/domain/events";
@@ -213,7 +216,7 @@ describe("deterministic evaluators", () => {
       expect(value.score).toBeLessThanOrEqual(1);
       expect(value.range).toEqual({ min: 0, max: 1 });
       expect(value.direction).toBe("higher-is-better");
-      expect(value.configurationId).toMatch(/^[0-9a-f]{12}$/);
+      expect(value.configurationId).toMatch(/^[0-9a-f]{64}$/);
       expect(value.evidence.eventSequences.length).toBeGreaterThan(0);
     }
   });
@@ -281,5 +284,55 @@ describe("partial evidence and empty populations", () => {
     if (result.status === "unavailable") {
       expect(result.reason).toContain("partial usage");
     }
+  });
+});
+
+describe("evaluator configuration and terminal-evidence rules", () => {
+  test("rejects non-finite and non-positive numeric options for every evaluator", () => {
+    expect(() => validateEvaluatorOptions({ latencyTargetMs: Number.POSITIVE_INFINITY }))
+      .toThrow("latencyTargetMs");
+    expect(() => validateEvaluatorOptions({ latencyTargetMs: Number.NEGATIVE_INFINITY }))
+      .toThrow("latencyTargetMs");
+    expect(() => validateEvaluatorOptions({ tokenBudget: 0 })).toThrow("tokenBudget");
+    // Unsupported values are rejected even by evaluators that ignore the field.
+    expect(() => evaluateCompletion([], { latencyTargetMs: Number.POSITIVE_INFINITY }))
+      .toThrow("latencyTargetMs");
+  });
+
+  test("keeps the full configuration identity, not a truncated prefix", async () => {
+    const events = await recordedRun(
+      [reply("- Proposal", 10, 100)],
+      [reply("- Review", 10, 100)],
+      1,
+    );
+    const score = evaluateCompletion(events, {});
+    expect(score.configurationId).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  test("completion without terminal evidence is unavailable, never a known score", async () => {
+    const events = await recordedRun(
+      [reply("- Proposal", 10, 100)],
+      [reply("- Review", 10, 100)],
+      1,
+    );
+    // All turns completed but the terminal event is missing: a plausible
+    // prefix must not produce a known completion score.
+    const prefix = events.slice(0, -1);
+    const score = evaluateCompletion(prefix, {});
+    if (score.status !== "unavailable") throw new Error(score.status);
+    expect(score.reason).toContain("terminal");
+  });
+
+  test("exposes deterministic evaluators as asynchronous ports", async () => {
+    const events = await recordedRun(
+      [reply("- Proposal", 10, 100)],
+      [reply("- Review", 10, 100)],
+      1,
+    );
+    const ports: readonly EvaluatorPort[] = deterministicEvaluators({});
+    const completion = ports.find((port) => port.evaluatorId === "deterministic-completion");
+    if (!completion) throw new Error("missing completion port");
+    const result = await completion.evaluate(events);
+    expect(result.status).toBe("known");
   });
 });

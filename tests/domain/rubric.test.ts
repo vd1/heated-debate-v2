@@ -63,15 +63,15 @@ describe("judge output parsing", () => {
         specificity: { score: 4, evidence: "cites the retry budget" },
         verbosity: { score: 2 },
       },
-    }));
+    }), { sourceText: "It cites the retry budget explicitly." });
     if (outcome.status !== "valid") throw new Error(outcome.status);
     expect(outcome.dimensions.specificity?.score).toBe(4);
     expect(outcome.dimensions.verbosity?.score).toBe(2);
   });
 
   test("reports malformed output with a typed reason", () => {
-    expect(parseJudgeOutput(rubric, "not json").status).toBe("malformed");
-    const noDimensions = parseJudgeOutput(rubric, JSON.stringify({}));
+    expect(parseJudgeOutput(rubric, "not json", { sourceText: "s" }).status).toBe("malformed");
+    const noDimensions = parseJudgeOutput(rubric, JSON.stringify({}), { sourceText: "s" });
     if (noDimensions.status !== "malformed") throw new Error(noDimensions.status);
     expect(noDimensions.reason).toContain("dimensions object");
   });
@@ -82,7 +82,7 @@ describe("judge output parsing", () => {
         specificity: { score: 9, evidence: "quote" },
         verbosity: { score: 3 },
       },
-    }));
+    }), { sourceText: "quote" });
     if (outcome.status !== "partial") throw new Error(outcome.status);
     expect(outcome.dimensions.specificity).toBeUndefined();
     expect(outcome.dimensions.verbosity?.score).toBe(3);
@@ -92,7 +92,7 @@ describe("judge output parsing", () => {
 
     const noEvidence = parseJudgeOutput(rubric, JSON.stringify({
       dimensions: { specificity: { score: 4 }, verbosity: { score: 3 } },
-    }));
+    }), { sourceText: "quote" });
     if (noEvidence.status !== "partial") throw new Error(noEvidence.status);
     expect(noEvidence.missing[0]?.reason).toBe("required quote evidence is missing");
   });
@@ -104,8 +104,9 @@ describe("evaluation record", () => {
     rubric,
     sourceArtifact: { runId: "run-1", artifactHash: "a".repeat(64) },
     judge: { evaluatorId: "judge-default", evaluatorVersion: "1" },
-    declaredInputs: ["run-1.jsonl"],
+    declaredInputs: ["run-1"],
     messages: [{ role: "user" as const, content: "Score this transcript." }],
+    sourceText: "q",
   };
 
   test("links rubric and artifact hashes and derives the outcome from the raw response", () => {
@@ -155,7 +156,7 @@ describe("exact judge-output schema and record integrity", () => {
     const unknownOuter = parseJudgeOutput(rubric, JSON.stringify({
       extra: "ignored",
       dimensions: {},
-    }));
+    }), { sourceText: "q" });
     if (unknownOuter.status !== "malformed") throw new Error(unknownOuter.status);
     expect(unknownOuter.reason).toBe("unknown field at judge output: extra");
 
@@ -165,7 +166,7 @@ describe("exact judge-output schema and record integrity", () => {
         verbosity: { score: 2 },
         undeclared: { score: 5 },
       },
-    }));
+    }), { sourceText: "q" });
     if (undeclared.status !== "partial") throw new Error(undeclared.status);
     expect(undeclared.missing).toEqual([
       { dimensionId: "undeclared", reason: "dimension is not declared by the rubric" },
@@ -176,7 +177,7 @@ describe("exact judge-output schema and record integrity", () => {
         specificity: { score: 4, evidence: "q", extra: 1 },
         verbosity: { score: 2 },
       },
-    }));
+    }), { sourceText: "q" });
     if (entryField.status !== "partial") throw new Error(entryField.status);
     expect(entryField.missing[0]?.reason).toBe("unknown field extra in dimension entry");
   });
@@ -199,8 +200,9 @@ describe("exact judge-output schema and record integrity", () => {
       rubric,
       sourceArtifact: { runId: "run-1", artifactHash: "a".repeat(64) },
       judge: { evaluatorId: "judge-default", evaluatorVersion: "1" },
-      declaredInputs: ["run-1.jsonl"],
+      declaredInputs: ["run-1"],
       messages: [{ role: "user" as const, content: "Score this." }],
+      sourceText: "q",
     };
     // The outcome is derived from the raw response, so it matches parsing exactly.
     const recordValue = createEvaluationRecord({ ...base, rawResponse: "not json" });
@@ -208,9 +210,9 @@ describe("exact judge-output schema and record integrity", () => {
 
     expect(() => createEvaluationRecord({
       ...base,
-      declaredInputs: ["a", "a"],
+      declaredInputs: ["run-1", "run-1"],
       rawResponse: "{}",
-    })).toThrow("duplicate declared input a");
+    })).toThrow("duplicate declared input run-1");
     expect(() => createEvaluationRecord({
       ...base,
       messages: [{ role: "user" as const, content: "" }],
@@ -223,7 +225,7 @@ describe("exact judge-output schema and record integrity", () => {
         thinkingLevel: "cold" as never,
       },
       rawResponse: "{}",
-    })).toThrow("controls.thinkingLevel is invalid");
+    })).toThrow("thinkingLevel is invalid");
 
     // A failure record carries no parsed outcome even when a raw response exists.
     const failed = createEvaluationRecord({
@@ -233,5 +235,78 @@ describe("exact judge-output schema and record integrity", () => {
     });
     expect(failed.outcome).toBeNull();
     expect(failed.failure?.code).toBe("judge_timeout");
+  });
+});
+
+describe("evidence declaration and record control hardening", () => {
+  const rubric = parseRubric(structuredClone(RUBRIC_JSON));
+  const base = {
+    rubric,
+    sourceArtifact: { runId: "run-1", artifactHash: "a".repeat(64) },
+    judge: { evaluatorId: "judge-default", evaluatorVersion: "1" },
+    declaredInputs: ["run-1"],
+    messages: [{ role: "user" as const, content: "Score this." }],
+    sourceText: "q",
+  };
+
+  test("requires the declared source whenever the rubric demands quotes", () => {
+    expect(() => parseJudgeOutput(rubric, "{}")).toThrow("sourceText");
+  });
+
+  test("rejects present evidence that is not a verbatim string", () => {
+    const outcome = parseJudgeOutput(rubric, JSON.stringify({
+      dimensions: {
+        specificity: { score: 4, evidence: "q" },
+        verbosity: { score: 2, evidence: 3 },
+      },
+    }), { sourceText: "q" });
+    if (outcome.status !== "partial") throw new Error(outcome.status);
+    expect(outcome.dimensions.verbosity).toBeUndefined();
+    expect(outcome.missing[0]?.reason).toContain("verbatim string");
+  });
+
+  test("rejects duplicate keys instead of accepting the last value", () => {
+    const raw = '{"dimensions": {"specificity": {"score": 4, "score": 5, "evidence": "q"},'
+      + ' "verbosity": {"score": 2}}}';
+    const outcome = parseJudgeOutput(rubric, raw, { sourceText: "q" });
+    if (outcome.status !== "malformed") throw new Error(outcome.status);
+    expect(outcome.reason).toContain("duplicate");
+  });
+
+  test("validates requested controls with the exact canonical parser", () => {
+    expect(() => createEvaluationRecord({
+      ...base,
+      controls: {
+        model: { providerId: "test", modelId: "m" },
+        thinkingLevel: "high" as const,
+        temperature: Number.NaN,
+      },
+      rawResponse: "{}",
+    })).toThrow("temperature");
+    expect(() => createEvaluationRecord({
+      ...base,
+      controls: {
+        model: { providerId: "test", modelId: "m" },
+        thinkingLevel: "high" as const,
+        maxOutputTokens: -5,
+      },
+      rawResponse: "{}",
+    })).toThrow("maxOutputTokens");
+  });
+
+  test("rejects undeclared message fields", () => {
+    expect(() => createEvaluationRecord({
+      ...base,
+      messages: [{ role: "user", content: "x", extra: 1 } as never],
+      rawResponse: "{}",
+    })).toThrow("message");
+  });
+
+  test("declared inputs must reference the source artifact", () => {
+    expect(() => createEvaluationRecord({
+      ...base,
+      declaredInputs: ["some-unrelated-run"],
+      rawResponse: "{}",
+    })).toThrow("does not reference the source artifact");
   });
 });

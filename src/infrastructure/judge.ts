@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 
 import type { AgentPort, RequestedControls } from "../domain/agent";
 import { sanitizeFailure, validateCanonicalSequence, type CanonicalEvent } from "../domain/events";
-import type { EvaluationResult } from "../domain/evaluators";
+import type { EvaluationResult, EvaluatorPort } from "../domain/evaluators";
 import {
   createEvaluationRecord,
   rubricHash,
@@ -93,10 +93,11 @@ export function artifactEventsHash(events: readonly CanonicalEvent[]): string {
  * preserved even on parse failure, and the linked evaluation record persisted
  * before any result is returned.
  */
-export function createJudgeEvaluator(options: JudgeEvaluatorOptions): {
+export function createJudgeEvaluator(
+  options: JudgeEvaluatorOptions,
+): EvaluatorPort<JudgeEvaluation> & {
   evaluatorId: typeof JUDGE_EVALUATOR_ID;
   evaluatorVersion: typeof JUDGE_EVALUATOR_VERSION;
-  evaluate(events: readonly CanonicalEvent[]): Promise<JudgeEvaluation>;
 } {
   // Snapshot everything semantic at construction; later caller mutation can
   // never desynchronize the executed request from the recorded identity.

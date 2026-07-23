@@ -672,7 +672,7 @@ function validateContext(value: unknown): asserts value is ContextDecision {
   }
 }
 
-function validateRequestedControls(value: unknown): asserts value is RequestedControls {
+export function validateRequestedControls(value: unknown): asserts value is RequestedControls {
   const controls = assertRecord(value, "requestedControls");
   assertExactFields(
     controls,
