@@ -7,6 +7,7 @@ export * from "./domain/debate-events";
 export * from "./domain/dial";
 export * from "./domain/events";
 export * from "./domain/markdown";
+export * from "./domain/matrix";
 export * from "./domain/exchange";
 export * from "./domain/experiment-config";
 export * from "./domain/pricing";
