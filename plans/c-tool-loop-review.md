@@ -3,7 +3,7 @@
 Status: pass
 
 Reviewed on 2026-07-22; re-reviewed twice on 2026-07-23. The codex review filed eleven concerns
-in `plans/c-tool-loop-concerns.md` across two passes; all are resolved. The two architecture
+in `plans/v2.1-wish-list.md` (then named `plans/c-tool-loop-concerns.md`) across two passes; all are resolved. The two architecture
 decisions: `PiAgent` owns the tool loop (ADR-0001 amendment), and canonical schema v5 records a
 shared per-turn attempt/tool-call sequence that projection, live recording, and validation
 enforce as one interleaved order. Canonical replay accepts independent scripted tool-loop
