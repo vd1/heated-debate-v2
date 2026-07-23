@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 import type { RunSpecification } from "./matrix";
-import { studySpecHash, type StudySpec } from "./study-spec";
+import { studySpecHash, type PreregistrationAttestation, type StudySpec } from "./study-spec";
 
 /** Deterministic artifact path for one run, derived from its run-ID segments. */
 export function artifactPathForRun(
@@ -124,6 +124,8 @@ export async function executeMatrix(input: MatrixExecutionInput): Promise<Matrix
 
 export interface StudyExecutionInput {
   spec: StudySpec;
+  /** Validated preregistration evidence; recorded with the execution report. */
+  attestation: PreregistrationAttestation;
   runs: readonly RunSpecification[];
   concurrency?: number;
   /**
@@ -143,8 +145,13 @@ export interface StudyExecutionInput {
  * Failure stopping halts scheduling at the threshold; already in-flight work
  * (at most concurrency - 1 items) completes and is recorded.
  */
-export async function executeStudyRuns(input: StudyExecutionInput): Promise<MatrixExecutionReport> {
+export async function executeStudyRuns(
+  input: StudyExecutionInput,
+): Promise<MatrixExecutionReport & { attestation: PreregistrationAttestation }> {
   const specHash = studySpecHash(input.spec);
+  if (input.attestation.specHash !== specHash) {
+    throw new Error("attestation does not match the study spec");
+  }
   for (const run of input.runs) {
     if (run.specHash !== specHash) {
       throw new Error(`run ${run.runId} was generated from a different study spec`);
@@ -167,7 +174,7 @@ export async function executeStudyRuns(input: StudyExecutionInput): Promise<Matr
     throw new Error("validated completions already exceed the study run budget");
   }
   const claim = input.claim;
-  return executeMatrix({
+  const report = await executeMatrix({
     runs: input.runs,
     completedRunIds: completed,
     ...(input.concurrency === undefined ? {} : { concurrency: input.concurrency }),
@@ -183,4 +190,5 @@ export async function executeStudyRuns(input: StudyExecutionInput): Promise<Matr
       await input.execute(run);
     },
   });
+  return { ...report, attestation: input.attestation };
 }

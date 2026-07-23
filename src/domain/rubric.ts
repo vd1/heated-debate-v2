@@ -85,7 +85,11 @@ export type JudgeOutputOutcome =
  * partial outputs produce typed outcomes; a missing dimension is reported as
  * missing with its reason and never becomes a zero score.
  */
-export function parseJudgeOutput(rubric: Rubric, rawText: string): JudgeOutputOutcome {
+export function parseJudgeOutput(
+  rubric: Rubric,
+  rawText: string,
+  options: { sourceText?: string } = {},
+): JudgeOutputOutcome {
   let parsed: unknown;
   try {
     parsed = JSON.parse(rawText);
@@ -99,6 +103,11 @@ export function parseJudgeOutput(rubric: Rubric, rawText: string): JudgeOutputOu
     return { status: "malformed", reason: "judge output must be a JSON object" };
   }
   const outer = parsed as Record<string, unknown>;
+  for (const key of Object.keys(outer)) {
+    if (key !== "dimensions") {
+      return { status: "malformed", reason: `unknown field at judge output: ${key}` };
+    }
+  }
   const dimensionsRaw = outer.dimensions;
   if (typeof dimensionsRaw !== "object" || dimensionsRaw === null || Array.isArray(dimensionsRaw)) {
     return { status: "malformed", reason: "judge output must contain a dimensions object" };
@@ -107,6 +116,13 @@ export function parseJudgeOutput(rubric: Rubric, rawText: string): JudgeOutputOu
 
   const dimensions: Record<string, ParsedDimensionScore> = {};
   const missing: { dimensionId: string; reason: string }[] = [];
+  const declared = new Set(rubric.dimensions.map((dimension) => dimension.dimensionId));
+  for (const key of Object.keys(entries)) {
+    if (!declared.has(key)) {
+      // Undeclared dimensions are reported, never silently discarded.
+      missing.push({ dimensionId: key, reason: "dimension is not declared by the rubric" });
+    }
+  }
   for (const dimension of rubric.dimensions) {
     const entry = entries[dimension.dimensionId];
     if (entry === undefined) {
@@ -118,6 +134,14 @@ export function parseJudgeOutput(rubric: Rubric, rawText: string): JudgeOutputOu
       continue;
     }
     const item = entry as Record<string, unknown>;
+    const unknownField = Object.keys(item).find((key) => key !== "score" && key !== "evidence");
+    if (unknownField !== undefined) {
+      missing.push({
+        dimensionId: dimension.dimensionId,
+        reason: `unknown field ${unknownField} in dimension entry`,
+      });
+      continue;
+    }
     const score = item.score;
     if (!Number.isSafeInteger(score)
       || (score as number) < dimension.scale.min || (score as number) > dimension.scale.max) {
@@ -128,13 +152,21 @@ export function parseJudgeOutput(rubric: Rubric, rawText: string): JudgeOutputOu
       continue;
     }
     const evidence = item.evidence;
-    if (dimension.requiredEvidence === "quote"
-      && (typeof evidence !== "string" || evidence.trim().length === 0)) {
-      missing.push({
-        dimensionId: dimension.dimensionId,
-        reason: "required quote evidence is missing",
-      });
-      continue;
+    if (dimension.requiredEvidence === "quote") {
+      if (typeof evidence !== "string" || evidence.trim().length === 0) {
+        missing.push({
+          dimensionId: dimension.dimensionId,
+          reason: "required quote evidence is missing",
+        });
+        continue;
+      }
+      if (options.sourceText !== undefined && !options.sourceText.includes(evidence)) {
+        missing.push({
+          dimensionId: dimension.dimensionId,
+          reason: "quote evidence does not appear in the declared source",
+        });
+        continue;
+      }
     }
     dimensions[dimension.dimensionId] = {
       score: score as number,
@@ -164,7 +196,13 @@ export interface EvaluationRecord {
   failure: SanitizedFailure | null;
 }
 
-/** Validates and freezes a canonical evaluation record. */
+const THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+
+/**
+ * Validates and freezes a canonical evaluation record. The parsing outcome is
+ * derived from the stored raw response and rubric, never supplied, so a forged
+ * outcome cannot enter the record. Success and failure are mutually exclusive.
+ */
 export function createEvaluationRecord(input: {
   rubric: Rubric;
   sourceArtifact: { runId: string; artifactHash: string };
@@ -173,27 +211,63 @@ export function createEvaluationRecord(input: {
   messages: readonly ModelInputMessage[];
   controls?: RequestedControls;
   rawResponse?: string;
-  outcome?: JudgeOutputOutcome;
+  sourceText?: string;
   failure?: SanitizedFailure;
 }): EvaluationRecord {
+  const rubric = parseRubric(structuredClone(input.rubric));
   nonEmpty(input.sourceArtifact.runId, "sourceArtifact.runId");
   if (!/^[0-9a-f]{64}$/.test(input.sourceArtifact.artifactHash)) {
     throw new Error("sourceArtifact.artifactHash must be a sha256 hex digest");
   }
   nonEmpty(input.judge.evaluatorId, "judge.evaluatorId");
   nonEmpty(input.judge.evaluatorVersion, "judge.evaluatorVersion");
+  if (input.declaredInputs.length === 0) {
+    throw new Error("declaredInputs must reference at least one artifact");
+  }
+  const seenInputs = new Set<string>();
+  for (const reference of input.declaredInputs) {
+    nonEmpty(reference, "declaredInputs entry");
+    if (seenInputs.has(reference)) {
+      throw new Error(`duplicate declared input ${reference}`);
+    }
+    seenInputs.add(reference);
+  }
   if (input.messages.length === 0) {
     throw new Error("messages must contain the exact judge prompt");
   }
-  if (input.outcome === undefined && input.failure === undefined) {
-    throw new Error("an evaluation record requires an outcome or a sanitized failure");
+  for (const message of input.messages) {
+    const role: string = message.role;
+    if ((role !== "user" && role !== "assistant")
+      || typeof message.content !== "string" || message.content.length === 0) {
+      throw new Error("messages must be user/assistant entries with non-empty content");
+    }
   }
+  if (input.controls !== undefined) {
+    nonEmpty(input.controls.model.providerId, "controls.model.providerId");
+    nonEmpty(input.controls.model.modelId, "controls.model.modelId");
+    if (!THINKING_LEVELS.has(input.controls.thinkingLevel)) {
+      throw new Error("controls.thinkingLevel is invalid");
+    }
+  }
+  if (input.failure !== undefined) {
+    if (input.rawResponse !== undefined && input.rawResponse.length === 0) {
+      throw new Error("rawResponse must be non-empty when present");
+    }
+    nonEmpty(input.failure.code, "failure.code");
+  } else if (input.rawResponse === undefined) {
+    throw new Error("an evaluation record requires a raw response or a sanitized failure");
+  }
+  const outcome = input.failure !== undefined || input.rawResponse === undefined
+    ? null
+    : parseJudgeOutput(rubric, input.rawResponse, input.sourceText === undefined
+        ? {}
+        : { sourceText: input.sourceText });
   return deepFreeze({
     recordVersion: "1",
     rubric: {
-      rubricId: input.rubric.rubricId,
-      rubricVersion: input.rubric.rubricVersion,
-      rubricHash: rubricHash(input.rubric),
+      rubricId: rubric.rubricId,
+      rubricVersion: rubric.rubricVersion,
+      rubricHash: rubricHash(rubric),
     },
     sourceArtifact: { ...input.sourceArtifact },
     judge: { ...input.judge },
@@ -201,7 +275,7 @@ export function createEvaluationRecord(input: {
     messages: structuredClone(input.messages),
     controls: input.controls === undefined ? null : structuredClone(input.controls),
     rawResponse: input.rawResponse ?? null,
-    outcome: input.outcome === undefined ? null : structuredClone(input.outcome),
+    outcome,
     failure: input.failure === undefined ? null : structuredClone(input.failure),
   });
 }

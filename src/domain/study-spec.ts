@@ -341,6 +341,9 @@ export function assertPreregisteredStudy(
   spec: StudySpec,
   evidence: PreregistrationEvidence,
 ): PreregistrationAttestation {
+  if (evidence.commit !== undefined && evidence.commit.trim().length === 0) {
+    throw new Error("commit evidence must be a non-empty identity");
+  }
   const committed = evidence.commit !== undefined && evidence.cleanWorktree === true;
   if (!committed && evidence.allowNonPreregistered !== true) {
     throw new Error(

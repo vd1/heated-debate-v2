@@ -71,7 +71,7 @@ describe("judge output parsing", () => {
 
   test("reports malformed output with a typed reason", () => {
     expect(parseJudgeOutput(rubric, "not json").status).toBe("malformed");
-    const noDimensions = parseJudgeOutput(rubric, JSON.stringify({ scores: {} }));
+    const noDimensions = parseJudgeOutput(rubric, JSON.stringify({}));
     if (noDimensions.status !== "malformed") throw new Error(noDimensions.status);
     expect(noDimensions.reason).toContain("dimensions object");
   });
@@ -108,15 +108,16 @@ describe("evaluation record", () => {
     messages: [{ role: "user" as const, content: "Score this transcript." }],
   };
 
-  test("links rubric and artifact hashes with the exact judge inputs", () => {
-    const outcome = parseJudgeOutput(rubric, JSON.stringify({
+  test("links rubric and artifact hashes and derives the outcome from the raw response", () => {
+    const rawResponse = JSON.stringify({
       dimensions: {
         specificity: { score: 4, evidence: "q" },
         verbosity: { score: 2 },
       },
-    }));
-    const recordValue = createEvaluationRecord({ ...BASE, rawResponse: "raw", outcome });
+    });
+    const recordValue = createEvaluationRecord({ ...BASE, rawResponse });
 
+    expect(recordValue.outcome?.status).toBe("valid");
     expect(recordValue.rubric.rubricHash).toBe(rubricHash(rubric));
     expect(recordValue.sourceArtifact.artifactHash).toBe("a".repeat(64));
     expect(recordValue.failure).toBeNull();
@@ -135,14 +136,102 @@ describe("evaluation record", () => {
     expect(recordValue.failure?.code).toBe("judge_parse_failure");
   });
 
-  test("requires an outcome or failure and a valid artifact hash", () => {
+  test("requires a raw response or failure and a valid artifact hash", () => {
     expect(() => createEvaluationRecord(BASE)).toThrow(
-      "an evaluation record requires an outcome or a sanitized failure",
+      "an evaluation record requires a raw response or a sanitized failure",
     );
     expect(() => createEvaluationRecord({
       ...BASE,
       sourceArtifact: { runId: "run-1", artifactHash: "short" },
       failure: { code: "x", message: "y" },
     })).toThrow("sourceArtifact.artifactHash must be a sha256 hex digest");
+  });
+});
+
+describe("exact judge-output schema and record integrity", () => {
+  const rubric = parseRubric(structuredClone(RUBRIC_JSON));
+
+  test("reports unknown outer fields, undeclared dimensions, and entry fields", () => {
+    const unknownOuter = parseJudgeOutput(rubric, JSON.stringify({
+      extra: "ignored",
+      dimensions: {},
+    }));
+    if (unknownOuter.status !== "malformed") throw new Error(unknownOuter.status);
+    expect(unknownOuter.reason).toBe("unknown field at judge output: extra");
+
+    const undeclared = parseJudgeOutput(rubric, JSON.stringify({
+      dimensions: {
+        specificity: { score: 4, evidence: "q" },
+        verbosity: { score: 2 },
+        undeclared: { score: 5 },
+      },
+    }));
+    if (undeclared.status !== "partial") throw new Error(undeclared.status);
+    expect(undeclared.missing).toEqual([
+      { dimensionId: "undeclared", reason: "dimension is not declared by the rubric" },
+    ]);
+
+    const entryField = parseJudgeOutput(rubric, JSON.stringify({
+      dimensions: {
+        specificity: { score: 4, evidence: "q", extra: 1 },
+        verbosity: { score: 2 },
+      },
+    }));
+    if (entryField.status !== "partial") throw new Error(entryField.status);
+    expect(entryField.missing[0]?.reason).toBe("unknown field extra in dimension entry");
+  });
+
+  test("rejects fabricated quote evidence against the declared source", () => {
+    const outcome = parseJudgeOutput(rubric, JSON.stringify({
+      dimensions: {
+        specificity: { score: 4, evidence: "invented words" },
+        verbosity: { score: 2 },
+      },
+    }), { sourceText: "The transcript never says that." });
+    if (outcome.status !== "partial") throw new Error(outcome.status);
+    expect(outcome.missing[0]?.reason).toBe(
+      "quote evidence does not appear in the declared source",
+    );
+  });
+
+  test("a forged outcome cannot enter the record and states are exclusive", () => {
+    const base = {
+      rubric,
+      sourceArtifact: { runId: "run-1", artifactHash: "a".repeat(64) },
+      judge: { evaluatorId: "judge-default", evaluatorVersion: "1" },
+      declaredInputs: ["run-1.jsonl"],
+      messages: [{ role: "user" as const, content: "Score this." }],
+    };
+    // The outcome is derived from the raw response, so it matches parsing exactly.
+    const recordValue = createEvaluationRecord({ ...base, rawResponse: "not json" });
+    expect(recordValue.outcome?.status).toBe("malformed");
+
+    expect(() => createEvaluationRecord({
+      ...base,
+      declaredInputs: ["a", "a"],
+      rawResponse: "{}",
+    })).toThrow("duplicate declared input a");
+    expect(() => createEvaluationRecord({
+      ...base,
+      messages: [{ role: "user" as const, content: "" }],
+      rawResponse: "{}",
+    })).toThrow("messages must be user/assistant entries with non-empty content");
+    expect(() => createEvaluationRecord({
+      ...base,
+      controls: {
+        model: { providerId: "test", modelId: "m" },
+        thinkingLevel: "cold" as never,
+      },
+      rawResponse: "{}",
+    })).toThrow("controls.thinkingLevel is invalid");
+
+    // A failure record carries no parsed outcome even when a raw response exists.
+    const failed = createEvaluationRecord({
+      ...base,
+      rawResponse: "partial text",
+      failure: { code: "judge_timeout", message: "timed out" },
+    });
+    expect(failed.outcome).toBeNull();
+    expect(failed.failure?.code).toBe("judge_timeout");
   });
 });

@@ -1,7 +1,12 @@
 import { describe, expect, test } from "bun:test";
 
 import { artifactPathForRun, executeMatrix, executeStudyRuns } from "../../src/domain/executor";
-import { parseStudySpec, studySpecHash, type StudySpec } from "../../src/domain/study-spec";
+import {
+  assertPreregisteredStudy,
+  parseStudySpec,
+  studySpecHash,
+  type StudySpec,
+} from "../../src/domain/study-spec";
 import type { RunSpecification } from "../../src/domain/matrix";
 
 function run(n: number): RunSpecification {
@@ -148,22 +153,31 @@ describe("study-bound execution", () => {
     },
   };
 
-  function studyFixture(): { spec: StudySpec; runs: RunSpecification[] } {
+  function studyFixture(): {
+    spec: StudySpec;
+    runs: RunSpecification[];
+    attestation: ReturnType<typeof assertPreregisteredStudy>;
+  } {
     const spec = parseStudySpec(structuredClone(SPEC_JSON));
     const specHash = studySpecHash(spec);
     const runs = [1, 2, 3, 4].map((n) => ({
       ...run(n),
       specHash,
     }));
-    return { spec, runs };
+    const attestation = assertPreregisteredStudy(spec, {
+      commit: "abc123",
+      cleanWorktree: true,
+    });
+    return { spec, runs, attestation };
   }
 
   test("counts validated prior completions toward the study run budget", async () => {
-    const { spec, runs } = studyFixture();
+    const { spec, runs, attestation } = studyFixture();
     const executed: string[] = [];
 
     const report = await executeStudyRuns({
       spec,
+      attestation,
       runs,
       readArtifactState: (item) => Promise.resolve(
         item.caseId === "case-1" || item.caseId === "case-2" ? "completed" : "absent",
@@ -181,12 +195,13 @@ describe("study-bound execution", () => {
   });
 
   test("rejects invalid artifacts, foreign specs, and claimed runs", async () => {
-    const { spec, runs } = studyFixture();
+    const { spec, runs, attestation } = studyFixture();
 
     let caught: unknown;
     try {
       await executeStudyRuns({
         spec,
+        attestation,
         runs,
         readArtifactState: () => Promise.resolve("invalid"),
         execute: () => Promise.resolve(),
@@ -200,6 +215,7 @@ describe("study-bound execution", () => {
     try {
       await executeStudyRuns({
         spec,
+        attestation,
         runs: runs.slice(0, 1).map((item) => ({ ...item, specHash: "b".repeat(64) })),
         readArtifactState: () => Promise.resolve("absent"),
         execute: () => Promise.resolve(),
@@ -211,6 +227,7 @@ describe("study-bound execution", () => {
 
     const claimed = await executeStudyRuns({
       spec,
+      attestation,
       runs: runs.slice(0, 1),
       readArtifactState: () => Promise.resolve("absent"),
       claim: () => Promise.resolve(false),
@@ -220,10 +237,11 @@ describe("study-bound execution", () => {
   });
 
   test("spec failure handling stops scheduling at the threshold", async () => {
-    const { spec, runs } = studyFixture();
+    const { spec, runs, attestation } = studyFixture();
 
     const report = await executeStudyRuns({
       spec,
+      attestation,
       runs,
       readArtifactState: () => Promise.resolve("absent"),
       execute: () => Promise.reject(new Error("down")),

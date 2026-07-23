@@ -2,39 +2,62 @@ import { createHash } from "node:crypto";
 
 import { validateCanonicalSequence, type CanonicalEvent } from "./events";
 
-export type DeterministicScore =
+export interface EvaluationEvidence {
+  runId: string;
+  eventSequences: readonly number[];
+}
+
+/** Shared result contract for deterministic and judge-backed evaluators. */
+export type EvaluationResult =
   | {
       evaluatorId: string;
-      evaluatorVersion: "3";
-      /** Hash of the validated evaluator configuration this result used. */
+      evaluatorVersion: string;
       configurationId: string;
       status: "known";
-      /** Normalized within the declared range; direction states which end is better. */
       score: number;
-      range: { min: 0; max: 1 };
-      direction: "higher-is-better";
-      /** The underlying raw measurement the score was derived from. */
+      range: { min: number; max: number };
+      direction: "higher-is-better" | "lower-is-better";
       value: number;
-      /** Canonical event sequences this measurement consumed. */
-      evidence: { eventSequences: readonly number[] };
+      evidence: EvaluationEvidence;
       detail: string;
     }
   | {
       evaluatorId: string;
-      evaluatorVersion: "3";
+      evaluatorVersion: string;
       configurationId: string;
       status: "unavailable";
+      range: { min: number; max: number };
+      direction: "higher-is-better" | "lower-is-better";
+      evidence: EvaluationEvidence;
       reason: string;
     };
+
+export type DeterministicScore =
+ EvaluationResult;
 
 /** Shared evaluator boundary; E-JUDGE implements the same port. */
 export interface EvaluatorPort {
   evaluatorId: string;
   evaluatorVersion: string;
-  evaluate(
-    events: readonly CanonicalEvent[],
-    options?: DeterministicEvaluatorOptions,
-  ): DeterministicScore;
+  evaluate(events: readonly CanonicalEvent[], configuration?: unknown): EvaluationResult;
+}
+
+const OPTION_KEYS = ["contractMarkers", "outputShape", "tokenBudget", "latencyTargetMs"];
+
+/** Validates the shared options before any configuration identity is computed. */
+export function validateEvaluatorOptions(
+  options: DeterministicEvaluatorOptions,
+): DeterministicEvaluatorOptions {
+  for (const key of Object.keys(options)) {
+    if (!OPTION_KEYS.includes(key)) throw new Error(`unknown evaluator option: ${key}`);
+  }
+  const numeric = [options.tokenBudget, options.latencyTargetMs];
+  for (const value of numeric) {
+    if (value !== undefined && (typeof value !== "number" || Number.isNaN(value))) {
+      throw new Error("evaluator numeric options must be numbers");
+    }
+  }
+  return options;
 }
 
 export function evaluatorConfigurationId(options: DeterministicEvaluatorOptions): string {
@@ -66,9 +89,11 @@ interface RunView {
   observedTokens: number;
   /** True only when at least one attempt carried any usage evidence. */
   usageObserved: boolean;
-  /** True when an evidence-bearing attempt lacked input or output totals. */
+  /** True when any attempt lacked input or output totals. */
   partialUsage: boolean;
   attemptSequences: number[];
+  runId: string;
+  terminalSequence: number | null;
 }
 
 function readRun(events: readonly CanonicalEvent[]): RunView {
@@ -86,6 +111,8 @@ function readRun(events: readonly CanonicalEvent[]): RunView {
     usageObserved: false,
     partialUsage: false,
     attemptSequences: [],
+    runId: start.runId,
+    terminalSequence: null,
   };
   for (const event of events) {
     if (event.type === "turn.requested") {
@@ -99,21 +126,23 @@ function readRun(events: readonly CanonicalEvent[]): RunView {
       });
     } else if (event.type === "adapter.attempt") {
       const usage = event.data.attempt.usage;
+      view.attemptSequences.push(event.sequence);
       const anyEvidence = usage.inputTokens !== undefined || usage.outputTokens !== undefined
         || usage.cacheReadTokens !== undefined || usage.cacheWriteTokens !== undefined;
-      if (anyEvidence) {
-        view.usageObserved = true;
-        view.attemptSequences.push(event.sequence);
-        // Partial evidence must never become an exact total.
-        if (usage.inputTokens === undefined || usage.outputTokens === undefined) {
-          view.partialUsage = true;
-        }
+      if (anyEvidence) view.usageObserved = true;
+      // Any attempt without both totals makes the sum a partial measurement,
+      // including attempts whose usage is entirely absent.
+      if (usage.inputTokens === undefined || usage.outputTokens === undefined) {
+        view.partialUsage = true;
       }
       // Matches the domain budget lower bound: input, output, and cache tokens.
       view.observedTokens += (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0)
         + (usage.cacheReadTokens ?? 0) + (usage.cacheWriteTokens ?? 0);
     } else if (event.type === "run.completed") {
       view.completed = true;
+      view.terminalSequence = event.sequence;
+    } else if (event.type === "run.failed") {
+      view.terminalSequence = event.sequence;
     }
   }
   return view;
@@ -124,6 +153,7 @@ const clamp = (value: number): number => Math.min(1, Math.max(0, value));
 function knownResult(
   evaluatorId: string,
   options: DeterministicEvaluatorOptions,
+  runId: string,
   score: number,
   value: number,
   eventSequences: readonly number[],
@@ -132,13 +162,13 @@ function knownResult(
   return {
     evaluatorId,
     evaluatorVersion: "3",
-    configurationId: evaluatorConfigurationId(options),
+    configurationId: evaluatorConfigurationId(validateEvaluatorOptions(options)),
     status: "known",
     score,
     range: { min: 0, max: 1 },
     direction: "higher-is-better",
     value,
-    evidence: { eventSequences: [...eventSequences] },
+    evidence: { runId, eventSequences: [...eventSequences] },
     detail,
   };
 }
@@ -146,13 +176,18 @@ function knownResult(
 function unavailableResult(
   evaluatorId: string,
   options: DeterministicEvaluatorOptions,
+  runId: string,
+  eventSequences: readonly number[],
   reason: string,
 ): DeterministicScore {
   return {
     evaluatorId,
     evaluatorVersion: "3",
-    configurationId: evaluatorConfigurationId(options),
+    configurationId: evaluatorConfigurationId(validateEvaluatorOptions(options)),
     status: "unavailable",
+    range: { min: 0, max: 1 },
+    direction: "higher-is-better",
+    evidence: { runId, eventSequences: [...eventSequences] },
     reason,
   };
 }
@@ -169,9 +204,13 @@ export function evaluateCompletion(
   return knownResult(
     "deterministic-completion",
     options,
+    view.runId,
     score,
     view.completedTexts.length,
-    view.completedTexts.map((turn) => turn.sequence),
+    [
+      ...view.completedTexts.map((turn) => turn.sequence),
+      ...(view.terminalSequence === null ? [] : [view.terminalSequence]),
+    ],
     `${String(view.completedTexts.length)} of ${String(view.expectedTurns)} turns completed;`
       + ` terminal ${view.completed ? "run.completed" : "run.failed or missing"}`,
   );
@@ -190,6 +229,8 @@ export function evaluateContractMarkers(
     return unavailableResult(
       "deterministic-contract-markers",
       options,
+      view.runId,
+      [],
       "no completed replies to measure",
     );
   }
@@ -199,6 +240,7 @@ export function evaluateContractMarkers(
   return knownResult(
     "deterministic-contract-markers",
     options,
+    view.runId,
     adherent / view.completedTexts.length,
     adherent,
     view.completedTexts.map((turn) => turn.sequence),
@@ -234,12 +276,15 @@ export function evaluateRepetition(
     return unavailableResult(
       "deterministic-repetition",
       options,
+      view.runId,
+      view.completedTexts.map((turn) => turn.sequence),
       "no consecutive same-role reply pairs to compare",
     );
   }
   return knownResult(
     "deterministic-repetition",
     options,
+    view.runId,
     clamp(1 - worst),
     worst,
     view.completedTexts.map((turn) => turn.sequence),
@@ -261,6 +306,8 @@ export function evaluateOutputShape(
     return unavailableResult(
       "deterministic-output-shape",
       options,
+      view.runId,
+      [],
       "no completed replies to measure",
     );
   }
@@ -272,6 +319,7 @@ export function evaluateOutputShape(
   return knownResult(
     "deterministic-output-shape",
     options,
+    view.runId,
     shaped / view.completedTexts.length,
     shaped,
     view.completedTexts.map((turn) => turn.sequence),
@@ -287,7 +335,13 @@ export function evaluateTokenUsage(
   const view = readRun(events);
   const budget = options.tokenBudget;
   if (budget === undefined) {
-    return unavailableResult("deterministic-token-usage", options, "no token budget configured");
+    return unavailableResult(
+      "deterministic-token-usage",
+      options,
+      view.runId,
+      view.attemptSequences,
+      "no token budget configured",
+    );
   }
   if (!Number.isSafeInteger(budget) || budget <= 0) {
     throw new Error("tokenBudget must be a positive safe integer");
@@ -296,6 +350,8 @@ export function evaluateTokenUsage(
     return unavailableResult(
       "deterministic-token-usage",
       options,
+      view.runId,
+      view.attemptSequences,
       "no attempt carried usage evidence; missing usage is never zero usage",
     );
   }
@@ -303,12 +359,15 @@ export function evaluateTokenUsage(
     return unavailableResult(
       "deterministic-token-usage",
       options,
+      view.runId,
+      view.attemptSequences,
       "an attempt reported partial usage; partial evidence is never an exact total",
     );
   }
   return knownResult(
     "deterministic-token-usage",
     options,
+    view.runId,
     clamp(1 - view.observedTokens / budget),
     view.observedTokens,
     view.attemptSequences,
@@ -325,17 +384,30 @@ export function evaluateLatency(
   const mean = view.completedTexts.length === 0 ? 0 : total / view.completedTexts.length;
   const target = options.latencyTargetMs;
   if (target === undefined) {
-    return unavailableResult("deterministic-latency", options, "no latency target configured");
+    return unavailableResult(
+      "deterministic-latency",
+      options,
+      view.runId,
+      [],
+      "no latency target configured",
+    );
   }
   if (!Number.isFinite(target) || target <= 0) {
     throw new Error("latencyTargetMs must be a finite positive number");
   }
   if (view.completedTexts.length === 0) {
-    return unavailableResult("deterministic-latency", options, "no completed turns to measure");
+    return unavailableResult(
+      "deterministic-latency",
+      options,
+      view.runId,
+      [],
+      "no completed turns to measure",
+    );
   }
   return knownResult(
     "deterministic-latency",
     options,
+    view.runId,
     clamp(1 - mean / target),
     mean,
     view.completedTexts.map((turn) => turn.sequence),
