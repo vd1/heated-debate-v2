@@ -56,6 +56,14 @@ export async function executeMatrix(input: MatrixExecutionInput): Promise<Matrix
   if (!Number.isSafeInteger(concurrency) || concurrency <= 0) {
     throw new Error("concurrency must be a positive safe integer");
   }
+  if (input.maxTotalRuns !== undefined
+    && (!Number.isSafeInteger(input.maxTotalRuns) || input.maxTotalRuns < 0)) {
+    throw new Error("maxTotalRuns must be a non-negative safe integer");
+  }
+  if (input.maxConsecutiveFailures !== undefined
+    && (!Number.isSafeInteger(input.maxConsecutiveFailures) || input.maxConsecutiveFailures <= 0)) {
+    throw new Error("maxConsecutiveFailures must be a positive safe integer");
+  }
   const completed = input.completedRunIds ?? new Set<string>();
   const outcomes = new Map<string, { kind: "executed" } | { kind: "skipped" } | { kind: "failed"; message: string }>();
   let consecutiveFailures = 0;

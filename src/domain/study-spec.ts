@@ -26,7 +26,7 @@ export interface StudySpec {
   unknownCostPolicy: "fail-closed" | "token-only-accounting";
   rewardScalarization: { rewardId: string; rewardVersion: string };
   budgets: {
-    perRun: { maxTurns: number; maxTokens: number };
+    perRun: { maxTurns: number; maxTokens: number; maxAmount?: number };
     maxTotalRuns?: number;
     maxTotalAmount?: number;
   };
@@ -188,11 +188,14 @@ export function parseStudySpec(value: unknown): StudySpec {
   const budgetsRaw = record(raw.budgets, "budgets");
   exactFields(budgetsRaw, ["perRun", "maxTotalRuns", "maxTotalAmount"], "budgets");
   const perRunRaw = record(budgetsRaw.perRun, "budgets.perRun");
-  exactFields(perRunRaw, ["maxTurns", "maxTokens"], "budgets.perRun");
+  exactFields(perRunRaw, ["maxTurns", "maxTokens", "maxAmount"], "budgets.perRun");
   const budgets = {
     perRun: {
       maxTurns: safeCount(perRunRaw.maxTurns, "budgets.perRun.maxTurns"),
       maxTokens: safeCount(perRunRaw.maxTokens, "budgets.perRun.maxTokens"),
+      ...(perRunRaw.maxAmount === undefined
+        ? {}
+        : { maxAmount: nonNegativeNumber(perRunRaw.maxAmount, "budgets.perRun.maxAmount") }),
     },
     ...(budgetsRaw.maxTotalRuns === undefined
       ? {}
@@ -201,6 +204,9 @@ export function parseStudySpec(value: unknown): StudySpec {
       ? {}
       : { maxTotalAmount: nonNegativeNumber(budgetsRaw.maxTotalAmount, "budgets.maxTotalAmount") }),
   };
+  if (budgetsRaw.maxTotalAmount !== undefined && perRunRaw.maxAmount === undefined) {
+    throw new Error("an aggregate monetary budget requires budgets.perRun.maxAmount");
+  }
   const stoppingRaw = record(raw.stoppingRules, "stoppingRules");
   exactFields(stoppingRaw, ["maxRuns", "maxConsecutiveFailures"], "stoppingRules");
   const stoppingRules = {
