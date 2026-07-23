@@ -5,6 +5,7 @@ import type { DebateBudget, RunDebateInput } from "./debate";
 import {
   definePricingSnapshot,
   findPricingEntry,
+  scaledCurrencyAmount,
   type PricingSnapshot,
 } from "./pricing";
 import { defineRole, PROPOSER_ROLE, REVIEWER_ROLE, type RoleDefinition } from "./roles";
@@ -59,7 +60,7 @@ export function parseExperimentConfig(value: unknown): ExperimentConfig {
   const runId = requireString(raw.runId, "runId");
   const topic = requireString(raw.topic, "topic");
   const caseId = raw.caseId === undefined ? undefined : requireString(raw.caseId, "caseId");
-  if (!Number.isInteger(raw.roundCount) || (raw.roundCount as number) <= 0) {
+  if (!Number.isSafeInteger(raw.roundCount) || (raw.roundCount as number) <= 0) {
     throw new Error("roundCount must be a positive integer");
   }
   const roundCount = raw.roundCount as number;
@@ -235,7 +236,7 @@ function parseControls(value: unknown, path: string): ParsedControls {
     parsed.temperature = raw.temperature;
   }
   if (raw.maxOutputTokens !== undefined) {
-    if (!Number.isInteger(raw.maxOutputTokens) || (raw.maxOutputTokens as number) <= 0) {
+    if (!Number.isSafeInteger(raw.maxOutputTokens) || (raw.maxOutputTokens as number) <= 0) {
       throw new Error(`${path}.maxOutputTokens must be a positive integer`);
     }
     parsed.maxOutputTokens = raw.maxOutputTokens as number;
@@ -249,14 +250,14 @@ function parseBudget(
 ): DebateBudget & { monetary?: ExperimentMonetaryBudget } {
   const raw = asRecord(value, "config.budget");
   assertKnownFields(raw, ["maxTurns", "maxTokens", "monetary"], "config.budget");
-  if (!Number.isInteger(raw.maxTurns) || (raw.maxTurns as number) < 0) {
+  if (!Number.isSafeInteger(raw.maxTurns) || (raw.maxTurns as number) < 0) {
     throw new Error("budget.maxTurns must be a non-negative integer");
   }
-  if (typeof raw.maxTokens !== "number" || !Number.isFinite(raw.maxTokens) || raw.maxTokens < 0) {
-    throw new Error("budget.maxTokens must be a finite non-negative number");
+  if (!Number.isSafeInteger(raw.maxTokens) || (raw.maxTokens as number) < 0) {
+    throw new Error("budget.maxTokens must be a non-negative safe integer");
   }
   if (raw.monetary === undefined) {
-    return { maxTurns: raw.maxTurns as number, maxTokens: raw.maxTokens };
+    return { maxTurns: raw.maxTurns as number, maxTokens: raw.maxTokens as number };
   }
   const monetary = asRecord(raw.monetary, "config.budget.monetary");
   assertKnownFields(
@@ -264,10 +265,10 @@ function parseBudget(
     ["maxAmount", "snapshot", "permitTokenOnlyAccounting"],
     "config.budget.monetary",
   );
-  if (typeof monetary.maxAmount !== "number" || !Number.isFinite(monetary.maxAmount)
-    || monetary.maxAmount < 0) {
+  if (typeof monetary.maxAmount !== "number") {
     throw new Error("budget.monetary.maxAmount must be a finite non-negative number");
   }
+  scaledCurrencyAmount(monetary.maxAmount, "budget.monetary.maxAmount");
   if (monetary.permitTokenOnlyAccounting !== undefined
     && typeof monetary.permitTokenOnlyAccounting !== "boolean") {
     throw new Error("budget.monetary.permitTokenOnlyAccounting must be a boolean");
@@ -280,7 +281,7 @@ function parseBudget(
   }
   return {
     maxTurns: raw.maxTurns as number,
-    maxTokens: raw.maxTokens,
+    maxTokens: raw.maxTokens as number,
     monetary: {
       maxAmount: monetary.maxAmount,
       snapshot,

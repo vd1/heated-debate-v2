@@ -83,6 +83,26 @@ describe("pricing snapshot", () => {
     } as unknown as PricingSnapshot)).toThrow("unknown field at snapshot: note");
   });
 
+  test("rejects unknown fields inside reasoning billing rules", () => {
+    const base = snapshot();
+    const [first, second] = base.entries;
+    if (!first || !second) throw new Error("bad fixture");
+    expect(() => definePricingSnapshot({
+      ...base,
+      entries: [{
+        ...first,
+        reasoningBilling: { mode: "included-in-output", note: "extra" } as never,
+      }, second],
+    })).toThrow("unknown field at reasoningBilling: note");
+    expect(() => definePricingSnapshot({
+      ...base,
+      entries: [{
+        ...first,
+        reasoningBilling: { mode: "separate-rate" } as never,
+      }, second],
+    })).toThrow("reasoning ratePerMillionTokens must be a finite non-negative number");
+  });
+
   test("rejects a separate reasoning rate that is not finite and non-negative", () => {
     const base = snapshot();
     const [first] = base.entries;

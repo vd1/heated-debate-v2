@@ -70,6 +70,17 @@ export function definePricingSnapshot(snapshot: PricingSnapshot): PricingSnapsho
     for (const field of RATE_FIELDS) {
       assertRateScale(entry[field], field);
     }
+    assertExactFields(
+      entry.reasoningBilling,
+      (entry.reasoningBilling as { mode?: string }).mode === "separate-rate"
+        ? ["mode", "ratePerMillionTokens"]
+        : ["mode"],
+      "reasoningBilling",
+    );
+    if (entry.reasoningBilling.mode === "separate-rate"
+      && !("ratePerMillionTokens" in entry.reasoningBilling)) {
+      throw new Error("reasoning ratePerMillionTokens must be a finite non-negative number");
+    }
     const billingMode: string = entry.reasoningBilling.mode;
     if (billingMode !== "included-in-output" && billingMode !== "unbilled"
       && billingMode !== "separate-rate") {
@@ -80,6 +91,7 @@ export function definePricingSnapshot(snapshot: PricingSnapshot): PricingSnapsho
         entry.reasoningBilling.ratePerMillionTokens,
         "reasoning ratePerMillionTokens",
       );
+      assertRateScale(entry.reasoningBilling.ratePerMillionTokens, "reasoning ratePerMillionTokens");
     }
   }
 

@@ -93,6 +93,41 @@ describe("parseExperimentConfig", () => {
     })).toThrow("wholeRunTimeoutMs must not be smaller than turnTimeoutMs");
   });
 
+  test("rejects fractional, unsafe, and unrepresentable numeric fields", () => {
+    expect(() => parseExperimentConfig({
+      ...MINIMAL,
+      roundCount: Number.MAX_SAFE_INTEGER + 1,
+    })).toThrow("roundCount must be a positive integer");
+    expect(() => parseExperimentConfig({
+      ...MINIMAL,
+      controls: { maxOutputTokens: Number.MAX_SAFE_INTEGER + 1 },
+    })).toThrow("maxOutputTokens must be a positive integer");
+    expect(() => parseExperimentConfig({
+      ...MINIMAL,
+      budget: { maxTurns: 2, maxTokens: 0.5 },
+    })).toThrow("budget.maxTokens must be a non-negative safe integer");
+    expect(() => parseExperimentConfig({
+      ...MINIMAL,
+      budget: {
+        maxTurns: 2,
+        maxTokens: 100,
+        monetary: {
+          maxAmount: 0.1234567,
+          snapshot: {
+            snapshotId: "s", snapshotVersion: "1", currency: "USD",
+            effectiveDate: "2026-07-01", provenance: "p",
+            entries: [{
+              model: { providerId: "openai-codex", modelId: "gpt-5.6-sol" },
+              inputRatePerMillionTokens: 1, outputRatePerMillionTokens: 1,
+              cacheReadRatePerMillionTokens: 0, cacheWriteRatePerMillionTokens: 0,
+              reasoningBilling: { mode: "included-in-output" },
+            }],
+          },
+        },
+      },
+    })).toThrow("budget.monetary.maxAmount must have at most 6 decimal places");
+  });
+
   test("requires monetary snapshots to price both assigned models", () => {
     const snapshot = {
       snapshotId: "pricing-test",

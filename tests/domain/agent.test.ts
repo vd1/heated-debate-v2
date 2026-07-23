@@ -68,6 +68,15 @@ const CONTROL_REPORT: ControlReport = {
   },
 };
 
+describe("normalizeUsage integer boundaries", () => {
+  test("rejects fractional token counts", () => {
+    expect(() => normalizeUsage({
+      values: { inputTokens: 1.5 },
+      explicitlyReported: [],
+    })).toThrow("invalid inputTokens: expected a non-negative safe integer");
+  });
+});
+
 describe("ScriptedAgent", () => {
   test("records the request and returns normalized domain data", async () => {
     const agent = new ScriptedAgent([

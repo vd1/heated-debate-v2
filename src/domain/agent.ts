@@ -148,8 +148,8 @@ export function normalizeUsage(observation: UsageObservation): NormalizedUsage {
   for (const kind of USAGE_KINDS) {
     const value = observation.values[kind];
     if (value === undefined) continue;
-    if (!Number.isFinite(value) || value < 0) {
-      throw new Error(`invalid ${kind}: expected a finite non-negative number`);
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw new Error(`invalid ${kind}: expected a non-negative safe integer`);
     }
     if (value > 0 || explicitlyReported.has(kind)) {
       normalized[kind] = value;
