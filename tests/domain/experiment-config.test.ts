@@ -165,6 +165,58 @@ describe("parseExperimentConfig", () => {
     })).toThrow("no pricing entry for local/gemma-3-27b");
   });
 
+  test("distinguishes omitted controls from explicit defaults in canonical identity", () => {
+    const omitted = parseExperimentConfig(structuredClone(MINIMAL));
+    const explicit = parseExperimentConfig({
+      ...MINIMAL,
+      controls: {
+        model: { providerId: "openai-codex", modelId: "gpt-5.6-sol" },
+        thinkingLevel: "high",
+      },
+      contextPolicy: { policyId: "last-exchange", policyVersion: "1" },
+    });
+
+    // Both resolve to identical execution values...
+    expect(explicit.proposer.controls).toEqual(omitted.proposer.controls);
+    // ...but their canonical identity differs because the sources differ.
+    expect(canonicalExperimentConfigJson(explicit))
+      .not.toBe(canonicalExperimentConfigJson(omitted));
+    expect(experimentConfigHash(explicit)).not.toBe(experimentConfigHash(omitted));
+  });
+
+  test("records protocol and creativity schedule identity and routes them to the scheduler", () => {
+    const config = parseExperimentConfig({
+      ...MINIMAL,
+      protocol: { protocolId: "proposer-reviewer", protocolVersion: "1" },
+      creativitySchedule: { scheduleId: "linear-cooling", scheduleVersion: "1" },
+    });
+
+    expect(config.protocol).toEqual({ protocolId: "proposer-reviewer", protocolVersion: "1" });
+    expect(config.creativitySchedule).toEqual({
+      scheduleId: "linear-cooling",
+      scheduleVersion: "1",
+    });
+    // Defaults resolve to the same identities when omitted.
+    const defaulted = parseExperimentConfig(structuredClone(MINIMAL));
+    expect(defaulted.protocol).toEqual(config.protocol);
+    expect(defaulted.creativitySchedule).toEqual(config.creativitySchedule);
+    // Unsupported identities are rejected, not silently replaced.
+    expect(() => parseExperimentConfig({
+      ...MINIMAL,
+      creativitySchedule: { scheduleId: "step", scheduleVersion: "1" },
+    })).toThrow("creativitySchedule must be linear-cooling@1");
+    expect(() => parseExperimentConfig({
+      ...MINIMAL,
+      protocol: { protocolId: "panel", protocolVersion: "1" },
+    })).toThrow("protocol must be proposer-reviewer@1");
+
+    const input = experimentDebateInput(config, {
+      proposer: new ScriptedAgent([]),
+      reviewer: new ScriptedAgent([]),
+    });
+    expect(input.creativitySchedule).toEqual(config.creativitySchedule);
+  });
+
   test("round-trips canonically and hashes deterministically", () => {
     const config = parseExperimentConfig({
       ...MINIMAL,

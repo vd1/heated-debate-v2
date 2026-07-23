@@ -390,6 +390,30 @@ describe("runDebate failure semantics", () => {
     expect(reviewer.calls).toBe(0);
   });
 
+  test("records experiment identity in run.started", async () => {
+    const proposer = new ScenarioAgent(() => Promise.resolve(reply("Proposal")));
+    const reviewer = new ScenarioAgent(() => Promise.resolve(reply("Review")));
+    const sink = new MemorySink();
+
+    await runDebate(debateInput(proposer, reviewer, sink, {
+      experiment: { configHash: "a".repeat(64), caseId: "case-7" },
+    }));
+
+    const started = sink.events[0];
+    if (started?.type !== "run.started") throw new Error("missing run start");
+    expect(started.data.experiment).toEqual({ configHash: "a".repeat(64), caseId: "case-7" });
+
+    const absent = new MemorySink();
+    await runDebate(debateInput(
+      new ScenarioAgent(() => Promise.resolve(reply("Proposal"))),
+      new ScenarioAgent(() => Promise.resolve(reply("Review"))),
+      absent,
+    ));
+    const absentStart = absent.events[0];
+    if (absentStart?.type !== "run.started") throw new Error("missing run start");
+    expect(absentStart.data.experiment).toBeNull();
+  });
+
   test("records the monetary budget with its snapshot hash in run controls", async () => {
     const proposer = new ScenarioAgent(() => Promise.resolve(pricedReply("Proposal")));
     const reviewer = new ScenarioAgent(() => Promise.resolve(pricedReply("Review")));

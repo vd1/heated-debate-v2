@@ -35,11 +35,16 @@ export interface ExperimentMonetaryBudget {
 
 export interface ExperimentConfig {
   configVersion: "1";
+  /** The validated untrusted input verbatim; canonical identity derives from it,
+   * so omitted optional controls stay distinct from explicit defaults. */
+  source: Readonly<Record<string, unknown>>;
   runId: string;
   topic: string;
   caseId?: string;
   roundCount: number;
   contextPolicy: { policyId: "last-exchange"; policyVersion: "1" };
+  protocol: { protocolId: "proposer-reviewer"; protocolVersion: "1" };
+  creativitySchedule: { scheduleId: "linear-cooling"; scheduleVersion: "1" };
   proposer: RoleAssignment;
   reviewer: RoleAssignment;
   turnTimeoutMs?: number;
@@ -52,6 +57,7 @@ export function parseExperimentConfig(value: unknown): ExperimentConfig {
   const raw = asRecord(value, "config", "config must be a JSON object");
   assertKnownFields(raw, [
     "configVersion", "runId", "topic", "caseId", "roundCount", "contextPolicy",
+    "protocol", "creativitySchedule",
     "controls", "proposer", "reviewer", "turnTimeoutMs", "wholeRunTimeoutMs", "budget",
   ], "config");
   if (raw.configVersion !== "1") {
@@ -70,6 +76,21 @@ export function parseExperimentConfig(value: unknown): ExperimentConfig {
     assertKnownFields(policy, ["policyId", "policyVersion"], "config.contextPolicy");
     if (policy.policyId !== "last-exchange" || policy.policyVersion !== "1") {
       throw new Error("contextPolicy must be last-exchange@1");
+    }
+  }
+
+  if (raw.protocol !== undefined) {
+    const protocol = asRecord(raw.protocol, "config.protocol");
+    assertKnownFields(protocol, ["protocolId", "protocolVersion"], "config.protocol");
+    if (protocol.protocolId !== "proposer-reviewer" || protocol.protocolVersion !== "1") {
+      throw new Error("protocol must be proposer-reviewer@1");
+    }
+  }
+  if (raw.creativitySchedule !== undefined) {
+    const schedule = asRecord(raw.creativitySchedule, "config.creativitySchedule");
+    assertKnownFields(schedule, ["scheduleId", "scheduleVersion"], "config.creativitySchedule");
+    if (schedule.scheduleId !== "linear-cooling" || schedule.scheduleVersion !== "1") {
+      throw new Error("creativitySchedule must be linear-cooling@1");
     }
   }
 
@@ -96,11 +117,14 @@ export function parseExperimentConfig(value: unknown): ExperimentConfig {
 
   return deepFreeze({
     configVersion: "1",
+    source: structuredClone(raw),
     runId,
     topic,
     ...(caseId === undefined ? {} : { caseId }),
     roundCount,
     contextPolicy: { policyId: "last-exchange", policyVersion: "1" },
+    protocol: { protocolId: "proposer-reviewer", protocolVersion: "1" },
+    creativitySchedule: { scheduleId: "linear-cooling", scheduleVersion: "1" },
     proposer,
     reviewer,
     ...(turnTimeoutMs === undefined ? {} : { turnTimeoutMs }),
@@ -110,7 +134,7 @@ export function parseExperimentConfig(value: unknown): ExperimentConfig {
 }
 
 export function canonicalExperimentConfigJson(config: ExperimentConfig): string {
-  return canonicalJson(config);
+  return canonicalJson(config.source);
 }
 
 export function experimentConfigHash(config: ExperimentConfig): string {
@@ -134,6 +158,11 @@ export function experimentDebateInput(
     debateId: config.runId,
     topic: config.topic,
     roundCount: config.roundCount,
+    creativitySchedule: structuredClone(config.creativitySchedule),
+    experiment: {
+      configHash: experimentConfigHash(config),
+      ...(config.caseId === undefined ? {} : { caseId: config.caseId }),
+    },
     proposer: {
       agent: agents.proposer,
       role: config.proposer.role,

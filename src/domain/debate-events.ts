@@ -30,6 +30,7 @@ export function projectDebateEvents(
       topic: result.topic,
       roundCount: result.rounds.length,
       controls: structuredClone(result.controls),
+      experiment: structuredClone(result.experiment),
     },
   });
 

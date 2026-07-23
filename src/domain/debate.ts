@@ -108,6 +108,10 @@ export interface RunDebateInput {
   roundCount: number;
   proposer: ExchangeParticipant;
   reviewer: ExchangeParticipant;
+  /** Immutable experiment-config identity recorded in run.started. */
+  experiment?: { configHash: string; caseId?: string };
+  /** Validated creativity-schedule selection; only linear-cooling@1 is implemented. */
+  creativitySchedule?: { scheduleId: string; scheduleVersion: string };
   recording?: DebateRecording;
   signal?: AbortSignal;
   signalFailureCode?: "cancelled" | "run_timeout";
@@ -122,6 +126,7 @@ export interface DebateRound {
 }
 
 export interface DebateResult {
+  readonly experiment: { configHash: string; caseId: string | null } | null;
   readonly debateId: string;
   readonly topic: string;
   readonly rounds: readonly DebateRound[];
@@ -154,6 +159,11 @@ export async function runDebate(input: RunDebateInput): Promise<DebateResult> {
         snapshotHash: pricingSnapshotHash(monetary.snapshot),
         permitTokenOnlyAccounting: monetary.permitTokenOnlyAccounting,
       }));
+  if (input.creativitySchedule !== undefined
+    && (input.creativitySchedule.scheduleId !== "linear-cooling"
+      || input.creativitySchedule.scheduleVersion !== "1")) {
+    throw new Error("creativitySchedule must be linear-cooling@1");
+  }
   const scheduler = new DebateScheduler({
     debateId: input.debateId,
     topic: input.topic,
@@ -258,6 +268,9 @@ export async function runDebate(input: RunDebateInput): Promise<DebateResult> {
           topic: input.topic,
           roundCount: input.roundCount,
           controls: structuredClone(runControls),
+          experiment: input.experiment === undefined
+            ? null
+            : { configHash: input.experiment.configHash, caseId: input.experiment.caseId ?? null },
         },
       }, true);
     }
@@ -413,6 +426,12 @@ export async function runDebate(input: RunDebateInput): Promise<DebateResult> {
     const result: DebateResult = Object.freeze({
       ...scheduledResult,
       controls: runControls,
+      experiment: input.experiment === undefined
+        ? null
+        : Object.freeze({
+            configHash: input.experiment.configHash,
+            caseId: input.experiment.caseId ?? null,
+          }),
     });
     if (input.recording) {
       await emit({

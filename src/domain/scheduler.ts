@@ -149,7 +149,7 @@ export class DebateScheduler {
     this.roundNumber += 1;
   }
 
-  result(): Omit<DebateResult, "controls"> {
+  result(): Omit<DebateResult, "controls" | "experiment"> {
     if (this.pending || this.roundNumber <= this.roundCount) {
       throw new Error("debate schedule is not complete");
     }

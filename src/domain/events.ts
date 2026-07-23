@@ -21,7 +21,7 @@ import {
   type UnrecordedToolCapabilityPolicy,
 } from "./tool-policy";
 
-export const CANONICAL_SCHEMA_VERSION = 6 as const;
+export const CANONICAL_SCHEMA_VERSION = 7 as const;
 
 export interface CanonicalMonetaryBudget {
   maxAmount: number;
@@ -72,6 +72,7 @@ export type CanonicalEvent =
         topic: string;
         roundCount: number;
         controls: CanonicalRunControls;
+        experiment: { configHash: string; caseId: string | null } | null;
       };
     })
   | (EventEnvelope & {
@@ -216,6 +217,7 @@ function migrateHistoricalEvent(value: unknown): unknown {
   migrated.schemaVersion = CANONICAL_SCHEMA_VERSION;
   if (event.schemaVersion >= 3) {
     migrateHistoricalMonetary(migrated);
+    migrateHistoricalExperiment(migrated);
     return migrated;
   }
   if (migrated.type === "run.started"
@@ -238,8 +240,17 @@ function migrateHistoricalEvent(value: unknown): unknown {
     }
   }
   migrateHistoricalMonetary(migrated);
+  migrateHistoricalExperiment(migrated);
   migrateHistoricalCapabilities(migrated);
   return migrated;
+}
+
+function migrateHistoricalExperiment(event: Record<string, unknown>): void {
+  if (event.type !== "run.started"
+    || typeof event.data !== "object" || event.data === null || Array.isArray(event.data)) return;
+  const data = event.data as Record<string, unknown>;
+  // Experiment identity did not exist before schema v7; none was recorded.
+  if (!hasOwn(data, "experiment")) data.experiment = null;
 }
 
 function migrateHistoricalMonetary(event: Record<string, unknown>): void {
@@ -345,7 +356,20 @@ export function assertCanonicalEvent(value: unknown): asserts value is Canonical
 
 function validateRunStarted(value: unknown): void {
   const data = assertRecord(value, "run.started.data");
-  assertExactFields(data, ["debateId", "topic", "roundCount", "controls"], [], "run.started.data");
+  assertExactFields(
+    data,
+    ["debateId", "topic", "roundCount", "controls", "experiment"],
+    [],
+    "run.started.data",
+  );
+  if (data.experiment !== null) {
+    const experiment = assertRecord(data.experiment, "run.started.data.experiment");
+    assertExactFields(experiment, ["configHash", "caseId"], [], "run.started.data.experiment");
+    if (typeof experiment.configHash !== "string" || !/^[0-9a-f]{64}$/.test(experiment.configHash)) {
+      throw new Error("experiment.configHash must be a sha256 hex digest");
+    }
+    if (experiment.caseId !== null) assertNonEmptyString(experiment.caseId, "experiment.caseId");
+  }
   assertNonEmptyString(data.debateId, "run.started.data.debateId");
   assertString(data.topic, "run.started.data.topic");
   assertPositiveInteger(data.roundCount, "run.started.data.roundCount");
