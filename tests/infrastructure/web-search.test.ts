@@ -258,6 +258,27 @@ describe("residual secret and schema boundaries", () => {
     expect(message).not.toContain("query-secret");
   });
 
+  test("redacts percent-encoded endpoint credentials in both forms", async () => {
+    const endpoint = "https://us%40er:p%40ss@search.example.test/search?api_key=q%40secret";
+    const port = createHttpWebSearchPort({
+      provider: "test-search",
+      endpoint,
+      fetchFn: (url) => Promise.reject(new Error(`transport failed for ${url}`)),
+      now: () => 0,
+    });
+
+    let caught: unknown;
+    try {
+      await port.search({ query: "x" });
+    } catch (error) {
+      caught = error;
+    }
+    const message = (caught as Error).message;
+    for (const secret of ["us%40er", "us@er", "p%40ss", "p@ss", "q%40secret", "q@secret"]) {
+      expect(message).not.toContain(secret);
+    }
+  });
+
   test("rejects whitespace-only queries at the tool schema before execution", async () => {
     const { validateToolArguments } = await import("@earendil-works/pi-ai/compat");
     const registration = createWebSearchToolRegistration(createHttpWebSearchPort({

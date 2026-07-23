@@ -13,10 +13,8 @@ export interface BenchmarkCase {
 
 /** Parses untrusted JSON into a validated, frozen benchmark case. */
 export function parseBenchmarkCase(value: unknown): BenchmarkCase {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new Error("case must be a JSON object");
-  }
-  const raw = value as Record<string, unknown>;
+  assertPlainJsonRecord(value, "case");
+  const raw = ownProperties(value as Record<string, unknown>);
   for (const key of Object.keys(raw)) {
     if (!["caseVersion", "caseId", "topic", "sourceContext", "rubric", "provenance"].includes(key)) {
       throw new Error(`unknown field at case: ${key}`);
@@ -32,15 +30,13 @@ export function parseBenchmarkCase(value: unknown): BenchmarkCase {
     return item;
   };
   const rubricRaw = raw.rubric;
-  if (typeof rubricRaw !== "object" || rubricRaw === null || Array.isArray(rubricRaw)) {
-    throw new Error("rubric must be a JSON object");
-  }
-  for (const key of Object.keys(rubricRaw)) {
+  assertPlainJsonRecord(rubricRaw, "rubric");
+  for (const key of Object.keys(rubricRaw as Record<string, unknown>)) {
     if (!["rubricId", "rubricVersion"].includes(key)) {
       throw new Error(`unknown field at case.rubric: ${key}`);
     }
   }
-  const rubric = rubricRaw as Record<string, unknown>;
+  const rubric = ownProperties(rubricRaw as Record<string, unknown>);
 
   return Object.freeze({
     caseVersion: "1",
@@ -55,6 +51,40 @@ export function parseBenchmarkCase(value: unknown): BenchmarkCase {
     }),
     provenance: requireString("provenance", raw.provenance),
   });
+}
+
+function assertPlainJsonRecord(value: unknown, path: string): void {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(`${path} must be a JSON object`);
+  }
+  const prototype: unknown = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new Error(`${path} must be a plain JSON object`);
+  }
+}
+
+function ownProperties(value: Record<string, unknown>): Record<string, unknown> {
+  const own: Record<string, unknown> = {};
+  for (const key of Object.keys(value)) {
+    own[key] = value[key];
+  }
+  return own;
+}
+
+/** Parses and freezes a case collection, rejecting duplicate case IDs. */
+export function defineCaseSet(values: readonly unknown[]): readonly BenchmarkCase[] {
+  const seen = new Set<string>();
+  const cases = values.map((value) => {
+    const parsed = value !== null && typeof value === "object" && Object.isFrozen(value)
+      ? parseBenchmarkCase(JSON.parse(JSON.stringify(value)))
+      : parseBenchmarkCase(value);
+    if (seen.has(parsed.caseId)) {
+      throw new Error(`duplicate case ID ${parsed.caseId}`);
+    }
+    seen.add(parsed.caseId);
+    return parsed;
+  });
+  return Object.freeze(cases);
 }
 
 export function benchmarkCaseHash(benchmarkCase: BenchmarkCase): string {

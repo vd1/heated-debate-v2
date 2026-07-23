@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import {
   benchmarkCaseHash,
+  defineCaseSet,
   FIXTURE_CASES,
   parseBenchmarkCase,
 } from "../../src/domain/cases";
@@ -62,5 +63,30 @@ describe("benchmark cases", () => {
       // Round-trips through the untrusted parser unchanged.
       expect(parseBenchmarkCase(JSON.parse(JSON.stringify(fixture)))).toEqual(fixture);
     }
+  });
+});
+
+describe("case-set boundary and prototype hardening", () => {
+  test("rejects duplicate case IDs across separately parsed cases", () => {
+    expect(() => defineCaseSet([MINIMAL, { ...MINIMAL, topic: "Other topic." }])).toThrow(
+      "duplicate case ID case-queue",
+    );
+    expect(defineCaseSet([MINIMAL])).toHaveLength(1);
+    expect(defineCaseSet(FIXTURE_CASES)).toHaveLength(3);
+  });
+
+  test("rejects prototype-backed required fields", () => {
+    const inherited = Object.create({
+      caseVersion: "1",
+      caseId: "inherited-id",
+      topic: "Inherited topic",
+      rubric: { rubricId: "r", rubricVersion: "1" },
+      provenance: "p",
+    }) as Record<string, unknown>;
+    expect(() => parseBenchmarkCase(inherited)).toThrow("case must be a plain JSON object");
+    expect(() => parseBenchmarkCase({
+      ...MINIMAL,
+      rubric: Object.create({ rubricId: "r", rubricVersion: "1" }) as Record<string, unknown>,
+    })).toThrow("rubric must be a plain JSON object");
   });
 });

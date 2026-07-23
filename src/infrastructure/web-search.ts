@@ -40,10 +40,19 @@ export function createHttpWebSearchPort(options: HttpWebSearchPortOptions): WebS
   // Provenance must stay credential-free: origin and path only.
   const provenanceEndpoint = `${endpoint.origin}${endpoint.pathname}`;
   // Redact the header key plus every credential the configured endpoint carries.
+  const rawQueryValues = endpoint.search
+    .replace(/^\?/, "")
+    .split("&")
+    .map((pair) => pair.split("=")[1])
+    .filter((item): item is string => item !== undefined);
   const redactionValues = [
     options.apiKey,
+    // Both the percent-encoded and decoded forms of every endpoint credential.
+    endpoint.username === "" ? undefined : endpoint.username,
     endpoint.username === "" ? undefined : decodeURIComponent(endpoint.username),
+    endpoint.password === "" ? undefined : endpoint.password,
     endpoint.password === "" ? undefined : decodeURIComponent(endpoint.password),
+    ...rawQueryValues,
     ...[...endpoint.searchParams.values()],
   ].filter((value): value is string => value !== undefined && value.length > 0);
   const redact = (message: string): string => redactionValues.reduce(

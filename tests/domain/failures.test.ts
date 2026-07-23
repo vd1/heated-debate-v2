@@ -390,6 +390,30 @@ describe("runDebate failure semantics", () => {
     expect(reviewer.calls).toBe(0);
   });
 
+  test("snapshots experiment identity against caller mutation and validates it", async () => {
+    const experiment = { configHash: "a".repeat(64), caseId: "case-7" };
+    const proposer = new ScenarioAgent(() => {
+      experiment.configHash = "b".repeat(64);
+      return Promise.resolve(reply("Proposal"));
+    });
+    const reviewer = new ScenarioAgent(() => Promise.resolve(reply("Review")));
+    const sink = new MemorySink();
+
+    const result = await runDebate(debateInput(proposer, reviewer, sink, { experiment }));
+
+    const started = sink.events[0];
+    if (started?.type !== "run.started") throw new Error("missing run start");
+    expect(started.data.experiment?.configHash).toBe("a".repeat(64));
+    expect(result.experiment?.configHash).toBe("a".repeat(64));
+
+    expect(await rejectionMessage(runDebate(debateInput(
+      new ScenarioAgent(() => Promise.resolve(reply("x"))),
+      new ScenarioAgent(() => Promise.resolve(reply("y"))),
+      new MemorySink(),
+      { experiment: { configHash: "not-a-hash" } },
+    )))).toBe("experiment.configHash must be a sha256 hex digest");
+  });
+
   test("records experiment identity in run.started", async () => {
     const proposer = new ScenarioAgent(() => Promise.resolve(reply("Proposal")));
     const reviewer = new ScenarioAgent(() => Promise.resolve(reply("Review")));

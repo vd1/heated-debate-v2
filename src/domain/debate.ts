@@ -137,6 +137,20 @@ export async function runDebate(input: RunDebateInput): Promise<DebateResult> {
   validateLimits(input);
   const proposerAgent = input.proposer.agent;
   const reviewerAgent = input.reviewer.agent;
+  const experiment = input.experiment === undefined
+    ? null
+    : Object.freeze({
+        configHash: input.experiment.configHash,
+        caseId: input.experiment.caseId ?? null,
+      });
+  if (experiment !== null) {
+    if (!/^[0-9a-f]{64}$/.test(experiment.configHash)) {
+      throw new Error("experiment.configHash must be a sha256 hex digest");
+    }
+    if (experiment.caseId !== null && experiment.caseId.trim().length === 0) {
+      throw new Error("experiment.caseId must be non-empty when present");
+    }
+  }
   const monetary = input.budget?.monetary === undefined
     ? undefined
     : Object.freeze({
@@ -268,9 +282,7 @@ export async function runDebate(input: RunDebateInput): Promise<DebateResult> {
           topic: input.topic,
           roundCount: input.roundCount,
           controls: structuredClone(runControls),
-          experiment: input.experiment === undefined
-            ? null
-            : { configHash: input.experiment.configHash, caseId: input.experiment.caseId ?? null },
+          experiment: experiment === null ? null : { ...experiment },
         },
       }, true);
     }
@@ -426,12 +438,7 @@ export async function runDebate(input: RunDebateInput): Promise<DebateResult> {
     const result: DebateResult = Object.freeze({
       ...scheduledResult,
       controls: runControls,
-      experiment: input.experiment === undefined
-        ? null
-        : Object.freeze({
-            configHash: input.experiment.configHash,
-            caseId: input.experiment.caseId ?? null,
-          }),
+      experiment,
     });
     if (input.recording) {
       await emit({
