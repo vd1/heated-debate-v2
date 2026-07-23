@@ -158,7 +158,9 @@ export function experimentDebateInput(
     debateId: config.runId,
     topic: config.topic,
     roundCount: config.roundCount,
+    protocol: structuredClone(config.protocol),
     creativitySchedule: structuredClone(config.creativitySchedule),
+    contextPolicy: structuredClone(config.contextPolicy),
     experiment: {
       configHash: experimentConfigHash(config),
       ...(config.caseId === undefined ? {} : { caseId: config.caseId }),

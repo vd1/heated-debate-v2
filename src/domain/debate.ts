@@ -110,8 +110,10 @@ export interface RunDebateInput {
   reviewer: ExchangeParticipant;
   /** Immutable experiment-config identity recorded in run.started. */
   experiment?: { configHash: string; caseId?: string };
-  /** Validated creativity-schedule selection; only linear-cooling@1 is implemented. */
+  /** Selected identities, resolved to implementations by the scheduler. */
+  protocol?: { protocolId: string; protocolVersion: string };
   creativitySchedule?: { scheduleId: string; scheduleVersion: string };
+  contextPolicy?: { policyId: string; policyVersion: string };
   recording?: DebateRecording;
   signal?: AbortSignal;
   signalFailureCode?: "cancelled" | "run_timeout";
@@ -173,17 +175,17 @@ export async function runDebate(input: RunDebateInput): Promise<DebateResult> {
         snapshotHash: pricingSnapshotHash(monetary.snapshot),
         permitTokenOnlyAccounting: monetary.permitTokenOnlyAccounting,
       }));
-  if (input.creativitySchedule !== undefined
-    && (input.creativitySchedule.scheduleId !== "linear-cooling"
-      || input.creativitySchedule.scheduleVersion !== "1")) {
-    throw new Error("creativitySchedule must be linear-cooling@1");
-  }
   const scheduler = new DebateScheduler({
     debateId: input.debateId,
     topic: input.topic,
     roundCount: input.roundCount,
     proposer: input.proposer,
     reviewer: input.reviewer,
+    ...(input.protocol === undefined ? {} : { protocol: input.protocol }),
+    ...(input.creativitySchedule === undefined
+      ? {}
+      : { creativitySchedule: input.creativitySchedule }),
+    ...(input.contextPolicy === undefined ? {} : { contextPolicy: input.contextPolicy }),
   });
   let sequence = 0;
   let terminalEmitted = false;

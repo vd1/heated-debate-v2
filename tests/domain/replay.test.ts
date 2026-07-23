@@ -1097,3 +1097,45 @@ describe("replay tool-loop guarantee reporting", () => {
     expect(full.toolReplayGuarantee).toBe("no-tool-calls");
   });
 });
+
+describe("replay experiment identity", () => {
+  function experimentRun(hash: string, caseId: string | null): CanonicalEvent[] {
+    const events = recordedRun();
+    const start = events[0];
+    if (start?.type !== "run.started") throw new Error("bad fixture");
+    start.data = { ...start.data, experiment: { configHash: hash, caseId } };
+    return events;
+  }
+
+  test("compares recorded experiment identity when the configuration states one", async () => {
+    const hash = "a".repeat(64);
+    const ok = await replayCanonicalRun({
+      events: experimentRun(hash, "case-a"),
+      configuration: { ...CONFIGURATION, experiment: { configHash: hash, caseId: "case-a" } },
+    });
+    expect(ok.requests).toHaveLength(2);
+
+    expect(await rejectionMessage(replayCanonicalRun({
+      events: experimentRun("b".repeat(64), "case-a"),
+      configuration: { ...CONFIGURATION, experiment: { configHash: hash, caseId: "case-a" } },
+    }))).toBe("replay drift for run-1 at experiment.configHash");
+
+    expect(await rejectionMessage(replayCanonicalRun({
+      events: experimentRun(hash, "case-b"),
+      configuration: { ...CONFIGURATION, experiment: { configHash: hash, caseId: "case-a" } },
+    }))).toBe("replay drift for run-1 at experiment.caseId");
+
+    // A migrated artifact with no recorded identity drifts against an expectation.
+    expect(await rejectionMessage(replayCanonicalRun({
+      events: recordedRun(),
+      configuration: { ...CONFIGURATION, experiment: { configHash: hash } },
+    }))).toBe("replay drift for run-1 at experiment");
+
+    // Without an expectation, historical artifacts stay replayable.
+    const historical = await replayCanonicalRun({
+      events: recordedRun(),
+      configuration: CONFIGURATION,
+    });
+    expect(historical.requests).toHaveLength(2);
+  });
+});

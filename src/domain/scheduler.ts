@@ -29,6 +29,9 @@ export interface DebateSchedulerInput {
   roundCount: number;
   proposer: ScheduledParticipant;
   reviewer: ScheduledParticipant;
+  protocol?: { protocolId: string; protocolVersion: string };
+  creativitySchedule?: { scheduleId: string; scheduleVersion: string };
+  contextPolicy?: { policyId: string; policyVersion: string };
 }
 
 export interface ScheduledTurn {
@@ -58,6 +61,28 @@ export class DebateScheduler {
   constructor(input: DebateSchedulerInput) {
     if (!Number.isInteger(input.roundCount) || input.roundCount <= 0) {
       throw new Error("roundCount must be a positive integer");
+    }
+    // Selected identities resolve to implementations here; unknown selections
+    // fail instead of silently falling back to a different implementation.
+    const protocol = input.protocol ?? { protocolId: "proposer-reviewer", protocolVersion: "1" };
+    if (protocol.protocolId !== "proposer-reviewer" || protocol.protocolVersion !== "1") {
+      throw new Error(
+        `protocol ${protocol.protocolId}@${protocol.protocolVersion} is not implemented`,
+      );
+    }
+    const schedule = input.creativitySchedule
+      ?? { scheduleId: "linear-cooling", scheduleVersion: "1" };
+    if (schedule.scheduleId !== "linear-cooling" || schedule.scheduleVersion !== "1") {
+      throw new Error(
+        `creativitySchedule ${schedule.scheduleId}@${schedule.scheduleVersion} is not implemented`,
+      );
+    }
+    const contextPolicy = input.contextPolicy
+      ?? { policyId: "last-exchange", policyVersion: "1" };
+    if (contextPolicy.policyId !== "last-exchange" || contextPolicy.policyVersion !== "1") {
+      throw new Error(
+        `contextPolicy ${contextPolicy.policyId}@${contextPolicy.policyVersion} is not implemented`,
+      );
     }
     this.debateId = input.debateId;
     this.topic = input.topic;

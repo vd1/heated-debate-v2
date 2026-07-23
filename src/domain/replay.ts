@@ -34,6 +34,8 @@ export interface ReplayParticipantConfiguration {
 }
 
 export interface ReplayConfiguration {
+  /** Expected experiment identity; compared against recorded evidence when set. */
+  experiment?: { configHash: string; caseId?: string };
   debateId: string;
   topic: string;
   roundCount: number;
@@ -135,6 +137,12 @@ async function replayCanonicalRunInternal(input: ReplayCanonicalRunInput): Promi
     });
   }
 
+  if (configuration.experiment !== undefined) {
+    assertNoDrift(trace.runId, trace.experiment, {
+      configHash: configuration.experiment.configHash,
+      caseId: configuration.experiment.caseId ?? null,
+    }, "experiment");
+  }
   const scheduler = new DebateScheduler(configuration);
   const reconstructed: DeepReadonly<TurnRequest>[] = [];
   let guarantee: ToolReplayGuarantee = "no-tool-calls";
@@ -252,6 +260,7 @@ function readSuccessfulTrace(events: readonly CanonicalEvent[]): {
   roundCount: number;
   controls: CanonicalRunControls;
   turns: RecordedTurn[];
+  experiment: { configHash: string; caseId: string | null } | null;
 } {
   const first = events[0];
   if (first?.type !== "run.started") throw new Error("canonical replay must start with run.started");
@@ -337,6 +346,7 @@ function readSuccessfulTrace(events: readonly CanonicalEvent[]): {
 
   return {
     runId: first.runId,
+    experiment: structuredClone(first.data.experiment),
     debateId: first.data.debateId,
     topic: first.data.topic,
     roundCount: first.data.roundCount,

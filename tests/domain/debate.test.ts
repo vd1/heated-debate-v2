@@ -8,6 +8,7 @@ import {
   type ScriptedReply,
 } from "../../src/domain/agent";
 import { runDebate } from "../../src/domain/debate";
+import { DebateScheduler } from "../../src/domain/scheduler";
 import type { ExchangeParticipant } from "../../src/domain/exchange";
 import { PROPOSER_ROLE, REVIEWER_ROLE } from "../../src/domain/roles";
 import type { ToolCapabilityPolicy } from "../../src/domain/tool-policy";
@@ -232,5 +233,40 @@ describe("runDebate", () => {
       expect((error as Error).message).toBe("roundCount must be a positive integer");
     }
     expect(order).toEqual([]);
+  });
+});
+
+describe("scheduler identity resolution", () => {
+  const participant = {
+    role: PROPOSER_ROLE,
+    controls: PROPOSER_CONTROLS,
+  };
+  const base = {
+    debateId: "d",
+    topic: "t",
+    roundCount: 1,
+    proposer: participant,
+    reviewer: { role: REVIEWER_ROLE, controls: REVIEWER_CONTROLS },
+  };
+
+  test("rejects selections that no implementation resolves", () => {
+    expect(() => new DebateScheduler({
+      ...base,
+      creativitySchedule: { scheduleId: "step", scheduleVersion: "1" },
+    })).toThrow("creativitySchedule step@1 is not implemented");
+    expect(() => new DebateScheduler({
+      ...base,
+      contextPolicy: { policyId: "full-history", policyVersion: "1" },
+    })).toThrow("contextPolicy full-history@1 is not implemented");
+    expect(() => new DebateScheduler({
+      ...base,
+      protocol: { protocolId: "panel", protocolVersion: "1" },
+    })).toThrow("protocol panel@1 is not implemented");
+    expect(new DebateScheduler({
+      ...base,
+      protocol: { protocolId: "proposer-reviewer", protocolVersion: "1" },
+      creativitySchedule: { scheduleId: "linear-cooling", scheduleVersion: "1" },
+      contextPolicy: { policyId: "last-exchange", policyVersion: "1" },
+    }).nextTurn()?.request.creativity.scheduleId).toBe("linear-cooling");
   });
 });

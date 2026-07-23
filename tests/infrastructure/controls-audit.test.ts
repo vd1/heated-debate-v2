@@ -180,15 +180,14 @@ describe("D-CONTROLS end-to-end propagation audit", () => {
   });
 
   test("creativity materializes as an exact prompt instruction without provider verification", async () => {
-    const { events, calls } = await auditRun({
-      ...BASE,
-      creativitySchedule: { scheduleId: "linear-cooling", scheduleVersion: "1" },
-    });
+    const selection = { scheduleId: "linear-cooling" as const, scheduleVersion: "1" as const };
+    const parsed = parseExperimentConfig({ ...BASE, creativitySchedule: selection });
+    const { events, calls } = await auditRun({ ...BASE, creativitySchedule: selection });
 
     const request = firstRequested(events);
-    // The identity selected in config is the identity that reaches the request.
-    expect(request.creativity.scheduleId).toBe("linear-cooling");
-    expect(request.creativity.scheduleVersion).toBe("1");
+    // The parsed selection that entered the run is the identity in the request.
+    expect(request.creativity.scheduleId).toBe(parsed.creativitySchedule.scheduleId);
+    expect(request.creativity.scheduleVersion).toBe(parsed.creativitySchedule.scheduleVersion);
     expect(request.creativity.level).toBe(5);
     const message = request.context.messages[0];
     if (!message) throw new Error("missing model input");
