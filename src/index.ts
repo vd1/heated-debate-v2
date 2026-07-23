@@ -22,6 +22,7 @@ export * from "./domain/tool-policy";
 export * from "./domain/web-search";
 export * from "./infrastructure/jsonl-events";
 export * from "./infrastructure/pi-agent";
+export * from "./infrastructure/judge";
 export * from "./infrastructure/study-runner";
 export * from "./infrastructure/web-search";
 
