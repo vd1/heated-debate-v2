@@ -1,13 +1,13 @@
 # Implementation concerns for Fable
 
-Status: concerns 1-33, 36, 42, and 44 are resolved. Concerns 34, 35, 37, 38,
-40, 41, and 43 are partially resolved. Concerns 39, 45, and 46 are open.
+Status: concerns 1-33, 36, 38, 42, and 44 are resolved. Concerns 34, 35, 37,
+39-41, 43, 45, and 46 are partially resolved. Concerns 47-50 are open.
 
-Updated on 2026-07-23 after reviewing through commit `3abf0f4`.
+Updated on 2026-07-23 after reviewing through commit `8c37ed0`.
 
-Clean full validation at `3abf0f4`:
+Clean full validation at `8c37ed0`:
 
-- `bun test tests`: 285 passed, 4 skipped, 0 failed.
+- `bun test tests`: 306 passed, 5 skipped, 0 failed.
 - `bun run typecheck`: passed.
 - `bun run lint`: passed.
 
@@ -15,294 +15,351 @@ Passing checks do not cover the focused counterexamples below. The contracts in
 `plans/implementation-plan.md` and `plans/implementation-plan-review.md` remain the acceptance
 baseline.
 
-## Resolved in the latest batches
+## Progress accepted in this batch
 
-- Concern 27: `ReplayResult.experimentGuarantee` now distinguishes `verified`, `unverified`,
-  and `legacy-absent`.
-- Concern 36: matrix purpose is checked against the holdout-use policy, selection excludes
-  holdouts, and final evaluation uses only the declared baseline point.
-- Concern 42: the local smoke now checks exact identity and controls and links usage to a
-  versioned zero-API-price snapshot whose scope excludes hardware cost.
-- Concern 44: a missing same-role comparison population is unavailable, and evaluator
-  configuration contributes to result identity.
+- Study dimensions and values are normalized before hashing. Baseline coverage, fixed scalar
+  controls, accessors, caller-array freezing, tool-policy structure, arbitrary variant keys, and
+  nested run-spec freezing have been addressed.
+- Matrix declaration reordering is now tested. Concern 38 is resolved; duplicate-identity handling remains
+  under concern 37.
+- A real infrastructure study runner now creates per-run configurations, agents, sinks, claims,
+  reservations, and domain runs.
+- Deterministic evaluator results now contain run-qualified evidence, unavailable-result
+  metadata, terminal evidence for completed and failed runs, and mixed missing-usage detection.
+- Judge output unknown fields and undeclared dimensions are reported, and evaluation-record
+  outcomes are derived from raw responses instead of accepted from callers.
 
-## Open concerns
+## Current concerns
 
-### 34. Preregistration fields exist, but the execution attestation and some policies are not enforced
-
-Severity: high
-
-Status: partially resolved by `d159e48`.
-
-The required policy fields now exist in `StudySpec` and contribute to its hash. Case ordering,
-baseline selection, holdout use, and failure handling have consumers. The attestation helper now
-returns the spec hash, commit text, cleanliness result, and development mode.
-
-The study executor does not require or persist that attestation. A caller can invoke
-`executeStudyRuns` without calling `assertPreregisteredStudy`, and the helper accepts an empty
-commit string as committed evidence when `cleanWorktree` is true. `samplerSeed`,
-`unknownCostPolicy`, and aggregate cost policy have no execution effect. Reward scalarization is
-stored for its later milestone but is not yet resolved at an execution boundary.
-
-Acceptance check: make the real study-execution boundary require a validated attestation and
-record it with every run. Validate commit evidence as a non-empty immutable identity. Consume
-each policy at the boundary that implements it, especially unknown-cost handling and aggregate
-cost accounting.
-
-### 35. Study-spec parsing still accepts invalid parameter points and unsafe object shapes
+### 34. Preregistration is required by API shape but is neither unforgeable nor fully persisted
 
 Severity: high
 
-Status: partially resolved by `d159e48`.
+Status: partially resolved by `4eb2174` and `6008c35`.
 
-Nested exact-field checks, duplicate dimension/value checks, fixed-versus-varied overlap checks,
-and scalar parsers for several dimensions are now present. Remaining counterexamples at
-`3abf0f4` include:
+`executeStudy` now requires an attestation and checks its spec hash. It does not validate the
+attestation's mode, commit, or cleanliness. A manually constructed invalid object with a matching
+`specHash` is accepted. The attestation is returned in the in-memory report but is not recorded
+in each run artifact.
+
+The study spec also still lacks the E-RELIABILITY design decisions that the review requires to be
+fixed before collection: judges, candidate/model strata, permutations, blinding labels,
+statistic versions, and thresholds for self-preference and judge disagreement. `samplerSeed`
+exists but is not consumed by a sampler.
+
+Acceptance check: validate the complete attestation at the execution boundary and persist its
+spec hash, commit, cleanliness, and mode in artifact evidence. Extend preregistration to the full
+reliability design, then make the collector derive its sampling plan from those hashed fields.
+
+### 35. Study parameter validation still does not describe a complete executable run configuration
+
+Severity: high
+
+Status: partially resolved by `a9ca2b8`.
+
+Fixed values now accept only `roundCount` and matrix-eligible global controls. Model assignments,
+per-role controls, protocol/context selections, and participant capabilities are not expressible
+as the fixed run configuration described by the plan. The executor consequently relies on
+`ExperimentConfig` defaults for those choices.
+
+Tool-policy structure is validated, but its execution binding is not. Any valid reviewer-bound
+policy passes study parsing, while `runConfigForSpecification` always installs the single
+`toolCapabilityPolicy` on the proposer. The error appears only when the later experiment config
+is built. Cross-field feasibility between sample counts, run limits, cases, repetitions, and
+model pricing also remains unchecked.
+
+Acceptance check: represent and parse a complete fixed `ExperimentConfig` base, then apply a
+validated parameter point to it. Model capabilities per participant rather than as one ambiguous
+global policy. Build and validate every possible parameter point during study preflight, and
+reject infeasible sample/run/budget combinations before matrix execution.
+
+### 37. Short run identities allow a completed artifact from another spec to be resumed
+
+Severity: critical
+
+Status: partially resolved by `a9ca2b8`.
+
+Variant keys are now derived from validated points, full hashes remain in `RunSpecification`, and
+run specs are deeply frozen. The run ID still contains only 12 hexadecimal characters of the
+spec and case hashes. The new test-supplied-digest test does not create or reject a duplicate
+identity; it supplies one prefix to a single spec and confirms that other identity segments
+remain distinct.
+
+A focused cross-spec reproduction generated two specs with different full hashes, supplied the
+same digest, and executed the first spec into a run-ID-keyed store. Executing the second spec
+accepted every first-spec artifact as complete:
 
 ```json
 {
-  "missingBaselineAccepted": {"thinkingLevel": "low"},
-  "invalidFixedAccepted": {"roundCount": -9, "thinkingLevel": "cold"},
-  "invalidToolPolicyValuesAccepted": [{"garbage": 1}, {"garbage": 2}],
-  "getterAcceptedAndInvoked": true,
-  "callerHypothesesArrayFrozen": true,
-  "reorderedSemanticSpecHashesEqual": false
+  "fullSpecHashesDiffer": true,
+  "runIdsEqual": true,
+  "agentsCreatedForSecond": 0,
+  "secondSkipped": 2
 }
 ```
 
-More specifically:
+The artifact records neither the full study-spec hash nor full case hash. Its experiment config
+hash is also identical when the colliding specs differ only in study metadata such as a
+hypothesis. The executor's current check of `run.specHash` validates the new matrix object, not
+the old stored artifact.
 
-- `baseline` may omit a varied dimension. Parsing succeeds and final matrix generation fails
-  later.
-- `fixedParameters` is an arbitrary record, so invalid run controls are accepted.
-- `toolCapabilityPolicy` values are only cloned records. They never pass the existing tool-policy
-  validator or binding checks.
-- The only accepted creativity schedule is `linear-cooling@1`, while a varied dimension requires
-  distinct values. That advertised matrix dimension cannot currently vary.
-- Plain-prototype checks do not reject own accessors. Parsing invoked an enumerable rubric
-  getter.
-- `stringArray` returns caller arrays. Deep freezing the result consequently froze the caller's
-  `hypotheses` array.
-- Cross-field feasibility is not checked, including baseline coverage, sample count versus
-  possible runs, run limits, and model/pricing compatibility.
+Acceptance check: put full spec and case identities into canonical run-start evidence and compare
+them during resume. Use a bounded path digest only as a locator, never as the stored identity.
+Make a test execute spec A, supply an overlapping locator for spec B, and prove that B rejects A's
+artifact.
 
-Acceptance check: parse fixed parameters through the run-configuration schema, validate complete
-baseline coverage during spec parsing, use the existing tool-policy validator with role/phase
-bindings, and either provide multiple valid creativity schedules or remove that varied
-dimension. Reject accessors and defensively clone every input before freezing. Normalize
-semantically unordered search-space declarations before hashing and add cross-field feasibility
-tests.
+### 39. The study runner does not yet validate, publish, and clean up artifacts safely
 
-### 37. Matrix identity is stronger but still lacks collision handling and full derivation checks
+Severity: critical
+
+Status: partially resolved by `6008c35`.
+
+The new runner owns the major execution pieces, but `validateArtifact` checks only the first
+event, last event, non-null experiment identity, and priceable attempts. It never calls
+`validateCanonicalSequence`, never compares the recorded experiment hash/case ID to the expected
+per-run configuration, and never checks all event envelope run IDs. Malformed middle events and
+mismatched event envelopes can therefore be resumed.
+
+Publication occurs before post-run validation. If validation then fails, `discard()` is asked to
+remove temporary output even though `publish()` may already have installed the final artifact.
+The store contract does not require removal of that published final.
+
+Claim acquisition, `openSink`, and `createAgents` occur before the `try/finally`. A sink-open or
+agent-factory failure strands the claim and reservation. Within the `finally`, a throwing first
+agent disposal prevents disposal of the second agent and claim release.
+
+All domain failures are discarded, including a valid terminal `run.failed` artifact. The runner
+therefore loses retry usage, cannot distinguish terminal failure from retryable interruption on
+resume, and may pay for the same terminal failure again.
+
+Acceptance check: validate the full canonical sequence and exact expected experiment, spec, case,
+and run identities before resume or publication. Validate the temporary artifact before atomic
+rename. Enclose every post-reservation step in nested cleanup that cannot skip later releases.
+Persist terminal failure artifacts and define which failure states are retryable.
+
+### 40. Failed-run spend and returned model identity are missing from aggregate accounting
+
+Severity: critical
+
+Status: partially resolved by `6008c35`.
+
+Run-count limits, per-run budgets, prior completed cost, declared maximum reservation, and
+unknown-cost policy now have consumers. Aggregate cost is updated only after a completed
+artifact is published. A provider failure can contain charged attempts, but its temporary
+artifact is discarded and its reservation is released without adding observed spend. Repeated
+failed runs can therefore exceed the aggregate monetary ceiling.
+
+Resume also returns successfully when already-completed cost exceeds `maxTotalAmount`; the
+ceiling only prevents another dispatch. Historical pricing uses the model from
+`turn.requested`, not the returned model identity recorded by `turn.completed`, so an alias or
+provider substitution can be charged at the wrong rate. Failed attempts have no per-attempt
+model identity at all.
+
+Acceptance check: retain and price attempt evidence from every completed and failed run, charge
+it before releasing the reservation, and reject prior spend beyond the aggregate budget. Persist
+the effective model identity for every attempt or define an explicit validated alias rule.
+Table-test a paid failed attempt followed by continuation and a returned-model pricing mismatch.
+
+### 41. Artifact path overlap and full-identity validation remain delegated to an unimplemented store
 
 Severity: high
 
-Status: partially resolved by `d159e48`.
+Status: partially resolved by `19cb73d`.
 
-Run specifications now retain the full spec and case hashes, use canonical typed values, and use
-zero-based repetitions. Case content therefore contributes to identity.
+`artifactPathForRun` is unchanged. A constant test-supplied digest still maps the
+slash-versus-underscore pair to the same path, its field check ignores full hashes and
+parameters, and its full sanitized variant directory can exceed a filesystem component limit.
 
-The run ID still contains only 12 hexadecimal characters from each spec and case hash, and
-neither hash dependency is injectable for collision tests. The public `studyRunId` also accepts
-an arbitrary externally supplied `variantKey`; this produced a valid run ID for
-`nonsense=true`, even though that point is absent from the study search space.
+`StudyArtifactStore` is only an interface. The in-memory test store keys solely by `runId`, which
+is exactly how the cross-spec identity overlap in concern 37 was reproduced. No production store
+demonstrates bounded deterministic mapping, exclusive worker leases, temporary-directory
+publication, identity comparison on overlap, or crash recovery.
 
-The run specification is not validated as a complete identity preimage. In particular, a final
-evaluation containing an object-valued baseline clones that object and freezes only the outer
-parameter record, so nested mutation can make executable parameters diverge from `variantKey`.
+Acceptance check: implement and test the real filesystem store. Use bounded locator components,
+exclusive worker leases, temporary output plus sync/rename, full stored-identity comparison, and
+stale-lease recovery. Supply an overlapping locator in a test and fail closed.
 
-Acceptance check: derive the variant key internally from a validated parameter point, validate
-the full point against fixed and varied declarations, and deep-freeze the complete run
-specification. Inject identity digests in tests and fail explicitly when distinct preimages
-collide. Either put full hashes in the ID or prove short-ID collision detection at matrix and
-resume boundaries.
+### 43. The shared evaluator port is still not a contract the judge implements
 
-### 38. Stable matrix output does not yet cover reordered semantic inputs or invalid combinations
+Severity: high
+
+Status: partially resolved by `4eb2174` and `8a02bc8`.
+
+`EvaluatorPort.evaluate` is synchronous and returns `EvaluationResult`. The judge's `evaluate` is
+asynchronous and returns `Promise<JudgeEvaluation>`, so the new judge is not assignable to or
+declared as `EvaluatorPort`. It shares only the result data type.
+
+Configuration validation remains evaluator-dependent. `evaluateCompletion` accepted
+`latencyTargetMs: Infinity` and `-Infinity`; both produced the same configuration ID. An
+artifact prefix with all turns completed but no terminal event still produced a known
+completion score of `0.5`:
+
+```json
+{
+  "status": "known",
+  "detail": "2 of 2 turns completed; terminal run.failed or missing"
+}
+```
+
+This conflicts with the rule that completion comes from terminal evidence. Configuration hashes
+also remain 12-character prefixes.
+
+Acceptance check: define an asynchronous generic evaluator port whose result and record types are
+explicit. Validate and snapshot each evaluator's full configuration before hashing, keep its
+full identity, and reject unsupported values even when a particular evaluator does not use that
+field. Return unavailable for a missing terminal event.
+
+### 45. Judge-output exactness improved, but evidence validation is optional
 
 Severity: medium
 
-Status: partially resolved by `d159e48`.
+Status: partially resolved by `4eb2174`.
 
-Variants are sorted by canonical typed key, repetitions are zero-based, and case ordering follows
-the declared policy. The tests still repeat identical input rather than reorder it.
+Unknown outer fields, undeclared dimensions, and unknown entry fields are now reported.
+`sourceText` remains optional in both `parseJudgeOutput` and `createEvaluationRecord`. A
+quote-required outcome containing fabricated text was valid when the caller omitted
+`sourceText`. For a dimension with `requiredEvidence: "none"`, a numeric `evidence` field was
+silently dropped and the result remained valid. Duplicate JSON object keys still receive normal
+`JSON.parse` last-key-wins behavior.
 
-Reversing varied-dimension declarations and each dimension's values produced a different
-`studySpecHash` and therefore different run IDs for the same Cartesian search space. No test
-injects hash collisions or exercises invalid combinations across multiple dimensions.
+Acceptance check: require declared source evidence whenever any rubric dimension requires a
+quote. Reject a present evidence field unless it has the declared representation, and select a
+documented duplicate-key policy rather than silently accepting the last value.
 
-Acceptance check: decide and document which list orders are semantic. Canonically normalize
-unordered dimension/value declarations before hashing, then test reordered case definitions,
-dimensions, and values. Add cross-dimension compatibility and injected-collision tests and pin
-the exact output order.
-
-### 39. D-EXECUTOR is still a callback scheduler rather than the required run executor
-
-Severity: high
-
-Status: open after `d159e48`.
-
-`executeStudyRuns` validates a run's `specHash`, derives run-count and failure limits from the
-spec, asks a callback for artifact state, optionally asks another callback for a claim, and then
-invokes a caller-supplied `execute(run)`.
-
-It still does not:
-
-- construct a validated `ExperimentConfig` from the run specification;
-- create fresh scripted agents and a `JsonlEventWriter`;
-- call `runDebate`;
-- own the artifact root, temporary output, terminal validation, final publication, or cleanup;
-- validate resume artifacts itself;
-- require an atomic claim or release claims and resources on every path;
-- distinguish a competing claim or retryable interruption from a terminal run failure.
-
-Returning `"completed"` from `readArtifactState` skips a run without the executor seeing a
-terminal event or any recorded identity. This preserves the caller-trust shortcut that the
-executor acceptance notes prohibit.
-
-Acceptance check: implement the execution boundary described in the plan. It should own artifact
-reading and validation, fresh agent/writer factories, the domain runner, atomic claim and
-temporary publication, closure checks, and cleanup. Keep `executeMatrix` as a tested scheduling
-primitive if useful, but do not present it as D-EXECUTOR completion.
-
-### 40. Run-count limits improved, but monetary and per-run budget enforcement is absent
+### 46. Evaluation records still do not validate full controls, messages, or source linkage
 
 Severity: high
 
-Status: partially resolved by `d159e48`.
+Status: partially resolved by `4eb2174`.
 
-Validated completions within the supplied matrix now count against the minimum of
-`stoppingRules.maxRuns` and `budgets.maxTotalRuns`. Failure behavior also comes from the spec, and
-the comment declares at most `concurrency - 1` already-dispatched failures after the threshold.
+Outcome derivation, mutually exclusive parsed-outcome/failure state, basic identities, duplicate
+input references, message roles, and thinking taxonomy are now checked.
 
-`budgets.maxTotalAmount`, accumulated prior cost, per-run turn/token limits, pricing, and
-`unknownCostPolicy` never enter executor accounting. A focused spec with
-`maxTotalAmount: 0` and positive prices still dispatched and completed a run. There is no
-maximum-spend reservation before concurrent dispatch.
+A focused record still accepted:
 
-The public lower-level helper also accepts invalid direct limits. With
-`maxTotalRuns: -1` and `maxConsecutiveFailures: 0`, it returned a stopped report rather than
-rejecting the configuration. The documented concurrent failure overshoot has no test.
+- `temperature: NaN` and `maxOutputTokens: -5`;
+- a message with an undeclared `extra` field;
+- a fabricated quote because `sourceText` was omitted;
+- an opaque declared input unrelated to the source artifact.
 
-Acceptance check: pass the spec's per-run budget into the constructed domain run, validate prior
-artifact cost, and reserve each run's maximum declared amount before dispatch. Apply the
-preregistered unknown-cost policy and release reservations on every result. Test resume with
-prior spend, unknown prices, zero remaining amount, and the exact permitted in-flight failure
-overshoot. Validate all numeric inputs on any public scheduling primitive.
+The `NaN` survives in memory but canonical hashing serializes it as `null`, creating a duplicate
+identity. The record stores requested controls only, not the returned model identity or
+`ControlReport`.
 
-### 41. Artifact paths use a full digest but still do not handle injected collisions or validate identity
+Acceptance check: use the existing exact requested-control parser, exact message schema, and
+canonical JSON validator. Require declared input references to resolve to the source artifact
+hash. Store returned model and full control/usage evidence for an executed judge request.
 
-Severity: high
+### 47. E-JUDGE does not validate its source or preserve its executed identity and observability
 
-Status: partially resolved by `19cb73d`.
+Severity: critical
 
-The path now uses the complete SHA-256 run-ID digest and accepts a digest function for tests. The
-function does not detect a collision. Supplying a constant digest for the original
-slash-versus-underscore pair still produced identical paths.
+Status: open at `8a02bc8`.
 
-The field check only searches the run-ID text for `caseId`, `variantKey`, and the repetition
-suffix. It accepted a run whose `specHash`, `caseHash`, `holdout`, and `parameters` were all
-changed without changing the run ID. It neither reconstructs the expected ID nor checks an
-existing artifact's full identity before reuse. Large canonical variant keys can also exceed a
-filesystem component limit because the full sanitized key is a directory name.
+The judge accepts any event array whose first item is `run.started`; it does not call
+`validateCanonicalSequence`. Changing a `turn.completed` event's envelope to a mismatched run ID
+still produced a known judge result.
 
-Acceptance check: validate or reconstruct every encoded field from the complete run
-specification, use bounded path components, and compare a stored full identity before any
-existing path is trusted. Make the injected digest collision test fail closed rather than map
-distinct runs to one path.
+Judge options remain caller-owned after construction. Mutating `controls.thinkingLevel` from
+`high` to `low` after `createJudgeEvaluator` caused the first evaluator to execute `low` while
+retaining the configuration ID computed for `high`. A newly constructed evaluator executing the
+same `low` request produced a different configuration ID.
 
-### 43. The deterministic evaluator boundary still overstates evidence and is not shared with a judge
+The evaluation record retains requested controls but drops the reply's returned model,
+forwarded/adjusted/unsupported control report, attempts, usage, duration, and tool-policy
+evidence. Configuration identity excludes the exact prompt template, system role, creativity,
+context policy, deny-all policy, and returned identity. It uses insertion-order-sensitive
+`JSON.stringify` and a 12-character prefix.
 
-Severity: high
+If `createAgent()` rejects, no sanitized failure record is persisted because factory acquisition
+occurs before the `try`. A focused reproduction returned `Error: factory down` with zero records.
+Judge usage is dropped, so later reliability collection cannot enforce attempt-inclusive token
+or monetary budgets.
 
-Status: partially resolved by `19cb73d`.
+Acceptance check: validate a closed canonical source artifact, snapshot and validate all options
+at construction, and hash the complete semantic judge configuration canonically. Put agent
+acquisition and cleanup inside the failure-record lifecycle. Persist the reply identity, full
+control report, attempts, usage, latency, and policy evidence, and expose those facts to budget
+accounting.
 
-Known results now carry a configuration hash, range, direction, and event sequence numbers.
-One kind of partial usage and missing comparison populations are unavailable.
+### 48. E-RELIABILITY converts missing experimental populations into passing zero effects
 
-The declared `EvaluatorPort` is specific to `DeterministicEvaluatorOptions` and returns
-`DeterministicScore`, whose version is the literal `"3"`. A judge-backed evaluator cannot
-implement that port with its own validated configuration and evaluation result without
-pretending to be a deterministic evaluator.
+Severity: critical
 
-Evidence is also incomplete:
+Status: open at `8c37ed0`.
 
-- unavailable results omit range, direction, and evidence entirely;
-- evidence contains sequence numbers without the run ID;
-- completion evidence omits the terminal `run.completed` or `run.failed` event that determines
-  the score;
-- an attempt with entirely absent usage is ignored when another attempt has complete usage.
+The study spec does not preregister the required sampling design. `ReliabilitySample` has no
+candidate ID, repeated-measure group, permutation identity, blinded label, or dimensional score
+vector. Global score variance therefore mixes candidate difficulty with judge variability;
+unpaired means for ordering, self-preference, and judge disagreement can be confounded by
+different candidate strata.
 
-The last case produced a known total of 24 tokens from four attempt events whose usage objects
-were `{}`, `{inputTokens: 10, outputTokens: 2}`, `{}`, and
-`{inputTokens: 10, outputTokens: 2}`. The two missing attempts were not reported as unavailable.
+When a comparison population is absent, `analyzeReliability` returns zero. A focused artifact
+with four identical, forward-only samples from one judge was `accepted`; ordering bias,
+self-preference, and disagreement all appeared as zero. With
+`minimumSampleCount: 0`, an empty sample list was also `accepted`. Even an invalid runtime sample
+with empty model IDs and `ordering: "sideways"` was accepted by the analyzer.
 
-Configuration identity is computed before a shared configuration validator runs. For
-`evaluateCompletion`, invalid options containing `latencyTargetMs: NaN` and
-`latencyTargetMs: null` were both accepted and produced the same configuration ID.
+The artifact stores only sample IDs and scalar scores, losing the order assignments,
+judge/debater identities, randomized order, raw rubric vectors, and missing evaluations needed
+to reproduce the analysis. It has no thresholds for self-preference or disagreement.
+`assertAcceptedReliability` checks only `studySpecHash` and `status`; a manually constructed object containing
+just those matching fields passed the optimization gate.
 
-Acceptance check: define a genuinely shared generic evaluator result and port, with evaluator-
-specific validated configuration and a full versioned configuration identity. Give every result
-range, direction, and canonical `{runId, sequence}` evidence references, including terminal
-evidence for completion and relevant evidence for unavailable results. Treat any attempt missing
-required usage as unavailable, and table-test mixed complete/missing retries.
+Acceptance check: preregister and validate the complete sampling design and statistic versions.
+Represent missing comparison populations as unavailable and derive `rejected`. Preserve every
+sample's candidate/group identity, blinded permutation, judge/debater strata, raw dimension
+vector, evaluation-record hash, and failure. Reparse and recompute the artifact at the
+optimization gate, including exact rubric, judge prompt/model/controls, analysis version, and
+sampling design matches.
 
-### 45. The judge-output parser silently discards undeclared data
+### 49. The opt-in reliability collector corrupts event chronology and does not enforce study budgets
 
-Severity: high
+Severity: critical
 
-Status: open at `3abf0f4`.
+Status: open at `8c37ed0`.
 
-The E-RUBRIC review says unknown fields are rejected at every level, but that is true only for
-the rubric definition. `parseJudgeOutput` ignores unknown outer fields, undeclared dimensions,
-and unknown fields inside a dimension entry.
+The reversed condition reverses the entire canonical event list and rewrites sequence numbers.
+Its first event becomes `run.completed`, so the judge rejects it before collection. Reversing
+artifact chronology is not a presentation-order permutation.
 
-This input returned `status: "valid"`:
+The collector caps only the number of loop iterations and wraps each call in a timeout. It does
+not enforce the spec's attempt-inclusive turn, token, per-run amount, or aggregate amount
+budgets. The judge currently drops usage, so those limits cannot be reconstructed.
 
-```json
-{
-  "extra": "ignored",
-  "dimensions": {
-    "quality": {"score": 4, "evidence": "invented", "extra": "ignored"},
-    "undeclared": {"score": 5}
-  }
-}
-```
+The reliability artifact hashes `rubric.rubricId` as `promptText`, not the exact prompt used by
+the judge. It omits the actual `maxOutputTokens: 512` control, labels the debater model as the
+judge model regardless of the source artifact, silently drops unavailable evaluations, and does
+not use `samplerSeed`, strata, or blinding labels.
 
-That conflicts directly with the review requirement to never silently discard unknown
-dimensions. In addition, `requiredEvidence: "quote"` checks only for a non-empty string. It does
-not establish that the string quotes or references the declared source artifact.
+Acceptance check: build a deterministic presentation manifest that permutes candidate labels or
+message order without altering canonical source chronology. Drive it from the preregistered seed
+and design. Account for every attempt and unavailable result under the same live-run guardrails,
+and persist the exact executed prompt, controls, returned judge identity, source debater
+identity, order, usage, and failure. Add an offline collector test before any live probe.
 
-Acceptance check: use an exact judge-output schema. Report unknown dimensions and malformed
-entry fields as partial or malformed with explicit reasons. Define the evidence representation
-and verify quote evidence against the declared artifact, either here with source input or in the
-judge boundary before a result becomes valid. Add outer, entry, unknown-dimension, duplicate-key,
-and fabricated-evidence tests.
+### 50. E-REWARD does not preserve a validated vector or versioned scalarization identity
 
-### 46. The canonical evaluation-record constructor does not validate the record it creates
+Severity: critical
 
-Severity: high
+Status: open at `8c37ed0`.
 
-Status: open at `3abf0f4`.
+`computeReward` combines vector construction and scalarization. Its vector contains already
+weighted terms rather than the underlying measurements, and records no units, directions,
+normalization targets, group scope, missingness, or source evidence. The variance input is an
+unscoped scalar, so the API does not establish whether this is a run reward or an aggregate over
+which cases and repetitions.
 
-`createEvaluationRecord` validates only the source run ID/hash, judge ID/version, non-empty
-message-array length, and presence of either an outcome or failure. Runtime inputs can bypass the
-TypeScript annotations.
+Reward identity contains only caller-supplied ID/version. Different weights under the same
+`rewardId@1` produced different scalars with indistinguishable result identity. The function
+accepted `rewardVersion: "999"` and returned version `"1"`, accepted an empty reward ID, and
+returned a known `NaN` scalar for invalid quality/fraction inputs. A positive
+`monetaryWeight` with no monetary input silently contributed zero.
 
-A focused call accepted all of the following in one frozen record:
+The implementation does not resolve or compare weights against
+`StudySpec.rewardScalarization`, so preregistration does not constrain the actual objective.
 
-- an empty and duplicate `declaredInputs` list entry plus a non-hash reference;
-- `messages: [{}]`;
-- empty model IDs and `thinkingLevel: "cold"`;
-- a forged valid outcome with score `999` outside the rubric scale;
-- raw response text unrelated to the supplied outcome;
-- both an outcome and a failure at the same time.
-
-It also accepted the forged outcome with `rawResponse: null`. Consequently the resulting hash is
-deterministic, but it does not certify a canonical or internally consistent evaluation.
-
-Acceptance check: parse or validate every nested runtime value, including rubric, declared
-artifact references, messages, requested controls, outcome, and sanitized failure. Require
-mutually exclusive success and failure states. On a judge response, derive the outcome from the
-stored raw response and referenced rubric or verify that exact relationship. Require the raw
-response for valid/partial/malformed parsing outcomes, and test forged scores, invalid controls,
-empty inputs, contradictory states, and outcome/raw-response drift.
+Acceptance check: separate a source-evidenced raw reward vector from a versioned scalarizer.
+Validate every input range and missingness state, define units/direction and aggregate scope, and
+make any positively weighted missing component unavailable. Resolve the exact scalarizer
+configuration from the study's ID/version and include a full configuration hash in every result.
