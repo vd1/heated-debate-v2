@@ -13,6 +13,7 @@ import type { RunSpecification } from "../domain/matrix";
 import { calculateUsageCost, scaledCurrencyAmount } from "../domain/pricing";
 import {
   studySpecHash,
+  validateAttestation,
   type PreregistrationAttestation,
   type StudySpec,
 } from "../domain/study-spec";
@@ -180,6 +181,7 @@ function artifactSpend(
  */
 export async function executeStudy(input: ExecuteStudyInput): Promise<StudyExecutionOutcome> {
   const specHash = studySpecHash(input.spec);
+  validateAttestation(input.attestation);
   if (input.attestation.specHash !== specHash) {
     throw new Error("attestation does not match the study spec");
   }

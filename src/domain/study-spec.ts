@@ -402,6 +402,30 @@ export interface PreregistrationAttestation {
 }
 
 /** Returns traceable execution evidence; Git facts come from the executor/CLI. */
+/**
+ * Structural validation of an attestation object at the execution boundary.
+ * A manually constructed object cannot claim preregistration without the
+ * commit and clean-worktree evidence that mode implies.
+ */
+export function validateAttestation(attestation: PreregistrationAttestation): void {
+  if (!/^[0-9a-f]{64}$/.test(attestation.specHash)) {
+    throw new Error("attestation.specHash must be a sha256 hex digest");
+  }
+  const mode: string = attestation.mode;
+  if (mode !== "preregistered" && mode !== "development") {
+    throw new Error("attestation.mode must be preregistered or development");
+  }
+  if (attestation.commit !== null && attestation.commit.trim().length === 0) {
+    throw new Error("attestation.commit must be non-empty when present");
+  }
+  if (mode === "preregistered"
+    && (attestation.commit === null || attestation.cleanWorktree !== true)) {
+    throw new Error(
+      "a preregistered attestation requires a commit and a clean worktree",
+    );
+  }
+}
+
 export function assertPreregisteredStudy(
   spec: StudySpec,
   evidence: PreregistrationEvidence,

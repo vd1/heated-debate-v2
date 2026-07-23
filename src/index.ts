@@ -29,6 +29,7 @@ export * from "./infrastructure/jsonl-events";
 export * from "./infrastructure/pi-agent";
 export * from "./infrastructure/reliability-collector";
 export * from "./infrastructure/engine-client";
+export * from "./infrastructure/filesystem-store";
 export * from "./infrastructure/judge";
 export * from "./infrastructure/study-driver";
 export * from "./infrastructure/study-runner";
