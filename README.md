@@ -13,7 +13,7 @@ C-JSONL, C-REPLAY, C-LIVE-ARTIFACT, C-MARKDOWN, C-FAILURES, and C-TOOL-POLICY ar
 Milestone C is
 complete; D-PRICING, D-CONFIG, and D-CONTROLS landed pricing, the validated
 `ExperimentConfig`, and the control propagation audit; see the
-[`D-CONTROLS review`](plans/d-controls-review.md). Milestone D is complete; Milestone E is complete; All Milestone F machinery has landed; a live bounded study remains an opt-in execution, and the codex review continues.
+[`D-CONTROLS review`](plans/d-controls-review.md). Milestone D is complete; Milestone E is complete; All Milestone F machinery has landed; a live bounded study remains an opt-in execution. The review hardening pass resolved the open critical findings: full spec/case identities travel in run-start evidence (schema v8), artifacts are validated before publication with terminal failures persisted and priced, rewards resolve the preregistered scalarizer, the judge validates and permutes presentation without touching chronology, reliability statistics fail closed on missing populations, and a real filesystem store with leases backs the executor.
 
 The original implementation remains in the sibling repository `../heated-debate/` and is treated
 as reference behavior, not as code to copy wholesale.
