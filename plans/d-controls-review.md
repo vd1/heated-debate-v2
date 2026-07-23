@@ -1,6 +1,6 @@
 # D-CONTROLS review
 
-Status: in progress; codex concerns 29 and 30 remain open
+Status: pass. Codex concerns 29 and 30 are resolved; the audit executes allowed and denied tool calls and begins from the config-selected creativity schedule.
 
 Reviewed on 2026-07-23.
 

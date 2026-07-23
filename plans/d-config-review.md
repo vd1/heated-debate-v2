@@ -1,6 +1,6 @@
 # D-CONFIG review
 
-Status: in progress; codex concerns 23-28 remain open
+Status: pass. Codex concerns 23-28 are resolved; canonical identity derives from the validated source input.
 
 Reviewed on 2026-07-23.
 

@@ -180,10 +180,15 @@ describe("D-CONTROLS end-to-end propagation audit", () => {
   });
 
   test("creativity materializes as an exact prompt instruction without provider verification", async () => {
-    const { events, calls } = await auditRun(BASE);
+    const { events, calls } = await auditRun({
+      ...BASE,
+      creativitySchedule: { scheduleId: "linear-cooling", scheduleVersion: "1" },
+    });
 
     const request = firstRequested(events);
+    // The identity selected in config is the identity that reaches the request.
     expect(request.creativity.scheduleId).toBe("linear-cooling");
+    expect(request.creativity.scheduleVersion).toBe("1");
     expect(request.creativity.level).toBe(5);
     const message = request.context.messages[0];
     if (!message) throw new Error("missing model input");
@@ -223,6 +228,103 @@ describe("D-CONTROLS end-to-end propagation audit", () => {
     expect(calls[0]?.context.tools?.map((tool) => tool.name)).toEqual(["web-search"]);
     const report = firstCompleted(events).controls;
     expect(JSON.stringify(report)).not.toContain("web-search");
+  });
+
+  test("tool policy enforcement executes allowed calls and denies undeclared ones", async () => {
+    let executed = 0;
+    const searchTool: AgentTool = {
+      ...WEB_SEARCH_TOOL,
+      execute: () => {
+        executed += 1;
+        return Promise.resolve({ content: [{ type: "text", text: "result" }], details: {} });
+      },
+    };
+    const messages = [
+      {
+        stopReason: "toolUse" as const,
+        content: [
+          { type: "toolCall" as const, id: "c1", name: "web-search", arguments: { } },
+          { type: "toolCall" as const, id: "c2", name: "filesystem", arguments: { path: "/etc" } },
+        ],
+      },
+      { stopReason: "stop" as const, content: [{ type: "text" as const, text: "Done." }] },
+    ];
+    let index = 0;
+    const stream: ModelStream = (requestModel, context, streamOptions) => {
+      const events = createAssistantMessageEventStream();
+      const scripted = messages[Math.min(index, messages.length - 1)];
+      index += 1;
+      const message: AssistantMessage = {
+        role: "assistant",
+        content: structuredClone(scripted.content),
+        api: requestModel.api,
+        provider: requestModel.provider,
+        model: requestModel.id,
+        responseModel: requestModel.id,
+        usage: {
+          input: 10, output: 2, cacheRead: 0, cacheWrite: 0, reasoning: 0, totalTokens: 12,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
+        stopReason: scripted.stopReason,
+        timestamp: 0,
+      };
+      queueMicrotask(() => {
+        void (async () => {
+          await streamOptions?.onResponse?.({ status: 200, headers: {} }, requestModel);
+          events.push({ type: "start", partial: { ...message, content: [] } });
+          events.push({ type: "done", reason: scripted.stopReason, message });
+          events.end();
+        })();
+      });
+      return events;
+    };
+    const config = parseExperimentConfig({
+      ...BASE,
+      proposer: {
+        capabilities: {
+          policyId: "audit-tools",
+          policyVersion: "1",
+          evidence: "recorded",
+          role: { id: "proposer", version: "1" },
+          phase: "proposal",
+          allowedTools: [{ toolId: "web-search", schemaVersion: "1", maxCalls: 1 }],
+          aggregateCallLimit: 2,
+          callTimeoutMs: 1_000,
+          maxResultBytes: 4_096,
+          deniedCallCharge: "none",
+        },
+      },
+    });
+    const sink = new MemorySink();
+    const agent = (own: ModelStream): PiAgent => new PiAgent({
+      model: MODEL,
+      modelStream: own,
+      usageEvidence: { explicitlyReported: [], source: "audit" },
+      tools: [{ toolId: "web-search", schemaVersion: "1", tool: searchTool }],
+      now: () => 0,
+    });
+    const reviewerCalls: StreamCall[] = [];
+    const proposer = agent(stream);
+    const reviewer = agent(textStream(reviewerCalls));
+    try {
+      await runDebate({
+        ...experimentDebateInput(config, { proposer, reviewer }),
+        recording: { runId: "audit-run", sink },
+      });
+    } finally {
+      await proposer.dispose();
+      await reviewer.dispose();
+    }
+
+    expect(executed).toBe(1);
+    const toolEvents = sink.events.filter((event) => event.type === "turn.tool_call");
+    expect(toolEvents.map((event) =>
+      event.type === "turn.tool_call" ? event.data.record.disposition : null)).toEqual([
+      { status: "accepted" },
+      { status: "denied", reason: "tool_not_allowed" },
+    ]);
+    const completed = firstCompleted(sink.events);
+    expect(JSON.stringify(completed.controls)).not.toContain("web-search");
   });
 
   test("declares exactly the five audited dimensions matrix-eligible", () => {
