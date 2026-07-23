@@ -1,266 +1,248 @@
 # Implementation concerns for Fable
 
-Status: concerns 1-13, 16-18, 20, 22, and 24-26 are resolved. Concerns 14, 15,
-19, and 21 are partially resolved. Concerns 23 and 27-30 are open.
+Status: concerns 1-13, 15-26, and 30 are resolved. Concerns 14 and 27-29 are
+partially resolved. Concerns 31-33 are open.
 
-Updated on 2026-07-23 after reviewing through commit `13ff5f1`.
+Updated on 2026-07-23 after reviewing through commit `645f5f1`.
 
-Validation at `13ff5f1`:
+Validation at `645f5f1`:
 
-- `bun test`: 233 passed, 3 skipped, 0 failed.
+- `bun test`: 246 passed, 3 skipped, 0 failed.
 - `bun run typecheck`: passed.
 - `bun run lint`: passed.
 
-Passing checks do not cover the remaining boundary cases below. The task contract in
+Passing checks do not cover the remaining counterexamples below. The task contract in
 `plans/implementation-plan.md` remains the acceptance baseline.
 
 ## Open concerns
 
-### 14. Endpoint credentials can still reach web-search failure records
+### 14. Percent-encoded endpoint credentials still reach web-search failure records
 
 Severity: high
 
-Status: partially resolved by `193469a`.
+Status: partially resolved by `193469a` and `1c22808`.
 
-The configured `apiKey` is now redacted from transport and decoding errors, and successful
-provenance records only the endpoint origin and path. Those changes close the originally
-reproduced Authorization-secret path and the successful-provenance path.
+The configured header key, plain endpoint credentials, successful provenance, and direct
+whitespace-query path are now covered. The new endpoint redactor still has an encoding mismatch:
+it applies `decodeURIComponent` to userinfo and reads decoded `searchParams` values, while a
+transport that echoes the requested URL returns their percent-encoded forms.
 
-The error boundary still preserves credentials carried in the configured endpoint. Its redactor
-only removes `options.apiKey`. If a transport includes the requested URL in its error, userinfo
-and credential-bearing query parameters are returned unchanged. This direct reproduction:
+This direct reproduction:
 
 ```text
-endpoint: https://user:password@example.test/search?api_key=query-secret
+endpoint: https://us%40er:p%40ss@example.test/search?api_key=q%40secret
 transport error: transport failed for <requested URL>
 ```
 
-produces:
+still produces:
 
 ```text
-transport failed for https://user:password@example.test/search?api_key=query-secret&q=x&format=json
+transport failed for https://us%40er:p%40ss@example.test/search?api_key=q%40secret&q=x&format=json
 ```
 
-That message can still become a failed `turn.tool_call` outcome. The new tests exercise an API-key
-error and endpoint sanitization separately, so they do not cover this combined path or a canonical
-artifact.
+The added test uses credentials whose serialized and decoded forms are identical, and it remains
+a direct port test rather than the requested canonical artifact sentinel.
 
-Acceptance check: normalize transport and decoding errors without returning the raw request URL,
-or redact userinfo and sensitive query values derived from the configured endpoint as well as the
-header key. Add a canonical JSONL sentinel test whose credential-bearing endpoint is repeated by a
-throwing transport, and verify the serialized tool failure contains none of its credentials.
+Acceptance check: sanitize both encoded and decoded endpoint-derived credential forms, or
+normalize transport failures without retaining the raw request URL. Add a canonical JSONL test
+whose throwing transport repeats a credential-bearing URL containing percent escapes, and verify
+that neither representation of any credential reaches the serialized tool failure.
 
-### 15. Whitespace-only web queries pass the Pi schema before failing in the port
+### 27. Replay ignores the recorded case and config identity
+
+Severity: high
+
+Status: partially resolved by `997834d`.
+
+`experimentDebateInput` now carries the config hash and case ID, and canonical schema v7 records
+them in `run.started`. The replay boundary does not consume that evidence:
+`ReplayConfiguration` cannot state an expected experiment identity, and `readSuccessfulTrace`
+drops `run.started.data.experiment`.
+
+I generated a valid recorded run with hash `aaaa...` and `case-a`, replayed it, changed only the
+start event to hash `bbbb...` and `case-b`, and replayed again with the same configuration. Both
+replays succeeded:
+
+```text
+replay-accepted-mutated-experiment
+```
+
+The commit added event recording coverage but no same-topic case pair or replay drift regression
+from the earlier acceptance check.
+
+Acceptance check: include the expected config hash and case reference in replay configuration,
+retain the recorded experiment identity in the successful trace, and compare them before
+scheduling. Add drift rows for each field and define the compatibility behavior for migrated
+artifacts whose experiment value is `null`.
+
+### 28. Protocol, context, and creativity selections do not reach the scheduler
+
+Severity: high
+
+Status: partially resolved by `997834d`.
+
+The validated config now exposes versioned protocol and creativity identities and rejects
+unsupported values. The execution path remains hard-coded:
+
+- `experimentDebateInput` drops `config.protocol` and `config.contextPolicy`.
+- It passes `creativitySchedule` to `runDebate`, but the runner only checks that it equals
+  `linear-cooling@1`.
+- `DebateSchedulerInput` has no protocol, context-policy, or creativity-schedule fields.
+- `DebateScheduler.nextTurn` directly calls `selectCreativity`, and it directly calls the
+  last-exchange context selector.
+
+The test named "routes them to the scheduler" checks only that `experimentDebateInput` contains
+the creativity object. It does not construct a scheduler with that selection, and it has no
+assertion for protocol or context routing.
+
+Acceptance check: make the validated identities actual scheduler inputs and resolve their
+implementations at that boundary. Replay must construct the scheduler with the same identities.
+Tests should fail if a requested identity is accepted but a different implementation is selected.
+
+### 29. The creativity audit observes the scheduler default rather than propagation
+
+Severity: high
+
+Status: partially resolved by `770fb5a`.
+
+The audit now explicitly places `linear-cooling@1` in the config and checks the identity, level,
+and instruction in the request and prompt. This is useful coverage of the emitted values, but it
+does not prove that the selected config value traveled through scheduling. Concern 28's execution
+path validates the input and then independently selects the same hard-coded schedule.
+
+The audit assertions also compare the request to fixed literals rather than to the parsed
+selection that entered the run. The test would continue to pass if the scheduler never received
+that object, which is the current behavior.
+
+Acceptance check: first resolve concern 28, then make the audit retain the parsed selection and
+prove that the scheduler resolver receives it. Compare the resulting request and canonical event
+to that selected identity, along with the level and exact prompt instruction.
+
+### 31. Experiment identity is neither validated nor snapshotted by the runner
+
+Severity: high
+
+`RunDebateInput.experiment` is described as immutable, but `runDebate` repeatedly reads the
+caller's mutable object. It does not validate the hash or case ID at the input boundary. A sink
+that mutates the hash after receiving `run.started` produces a successful result with conflicting
+identity:
+
+```json
+{
+  "started": {
+    "configHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "caseId": "case"
+  },
+  "result": {
+    "configHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "caseId": "case"
+  }
+}
+```
+
+`projectDebateEvents` uses the result identity, so post-hoc projection can also disagree with the
+live artifact. A direct caller can supply a malformed hash or empty case ID and the runner will
+attempt to emit an event that canonical serialization rejects.
+
+Acceptance check: validate and clone the experiment identity before the first asynchronous
+boundary, freeze that snapshot, and reuse it for `run.started`, `DebateResult`, and post-hoc
+projection. Add caller-mutation and malformed-identity regressions.
+
+### 32. There is no uniqueness boundary for an arbitrary case collection
 
 Severity: medium
 
-Status: partially resolved by `193469a`.
+The D-CASES acceptance notes explicitly require duplicate case IDs to be rejected.
+`parseBenchmarkCase` validates only one case, and the module exports no collection parser or
+definition helper that can enforce uniqueness. The fixture test computes a `Set` over the three
+built-in IDs, but callers can assemble and pass any duplicate-bearing `BenchmarkCase[]` without
+cross-case validation.
 
-The exported port now rejects empty or whitespace-only queries and every invalid result-limit
-class. The numeric constraints are shared with the Pi tool schema.
+Deferring this entirely to D-MATRIX would leave case-set consumers such as D-STUDY-SPEC to invent
+their own rule, and would not satisfy the D-CASES completion claim.
 
-The query constraint is not shared. The Pi schema still uses only `Type.String({ minLength: 1 })`,
-which accepts a string containing spaces. Such a call passes schema authorization, consumes an
-accepted tool execution, reaches the port, and becomes a tool error. The same semantic input is
-supposed to be rejected at the schema boundary as malformed arguments.
+Acceptance check: add a frozen case-set definition or parsing boundary that validates every case
+and rejects duplicate `caseId` values deterministically. Test duplicates across separately parsed
+cases as well as the built-in fixtures.
 
-Acceptance check: express the non-whitespace query rule in the Pi schema as well as the direct
-port validator. Add a dispatcher-level whitespace-query test that proves the executor is not
-entered and the result is classified consistently with other malformed arguments.
-
-### 19. Reasoning subset validation still permits reasoning without an output total
-
-Severity: medium
-
-Status: partially resolved by `6aedaae`.
-
-The explicit `reasoningTokens > outputTokens` case is now rejected under both
-`included-in-output` and `unbilled`.
-
-The check runs only when both counts are present. A record containing `reasoningTokens: 20` with
-no `outputTokens` cannot establish that reasoning is a subset of output. Under
-`included-in-output` with a zero output rate, `calculateUsageCost` nevertheless returns a known
-zero cost. The same gap exists for `unbilled` when the applicable rate does not otherwise make the
-missing output count affect price.
-
-Acceptance check: when the billing rule defines reasoning as an output subset, require an output
-count whenever a reasoning count is present, or define and test a different explicit semantic for
-that evidence combination. Do not report the subset invariant as validated when the containing
-total is absent.
-
-### 21. Token counts are accepted as fractional numbers but exact pricing requires integers
+### 33. The untrusted case parser accepts prototype-backed required fields
 
 Severity: medium
 
-Status: partially resolved by `13ff5f1`.
+`parseBenchmarkCase` accepts any non-array object and then casts it to
+`Record<string, unknown>`. Unknown-field inspection uses own enumerable keys, but required values
+are read through normal property access. An object with no own keys and every required field on
+its prototype is accepted:
 
-`normalizeUsage` now requires non-negative safe integers, which closes the adapter and
-`ScriptedAgent` path.
+```text
+ownKeys: []
+parsed.caseId: inherited-id
+parsed.topic: Inherited topic
+```
 
-Canonical usage validation still accepts `inputTokens: 1.5` in an `adapter.attempt` event, and
-direct `calculateUsageCost` with the same typed value still throws `RangeError: Not an integer`.
-Canonical parsing therefore returns a value typed as normalized usage that violates the pricing
-precondition, while the exported pricing function has no defensive domain error.
+The same issue applies to the nested rubric object. This is not a JSON object boundary and makes
+the review's untrusted-input claim broader than the implemented validation.
 
-Acceptance check: apply the safe-integer invariant in canonical usage parsing and keep a defensive
-check in direct pricing. Add fractional and unsafe-integer tests at both boundaries so exact
-monetary arithmetic never depends on an uncaught `BigInt` conversion error.
-
-### 23. Canonical config collapses omitted controls into explicit defaults
-
-Severity: high
-
-The D-CONFIG contract explicitly requires canonical serialization to distinguish omitted optional
-controls from explicit values. `parseExperimentConfig` instead materializes defaults directly into
-both role assignments and omits any source-presence information.
-
-A minimal config and a config that explicitly supplies the default model, thinking level `high`,
-and `last-exchange@1` context policy produce byte-identical canonical JSON and the same
-`experimentConfigHash`. The current omission test uses explicit thinking level `low`, so it proves
-that different values differ rather than that omission differs from an explicit default.
-
-Acceptance check: preserve whether each optional source control was omitted or explicitly set,
-while also exposing a resolved value for execution. Add omitted-versus-explicit-default rows for
-model, thinking level, context policy, and applicable per-role overrides, and require distinct
-canonical representations and hashes.
-
-### 27. Case and config identity disappear when the config becomes a run
-
-Severity: high
-
-`caseId` participates in canonical config JSON and its hash, but `experimentDebateInput` drops it.
-The config hash is not added to `RunDebateInput`, `run.started`, or another canonical event either.
-Two configs with the same run ID and topic but different case IDs have different config hashes and
-produce JSON-identical runner inputs.
-
-The resulting canonical run cannot prove which case reference or exact `ExperimentConfig` produced
-it. This is especially risky once cases can share topic text or evolve independently.
-
-Acceptance check: carry the case reference and immutable experiment-config identity into the run
-boundary and canonical `run.started` evidence. Add a pair of same-topic, different-case configs
-whose runner inputs and run artifacts remain distinguishable, plus replay drift checks for case
-and config identity.
-
-### 28. Protocol and creativity schedule identity are not part of ExperimentConfig
-
-Severity: high
-
-The task requires protocol, round, and context settings. The config records round count and a
-fixed context-policy identity, but it has no debate protocol identity/version or creativity
-schedule identity/version. `DebateScheduler` selects `linear-cooling@1` directly in code, and the
-accepted context policy is not passed through `experimentDebateInput`; the scheduler also selects
-that implementation directly.
-
-An identical config hash can therefore resolve to changed protocol scheduling or creativity
-behavior after an implementation change. Per-turn events reveal the selected creativity after the
-fact, but the input config does not pin what was requested.
-
-Acceptance check: add explicit versioned protocol and creativity-schedule selections to the
-validated config, resolve only supported identities, and route them into scheduling. Prove
-canonical round trips and hashes distinguish protocol or schedule drift before a run starts.
-
-### 29. A hard-coded creativity schedule is marked matrix-eligible
-
-Severity: high
-
-`MATRIX_ELIGIBLE_CONTROL_DIMENSIONS` lists `creativitySchedule`, and the D-CONTROLS review says
-every listed dimension travels from validated config. `ExperimentConfig` has no creativity
-schedule field. The audit's input does not request one; it only observes the
-`linear-cooling@1` value selected directly by `DebateScheduler`.
-
-This proves that the hard-coded default reaches the prompt, but not that a creativity-schedule
-dimension travels from config or can be varied by D-MATRIX. Marking it eligible before concern 28
-is resolved lets a later matrix advertise a parameter it cannot express or select.
-
-Acceptance check: keep creativity ineligible until an explicit validated schedule selection is
-routed through the scheduler, or add that path and audit it. The audit should begin with the
-selected config value and prove the same identity, version, level, and exact instruction reach the
-request, prompt, and canonical events.
-
-### 30. The tool-control audit does not execute or enforce a tool call
-
-Severity: high
-
-The tool audit uses a text-only fake stream. It proves that the configured allowlist appears in
-`turn.requested`, that a matching tool definition is offered to the model, and that no tool value
-is invented in the provider control report. It does not return a tool call, invoke the dispatcher,
-exercise a limit, or produce a canonical `turn.tool_call` event.
-
-The test name and D-CONTROLS review therefore overstate the evidence when they say the allowlist is
-enforced by the dispatcher end to end.
-
-Acceptance check: drive a configured allowed call and a denied or over-limit call through the fake
-Pi stream. Assert dispatcher disposition and accounting, executor invocation or non-invocation,
-the exact canonical tool-call events, and the absence of tool verification in the provider report.
-Only then mark `toolCapabilityPolicy` matrix-eligible.
+Acceptance check: require plain JSON records with accepted prototypes at both levels and read
+required fields as own properties. Add inherited required-field, inherited unknown-field,
+accessor, and non-plain-object regressions.
 
 ## Resolved concerns
 
-### 1-4, 6-9, and 11
+### 1-13
 
-The previously recorded dispatcher, trace preservation, secret-redaction, ordering, byte-count,
-non-text-result, and loop-guard concerns remain resolved by commits `94efdc7`, `aff61a9`,
-`5fc2d80`, and `87fd863`.
+The dispatcher, replay guarantee, trace preservation, ordering, secret handling, byte counting,
+loop failure, schema validity, and canonical evidence concerns remain resolved by commits
+`94efdc7`, `aff61a9`, `5fc2d80`, `87fd863`, and `3829d42`.
 
-### 5. Replay now states and can require its achieved guarantee
+### 15. Web-search query validation is aligned
 
-Resolved by `3829d42`. `ReplayResult.toolReplayGuarantee` distinguishes no tool calls,
-independent replay, and authorization-only replay. `requireIndependentToolReplay` fails closed
-when a recorded tool turn lacks an independent driver.
+Resolved by `1c22808`. The Pi schema now requires a non-whitespace character with the shared
+query rule, while the direct port retains its matching validation. The schema regression rejects
+a whitespace-only call before the web-search port executes.
 
-### 10. No-hook model steps reserve their sequence before tool dispatch
+### 16-18 and 20. Pricing snapshot and exact enforcement
 
-Resolved by `3829d42`. The fallback attempt position is allocated when the model step completes.
-The regression proves attempt 1, tool call 2, attempt 3 for a tool loop without response hooks.
+Resolved by `6aedaae`. The runner snapshots monetary controls, successful attempts use returned
+model identity, cost accumulation uses scaled integers, and effective dates require real calendar
+dates.
 
-### 12. Known local loop failures no longer invent provider attempts
+### 19. Reasoning subsets require an output total
 
-Resolved by `3829d42`. The no-policy and loop-guard paths use `protocol_failure`, retain the model
-steps that occurred, and do not append a synthetic adapter attempt.
+Resolved by `1c22808`. Included-output and unbilled rules now return unknown cost with
+`outputTokens` missing when reasoning is present without its containing output total.
 
-### 13. Invalid shared positions are rejected by producers
+### 21. Token counts use the safe-integer invariant at every pricing boundary
 
-Resolved by `3829d42` for the original artifact-validity issue. `orderedTurnEvidence` rejects
-mixed or non-consecutive annotations before an invalid evidence event is emitted or returned.
+Resolved by `1c22808`. Canonical usage rejects fractional counts, and direct pricing validates
+every count before exact integer arithmetic.
 
 ### 22. Evidence-validation failure preserves terminal artifact closure
 
-Resolved by `7b39d41`. Evidence ordering is validated before an evidence event is appended, and a
-failure is normalized as `protocol_failure`. The reproduced artifact contains `run.started`,
-`turn.requested`, `turn.failed`, and `run.failed`, contains no invalid attempt event, and passes
-canonical serialization and sequence validation.
+Resolved by `7b39d41`. Invalid evidence is excluded while `turn.failed` and `run.failed` preserve
+a canonical terminal artifact.
+
+### 23. Canonical config preserves omission
+
+Resolved by `997834d`. The deeply frozen validated source is retained separately from resolved
+execution values, so omission and an explicit default have different canonical JSON and hashes.
 
 ### 24-26. Config numeric and nested pricing validation are aligned
 
-Resolved by `13ff5f1`. Round, turn, output-token, and token-budget counts require safe integers.
-The config parser uses the pricing amount-scale validator before accepting a monetary budget.
-Reasoning billing rules now reject unknown and mode-incompatible fields.
+Resolved by `13ff5f1`. Counts require safe integers, monetary amount scale is validated, and
+reasoning billing rules reject unknown or mode-incompatible fields.
 
-### 16. Monetary enforcement uses a resolved snapshot and limit
+### 30. The control audit executes and denies tool calls
 
-Resolved by `6aedaae`. The runner validates and clones the pricing snapshot and scales the maximum
-amount before its first asynchronous boundary. Later caller mutation does not change recorded
-controls or enforcement.
-
-### 17. Successful attempts use the returned model identity
-
-Resolved by `6aedaae`. Successful evidence is priced using `reply.model`, a returned identity
-missing from the snapshot fails closed, and the differing-rate regression verifies the choice.
-
-### 18. Monetary accumulation uses exact scaled integers
-
-Resolved by `6aedaae`. Rates and limits have a bounded decimal scale, costs accumulate as integer
-units of `1e-12` currency, and exact `0.1 + 0.2 = 0.3` exhaustion completes.
-
-### 20. Effective dates require real calendar dates
-
-Resolved by `6aedaae`. Validation now rejects invalid months and days and covers leap-year
-behavior.
+Resolved by `770fb5a` and `c7f1c1e`. The fake Pi stream now executes one allowed call, records an
+undeclared call as denied, proves only the allowed executor ran, checks both canonical
+dispositions, and keeps tool verification out of the provider report.
 
 ## Completion status
 
-Milestone C should not be declared complete while concerns 14 and 15 remain.
-D-PRICING should not be declared complete while concerns 19 and 21 remain.
-D-CONFIG should not be declared complete while concerns 23, 27, and 28 remain.
-D-CONTROLS should not be declared complete while concerns 29 and 30 remain.
-The D-CONFIG and D-CONTROLS pass claims in their review files are therefore premature.
+Milestone C should not be declared complete while concern 14 remains.
+D-PRICING has no remaining concern in this file.
+D-CONFIG should not be declared complete while concerns 27, 28, and 31 remain.
+D-CONTROLS should not be declared complete while concern 29 remains.
+D-CASES should not be declared complete while concerns 32 and 33 remain.
+The D-CONFIG, D-CONTROLS, and D-CASES pass claims in their review files are therefore premature.

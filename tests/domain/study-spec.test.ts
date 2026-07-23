@@ -1,0 +1,113 @@
+import { describe, expect, test } from "bun:test";
+
+import {
+  assertPreregisteredStudy,
+  parseStudySpec,
+  studyRunId,
+  studySpecHash,
+} from "../../src/domain/study-spec";
+
+const SNAPSHOT = {
+  snapshotId: "pricing-test",
+  snapshotVersion: "1",
+  currency: "USD",
+  effectiveDate: "2026-07-01",
+  provenance: "test fixture",
+  entries: [{
+    model: { providerId: "openai-codex", modelId: "gpt-5.6-sol" },
+    inputRatePerMillionTokens: 1,
+    outputRatePerMillionTokens: 10,
+    cacheReadRatePerMillionTokens: 0,
+    cacheWriteRatePerMillionTokens: 0,
+    reasoningBilling: { mode: "included-in-output" },
+  }],
+};
+
+const SPEC = {
+  specVersion: "1",
+  studyId: "study-thinking-sweep",
+  hypotheses: ["Higher thinking levels improve review specificity."],
+  benchmarkCaseIds: ["fixture-bounded-queue", "fixture-retry-policy"],
+  holdoutCaseIds: ["fixture-schema-migration"],
+  fixedParameters: { roundCount: 2 },
+  variedParameters: [{ dimensionId: "thinkingLevel", values: ["low", "high"] }],
+  repetitions: 3,
+  evaluators: [{ evaluatorId: "judge-default", evaluatorVersion: "1" }],
+  rubric: { rubricId: "debate-quality", rubricVersion: "1" },
+  pricingSnapshot: SNAPSHOT,
+  budgets: { perRun: { maxTurns: 8, maxTokens: 200_000 }, maxTotalRuns: 24 },
+  stoppingRules: { maxRuns: 24, maxConsecutiveFailures: 3 },
+  plannedAnalysis: "Compare mean rubric scores between thinking levels with per-case pairing.",
+  reliabilityThresholds: {
+    minimumSampleCount: 12,
+    maximumJudgeVariance: 0.5,
+    maximumOrderingBiasEffect: 0.2,
+  },
+};
+
+describe("study spec", () => {
+  test("parses a validated frozen preregistered spec", () => {
+    const spec = parseStudySpec(structuredClone(SPEC));
+
+    expect(spec.studyId).toBe("study-thinking-sweep");
+    expect(spec.variedParameters[0]?.dimensionId).toBe("thinkingLevel");
+    expect(spec.pricingSnapshot.snapshotId).toBe("pricing-test");
+    expect(Object.isFrozen(spec)).toBe(true);
+  });
+
+  test("rejects unknown fields, overlap, ineligible dimensions, and empty hypotheses", () => {
+    expect(() => parseStudySpec({ ...SPEC, extra: 1 })).toThrow("unknown field at spec: extra");
+    expect(() => parseStudySpec({
+      ...SPEC,
+      holdoutCaseIds: ["fixture-bounded-queue"],
+    })).toThrow("holdout case fixture-bounded-queue overlaps the benchmark set");
+    expect(() => parseStudySpec({
+      ...SPEC,
+      variedParameters: [{ dimensionId: "verbosity", values: [1, 2] }],
+    })).toThrow("varied dimension verbosity is not matrix-eligible");
+    expect(() => parseStudySpec({ ...SPEC, hypotheses: [] })).toThrow(
+      "hypotheses must be a non-empty string array",
+    );
+    expect(() => parseStudySpec({
+      ...SPEC,
+      variedParameters: [{ dimensionId: "thinkingLevel", values: ["low"] }],
+    })).toThrow("varied dimension thinkingLevel needs at least two values");
+  });
+
+  test("hashes canonically and stamps every run ID with the spec hash", () => {
+    const spec = parseStudySpec(structuredClone(SPEC));
+    const hash = studySpecHash(spec);
+
+    expect(hash).toMatch(/^[0-9a-f]{64}$/);
+    expect(studySpecHash(parseStudySpec(structuredClone(SPEC)))).toBe(hash);
+
+    const runId = studyRunId(spec, {
+      caseId: "fixture-bounded-queue",
+      variantKey: "thinkingLevel=low",
+      repetition: 2,
+    });
+    expect(runId).toBe(
+      `study-thinking-sweep:${hash.slice(0, 12)}:fixture-bounded-queue:thinkingLevel=low:rep2`,
+    );
+    expect(runId).toContain(hash.slice(0, 12));
+    expect(() => studyRunId(spec, {
+      caseId: "unknown-case",
+      variantKey: "thinkingLevel=low",
+      repetition: 1,
+    })).toThrow("caseId unknown-case is not part of the study");
+  });
+
+  test("rejects an uncommitted spec unless development mode is explicit", () => {
+    const spec = parseStudySpec(structuredClone(SPEC));
+
+    expect(() => {
+      assertPreregisteredStudy(spec, { committed: false });
+    }).toThrow("study spec must be committed before execution");
+    expect(() => {
+      assertPreregisteredStudy(spec, { committed: false, allowNonPreregistered: true });
+    }).not.toThrow();
+    expect(() => {
+      assertPreregisteredStudy(spec, { committed: true });
+    }).not.toThrow();
+  });
+});

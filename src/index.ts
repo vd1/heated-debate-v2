@@ -13,6 +13,7 @@ export * from "./domain/pricing";
 export * from "./domain/replay";
 export * from "./domain/roles";
 export * from "./domain/scheduler";
+export * from "./domain/study-spec";
 export * from "./domain/tool-policy";
 export * from "./domain/web-search";
 export * from "./infrastructure/jsonl-events";
