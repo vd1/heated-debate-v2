@@ -55,10 +55,20 @@ export interface ReplayCanonicalRunInput {
    * requests or the final response.
    */
   toolLoopDrivers?: (turnId: string) => ToolLoopDriver | undefined;
+  /** Fail closed when a recorded tool turn has no independent driver. */
+  requireIndependentToolReplay?: boolean;
 }
+
+export type ToolReplayGuarantee = "no-tool-calls" | "independent" | "reauthorization-only";
 
 export interface ReplayResult {
   readonly requests: readonly DeepReadonly<TurnRequest>[];
+  /**
+   * Weakest tool-loop guarantee achieved across the run's turns.
+   * "reauthorization-only" means recorded requests and final text were only
+   * self-compared; supply toolLoopDrivers for independent verification.
+   */
+  readonly toolReplayGuarantee: ToolReplayGuarantee;
 }
 
 export class ReplayDriftError extends Error {
@@ -127,6 +137,7 @@ async function replayCanonicalRunInternal(input: ReplayCanonicalRunInput): Promi
 
   const scheduler = new DebateScheduler(configuration);
   const reconstructed: DeepReadonly<TurnRequest>[] = [];
+  let guarantee: ToolReplayGuarantee = "no-tool-calls";
 
   for (const recorded of trace.turns) {
     const replayed = scheduler.nextTurn();
@@ -137,7 +148,17 @@ async function replayCanonicalRunInternal(input: ReplayCanonicalRunInput): Promi
     }
     assertNoDrift(recorded.request.turnId, recorded.roundNumber, replayed.roundNumber, "roundNumber");
     assertTurnRequestNoDrift(recorded.request, replayed.request);
-    await replayRecordedToolLoop(recorded, input.toolLoopDrivers?.(recorded.request.turnId));
+    const driver = input.toolLoopDrivers?.(recorded.request.turnId);
+    if (recorded.toolCalls.length > 0) {
+      if (driver === undefined && input.requireIndependentToolReplay === true) {
+        throw new Error(
+          `independent tool replay required but no driver was supplied for ${recorded.request.turnId}`,
+        );
+      }
+      if (driver === undefined) guarantee = "reauthorization-only";
+      else if (guarantee === "no-tool-calls") guarantee = "independent";
+    }
+    await replayRecordedToolLoop(recorded, driver);
     reconstructed.push(replayed.request);
     scheduler.acceptReply(toReplayReply(recorded.reply, recorded.toolCalls));
   }
@@ -146,7 +167,10 @@ async function replayCanonicalRunInternal(input: ReplayCanonicalRunInput): Promi
   }
   scheduler.result();
 
-  return Object.freeze({ requests: Object.freeze(reconstructed) });
+  return Object.freeze({
+    requests: Object.freeze(reconstructed),
+    toolReplayGuarantee: guarantee,
+  });
 }
 
 async function replayRecordedToolLoop(

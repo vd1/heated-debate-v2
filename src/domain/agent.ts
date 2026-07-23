@@ -97,7 +97,7 @@ export interface AgentReplyOptions {
   signal?: AbortSignal;
 }
 
-export type AgentFailureCode = "cancelled" | "provider_failure";
+export type AgentFailureCode = "cancelled" | "provider_failure" | "protocol_failure";
 
 export class AgentFailure extends Error {
   readonly name = "AgentFailure";

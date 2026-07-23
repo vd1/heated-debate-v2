@@ -401,6 +401,114 @@ describe("PiAgent", () => {
     await agent.dispose();
   });
 
+
+  test("keeps shared ordering for tool loops without response hooks", async () => {
+    const messages: { stopReason: "stop" | "toolUse"; content: AssistantMessage["content"] }[] = [
+      {
+        stopReason: "toolUse",
+        content: [
+          { type: "toolCall", id: "pi-call-1", name: "web-search", arguments: { query: "q" } },
+        ],
+      },
+      { stopReason: "stop", content: [{ type: "text", text: "Final answer" }] },
+    ];
+    let index = 0;
+    // A stream that never invokes onResponse.
+    const stream: ModelStream = (requestModel) => {
+      const events = createAssistantMessageEventStream();
+      const scripted = messages[index];
+      index += 1;
+      if (!scripted) throw new Error("no message remaining");
+      const base = assistantMessage("", requestModel);
+      const message: AssistantMessage = {
+        ...base,
+        content: structuredClone(scripted.content),
+        stopReason: scripted.stopReason,
+      };
+      queueMicrotask(() => {
+        events.push({ type: "start", partial: { ...message, content: [] } });
+        events.push({ type: "done", reason: scripted.stopReason, message });
+        events.end();
+      });
+      return events;
+    };
+    const agent = new PiAgent({
+      model: MODEL,
+      modelStream: stream,
+      usageEvidence: { explicitlyReported: [], source: "test" },
+      tools: [{ toolId: "web-search", schemaVersion: "1", tool: WEB_SEARCH_TOOL }],
+      now: clock(1_000),
+    });
+    const request: TurnRequest = {
+      ...REQUEST,
+      capabilities: {
+        policyId: "research",
+        policyVersion: "1",
+        evidence: "recorded",
+        role: { id: "proposer", version: "1" },
+        phase: "proposal",
+        allowedTools: [{ toolId: "web-search", schemaVersion: "1", maxCalls: 1 }],
+        aggregateCallLimit: 1,
+        callTimeoutMs: 1_000,
+        maxResultBytes: 4_096,
+        deniedCallCharge: "none",
+      },
+    };
+
+    const reply = await agent.reply(request);
+
+    expect(reply.trace.attempts.map((attempt) => attempt.turnSequence)).toEqual([1, 3]);
+    expect(reply.toolCalls.map((record) => record.turnSequence)).toEqual([2]);
+    await agent.dispose();
+  });
+
+  test("reports loop-guard failures as protocol failures without inventing attempts", async () => {
+    const deniedCall = (id: string): ScriptedToolMessage => ({
+      stopReason: "toolUse" as const,
+      content: [
+        { type: "toolCall", id, name: "filesystem", arguments: { path: "/etc" } },
+      ],
+    });
+    const fake = scriptedToolStream([
+      deniedCall("pi-call-1"),
+      deniedCall("pi-call-2"),
+      deniedCall("pi-call-3"),
+      deniedCall("pi-call-4"),
+    ]);
+    const agent = new PiAgent({
+      model: MODEL,
+      modelStream: fake.stream,
+      usageEvidence: { explicitlyReported: [], source: "test" },
+      tools: [{ toolId: "web-search", schemaVersion: "1", tool: WEB_SEARCH_TOOL }],
+      now: clock(1_000),
+    });
+    const request: TurnRequest = {
+      ...REQUEST,
+      capabilities: {
+        policyId: "research",
+        policyVersion: "1",
+        evidence: "recorded",
+        role: { id: "proposer", version: "1" },
+        phase: "proposal",
+        allowedTools: [{ toolId: "web-search", schemaVersion: "1", maxCalls: 1 }],
+        aggregateCallLimit: 1,
+        callTimeoutMs: 1_000,
+        maxResultBytes: 4_096,
+        deniedCallCharge: "none",
+      },
+    };
+
+    const error = await rejectionError(agent.reply(request));
+
+    expect(error).toBeInstanceOf(AgentFailure);
+    const failure = error as AgentFailure;
+    expect(failure.code).toBe("protocol_failure");
+    // Three completed model steps, all succeeded; no fictitious extra attempt.
+    expect(failure.trace.attempts).toHaveLength(3);
+    expect(failure.trace.attempts.every((attempt) => attempt.status === "succeeded")).toBe(true);
+    await agent.dispose();
+  });
+
   test("records every returned tool call before failing on the loop guard", async () => {
     const deniedCall = (id: string): ScriptedToolMessage => ({
       stopReason: "toolUse" as const,

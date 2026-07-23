@@ -943,6 +943,21 @@ describe("replayCanonicalRun with independent tool drivers", () => {
     });
 
     expect(result.requests).toHaveLength(2);
+    expect(result.toolReplayGuarantee).toBe("independent");
+
+    const weaker = await replayCanonicalRun({
+      events: annotatedToolRun(),
+      configuration,
+    });
+    expect(weaker.toolReplayGuarantee).toBe("reauthorization-only");
+
+    expect(await rejectionMessage(replayCanonicalRun({
+      events: annotatedToolRun(),
+      configuration,
+      requireIndependentToolReplay: true,
+    }))).toBe(
+      "independent tool replay required but no driver was supplied for run-1:round-1:proposer",
+    );
   });
 
   test("detects recorded argument drift against the unchanged driver", async () => {
@@ -1069,5 +1084,15 @@ describe("replayCanonicalRun monetary controls", () => {
         },
       },
     }))).toBe("replay drift for run-1 at monetary.snapshotHash");
+  });
+});
+
+describe("replay tool-loop guarantee reporting", () => {
+  test("states the achieved guarantee and fails closed when independence is required", async () => {
+    const full = await replayCanonicalRun({
+      events: recordedRun(),
+      configuration: CONFIGURATION,
+    });
+    expect(full.toolReplayGuarantee).toBe("no-tool-calls");
   });
 });

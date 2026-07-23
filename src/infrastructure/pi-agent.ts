@@ -85,6 +85,8 @@ interface ObservedResponse {
 interface ModelStep {
   responses: readonly ObservedResponse[];
   message: AssistantMessage;
+  /** Sequence reserved at completion for a step with no observed response. */
+  fallbackSequence?: number;
 }
 
 interface ResolvedControls {
@@ -281,9 +283,12 @@ export class PiAgent implements AgentPort {
           signal: controller.signal,
         });
         message = await events.result();
+        const stepResponses = observedResponses.slice(responsesBefore);
         steps.push({
-          responses: observedResponses.slice(responsesBefore),
+          responses: stepResponses,
           message,
+          // Reserve the shared position now so later tool calls sequence after it.
+          ...(stepResponses.length === 0 ? { fallbackSequence: this.nextTurnSequence() } : {}),
         });
         messages.push(message);
         if (message.stopReason === "error" || message.stopReason === "aborted") break;
@@ -293,7 +298,9 @@ export class PiAgent implements AgentPort {
         );
         if (toolCalls.length === 0) break;
         if (dispatcher === undefined) {
-          throw new Error("model returned tool calls for a turn without a recorded tool policy");
+          throw new PiProtocolError(
+            "model returned tool calls for a turn without a recorded tool policy",
+          );
         }
         // Dispatch before any guard so every model-returned call is recorded.
         for (const toolCall of toolCalls) {
@@ -305,7 +312,7 @@ export class PiAgent implements AgentPort {
           messages.push(toToolResultMessage(toolCall, record));
         }
         if (iteration >= maxIterations) {
-          throw new Error("tool loop exceeded the policy call budget");
+          throw new PiProtocolError("tool loop exceeded the policy call budget");
         }
       }
     } catch (error) {
@@ -313,8 +320,13 @@ export class PiAgent implements AgentPort {
       const pending = observedResponses.slice(
         steps.reduce((count, step) => count + step.responses.length, 0),
       );
+      const isProtocolFailure = error instanceof PiProtocolError;
       throw new AgentFailure({
-        code: options.signal?.aborted ? "cancelled" : "provider_failure",
+        code: options.signal?.aborted
+          ? "cancelled"
+          : isProtocolFailure
+            ? "protocol_failure"
+            : "provider_failure",
         message: toError(error).message,
         trace: buildFailureTrace(
           steps,
@@ -322,6 +334,9 @@ export class PiAgent implements AgentPort {
           this.usageEvidence,
           options.signal?.aborted ? "aborted" : "failed",
           () => this.nextTurnSequence(),
+          // A local protocol failure ends the loop between model steps; no
+          // additional adapter attempt occurred, so none is synthesized.
+          !isProtocolFailure,
         ),
         ...failureToolCalls(),
       });
@@ -611,12 +626,17 @@ function buildSteppedTrace(
   return { attempts };
 }
 
+class PiProtocolError extends Error {
+  readonly name = "PiProtocolError";
+}
+
 function buildFailureTrace(
   steps: readonly ModelStep[],
   pending: readonly ObservedResponse[],
   evidence: UsageEvidence,
   finalStatus: "failed" | "aborted",
   nextTurnSequence: () => number,
+  appendSyntheticFailure = true,
 ): AgentTrace {
   const attempts: AttemptTrace[] = [];
   for (const step of steps) {
@@ -633,7 +653,8 @@ function buildFailureTrace(
         turnSequence,
       });
     });
-  } else if (attempts.length === 0 || attempts.every((attempt) => attempt.status === "succeeded")) {
+  } else if (appendSyntheticFailure
+    && (attempts.length === 0 || attempts.every((attempt) => attempt.status === "succeeded"))) {
     // The failing model step produced no observable response; record it explicitly.
     attempts.push({
       attempt: attempts.length + 1,
@@ -665,7 +686,7 @@ function appendStepAttempts(
       status: terminalStatus,
       usage: stepUsage,
       usageEvidence: structuredClone(evidence),
-      turnSequence: nextTurnSequence(),
+      turnSequence: step.fallbackSequence ?? nextTurnSequence(),
     });
     return;
   }

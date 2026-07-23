@@ -114,11 +114,19 @@ export function orderedTurnEvidence(
   ];
   const sequenceOf = (evidence: TurnEvidence): number | undefined =>
     evidence.kind === "attempt" ? evidence.attempt.turnSequence : evidence.record.turnSequence;
-  if (bucketed.length === 0 || bucketed.some((evidence) => sequenceOf(evidence) === undefined)) {
-    return bucketed;
+  const annotated = bucketed.filter((evidence) => sequenceOf(evidence) !== undefined);
+  if (annotated.length === 0) return bucketed;
+  if (annotated.length !== bucketed.length) {
+    throw new Error("turn evidence mixes sequenced and unsequenced evidence");
   }
-  return bucketed.slice().sort((left, right) =>
+  const ordered = bucketed.slice().sort((left, right) =>
     (sequenceOf(left) ?? 0) - (sequenceOf(right) ?? 0));
+  ordered.forEach((evidence, position) => {
+    if (sequenceOf(evidence) !== position + 1) {
+      throw new Error("shared turn sequence must be unique and consecutive from 1");
+    }
+  });
+  return ordered;
 }
 
 function deepFreeze<T>(value: T): T {

@@ -68,7 +68,8 @@ export type DebateFailureCode =
   | "turn_budget_exhausted"
   | "token_budget_exhausted"
   | "monetary_budget_exhausted"
-  | "cost_unknown";
+  | "cost_unknown"
+  | "protocol_failure";
 
 type BudgetObservedUsage = Pick<
   NormalizedUsage,
@@ -541,7 +542,11 @@ function normalizeDispatchFailure(
   }
   if (error instanceof AgentFailure) {
     return new DebateRunFailure({
-      code: error.code === "cancelled" ? "cancelled" : "provider_failure",
+      code: error.code === "cancelled"
+        ? "cancelled"
+        : error.code === "protocol_failure"
+          ? "protocol_failure"
+          : "provider_failure",
       message: error.message,
       turnId,
       trace: error.trace,

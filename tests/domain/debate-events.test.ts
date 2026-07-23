@@ -122,6 +122,67 @@ describe("projectDebateEvents", () => {
     expect(replay.requests).toEqual(requests.map((event) => event.data.request));
   });
 
+
+  test("refuses to record contradictory shared turn sequences", async () => {
+    const attempts: AgentReply["trace"]["attempts"] = [
+      { ...SUCCEEDED_ATTEMPT, attempt: 1, turnSequence: 1 },
+      { ...SUCCEEDED_ATTEMPT, attempt: 2, turnSequence: 1 },
+    ];
+    const running = runDebate({
+      debateId: "debate-1",
+      topic: "Project duplicates.",
+      roundCount: 1,
+      proposer: {
+        agent: new FixedAgent("Proposal", attempts),
+        role: PROPOSER_ROLE,
+        controls: CONTROLS,
+      },
+      reviewer: {
+        agent: new FixedAgent("Review", [{ ...SUCCEEDED_ATTEMPT, attempt: 1 }]),
+        role: REVIEWER_ROLE,
+        controls: CONTROLS,
+      },
+    });
+
+    let caught: unknown;
+    try {
+      await running;
+    } catch (error) {
+      caught = error;
+    }
+    expect(String(caught)).toContain("shared turn sequence must be unique and consecutive from 1");
+  });
+
+  test("refuses to record mixed sequenced and unsequenced evidence", async () => {
+    const attempts: AgentReply["trace"]["attempts"] = [
+      { ...SUCCEEDED_ATTEMPT, attempt: 1, turnSequence: 1 },
+      { ...SUCCEEDED_ATTEMPT, attempt: 2 },
+    ];
+    const running = runDebate({
+      debateId: "debate-1",
+      topic: "Project mixed evidence.",
+      roundCount: 1,
+      proposer: {
+        agent: new FixedAgent("Proposal", attempts),
+        role: PROPOSER_ROLE,
+        controls: CONTROLS,
+      },
+      reviewer: {
+        agent: new FixedAgent("Review", [{ ...SUCCEEDED_ATTEMPT, attempt: 1 }]),
+        role: REVIEWER_ROLE,
+        controls: CONTROLS,
+      },
+    });
+
+    let caught: unknown;
+    try {
+      await running;
+    } catch (error) {
+      caught = error;
+    }
+    expect(String(caught)).toContain("mixes sequenced and unsequenced evidence");
+  });
+
   test("projects sequenced attempts and tool calls in their shared turn order", async () => {
     const attempts: AgentReply["trace"]["attempts"] = [
       { ...SUCCEEDED_ATTEMPT, attempt: 1, turnSequence: 1 },

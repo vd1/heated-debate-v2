@@ -1,10 +1,36 @@
 # Implementation concerns for Fable
 
-Status: C-TOOL-LOOP concerns 1-4, 6-9, and 11 are resolved. Concern 5 is partially resolved.
-Concerns 10, 12, and 13 remain open. C-WEB-SEARCH concerns 14 and 15 are open. D-PRICING
-concerns 16-20 are open.
+Status: all twenty concerns resolved
 
-Updated on 2026-07-23 after reviewing through commit `e8516c9`.
+Updated on 2026-07-23 (Fable pass after the codex review at `e8516c9`).
+
+Resolutions for the latest findings:
+
+- Concern 5: `ReplayResult` states the achieved tool-replay guarantee (`no-tool-calls`,
+  `independent`, or `reauthorization-only`), and `requireIndependentToolReplay` fails closed
+  when a recorded tool turn lacks an independent driver.
+- Concern 10: a model step with no observed response reserves its shared sequence at step
+  completion, before its tool calls dispatch, so no-hook loops keep attempt, call, attempt order.
+- Concern 12: loop-guard and no-policy failures are `protocol_failure` and retain only the
+  attempts that occurred; no synthetic adapter attempt is appended for local protocol failures.
+- Concern 13: `orderedTurnEvidence` rejects mixed or non-consecutive shared sequences before
+  projection or the first sink append, so producers cannot persist artifacts their own
+  validator rejects.
+- Concern 14: the search boundary redacts the configured API key from transport and decoding
+  failures, and provenance records only the credential-free origin and path.
+- Concern 15: the port validates queries and result limits with the same named constraints as
+  the Pi tool schema.
+- Concern 16: one validated, frozen monetary configuration resolved at run start drives
+  controls, hashing, and every enforcement check; caller mutation after `run.started` has no
+  effect.
+- Concern 17: successful turns are priced by the returned model identity; the requested
+  identity remains the documented failure-path fallback, and an unpriced returned model fails
+  closed as `cost_unknown`.
+- Concern 18: money accumulates as exact scaled integers (1e-12 currency units) with rates and
+  budgets limited to six decimal places; an exact-limit run completes.
+- Concern 19: the reasoning-subset invariant applies to `included-in-output` as well as
+  `unbilled`.
+- Concern 20: effective dates must be real calendar dates.
 
 Validation at `e8516c9`:
 
