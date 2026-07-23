@@ -618,6 +618,15 @@ describe("canonical tool call events", () => {
   });
 
 
+  test("rejects fractional token counts in canonical usage", () => {
+    const attemptEvent = structuredClone(events()[2]);
+    if (attemptEvent?.type !== "adapter.attempt") throw new Error("bad fixture");
+    (attemptEvent.data.attempt.usage as Record<string, unknown>).inputTokens = 1.5;
+    expect(() => serializeCanonicalEvent(attemptEvent, { secrets: [] })).toThrow(
+      "usage.inputTokens must be a non-negative safe integer",
+    );
+  });
+
   test("round-trips optional shared turn sequences on attempts and tool calls", () => {
     const attemptEvent = structuredClone(events()[2]);
     if (attemptEvent?.type !== "adapter.attempt") throw new Error("bad fixture");

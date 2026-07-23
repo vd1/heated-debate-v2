@@ -149,7 +149,14 @@ export function calculateUsageCost(
   const entry = findPricingEntry(snapshot, model);
   if (!entry) throw new Error(`no pricing entry for ${model.providerId}/${model.modelId}`);
 
-  const missing: UsageKind[] = [];
+  for (const kind of ["inputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens", "reasoningTokens"] as const) {
+    const count = usage[kind];
+    if (count !== undefined && (!Number.isSafeInteger(count) || count < 0)) {
+      throw new Error(`${kind} must be a non-negative safe integer`);
+    }
+  }
+  const missingSet = new Set<UsageKind>();
+  const missing = { push: (kind: UsageKind): void => { missingSet.add(kind); } };
   let numerator = 0n;
 
   const priceKind = (kind: UsageKind, rate: number, tokens: number | undefined): bigint => {
@@ -165,9 +172,13 @@ export function calculateUsageCost(
   const billing = entry.reasoningBilling;
   const outputRate = entry.outputRatePerMillionTokens;
   if (billing.mode === "included-in-output") {
-    if (usage.reasoningTokens !== undefined && usage.outputTokens !== undefined
-      && usage.reasoningTokens > usage.outputTokens) {
-      throw new Error("reasoningTokens cannot exceed outputTokens");
+    if (usage.reasoningTokens !== undefined) {
+      // Reasoning is a subset of output; without the containing total the
+      // subset invariant cannot be established, so the cost is unknown.
+      if (usage.outputTokens === undefined) missing.push("outputTokens");
+      else if (usage.reasoningTokens > usage.outputTokens) {
+        throw new Error("reasoningTokens cannot exceed outputTokens");
+      }
     }
     numerator += priceKind("outputTokens", outputRate, usage.outputTokens);
   } else {
@@ -179,14 +190,17 @@ export function calculateUsageCost(
       if (reasoningAffectsPrice) missing.push("reasoningTokens");
       numerator += priceKind("outputTokens", outputRate, usage.outputTokens);
     } else if (billing.mode === "unbilled") {
-      if (usage.outputTokens !== undefined && usage.reasoningTokens > usage.outputTokens) {
+      if (usage.outputTokens === undefined) {
+        missing.push("outputTokens");
+      } else if (usage.reasoningTokens > usage.outputTokens) {
         throw new Error("reasoningTokens cannot exceed outputTokens");
+      } else {
+        numerator += priceKind(
+          "outputTokens",
+          outputRate,
+          usage.outputTokens - usage.reasoningTokens,
+        );
       }
-      numerator += priceKind(
-        "outputTokens",
-        outputRate,
-        usage.outputTokens === undefined ? undefined : usage.outputTokens - usage.reasoningTokens,
-      );
     } else {
       numerator += priceKind("outputTokens", outputRate, usage.outputTokens);
       numerator += BigInt(usage.reasoningTokens) * rateMicros(reasoningRate);
@@ -204,7 +218,7 @@ export function calculateUsageCost(
     usage.cacheWriteTokens,
   );
 
-  if (missing.length > 0) return { status: "unknown", missing };
+  if (missingSet.size > 0) return { status: "unknown", missing: [...missingSet] };
   // numerator is token-count times micro-rate: exactly 1e-12 currency units.
   return {
     status: "known",

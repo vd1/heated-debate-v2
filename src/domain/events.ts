@@ -810,7 +810,9 @@ function validateUsage(value: unknown, evidence: UsageEvidence): asserts value i
   assertExactFields(usage, [], [...USAGE_KINDS], "usage");
   for (const kind of USAGE_KINDS) {
     if (!hasOwn(usage, kind)) continue;
-    assertNonNegativeNumber(usage[kind], `usage.${kind}`);
+    if (!Number.isSafeInteger(usage[kind]) || (usage[kind] as number) < 0) {
+      throw new Error(`usage.${kind} must be a non-negative safe integer`);
+    }
     if (usage[kind] === 0 && !evidence.explicitlyReported.includes(kind)) {
       throw new Error(`zero ${kind} requires explicit reporting evidence`);
     }

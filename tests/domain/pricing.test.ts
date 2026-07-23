@@ -230,6 +230,28 @@ describe("usage-to-cost calculation", () => {
     });
   });
 
+  test("treats reasoning without an output total as unpriceable", () => {
+    for (const rule of [
+      undefined,
+      { mode: "unbilled" as const },
+    ]) {
+      const priced = rule === undefined ? SNAPSHOT : withReasoning(rule);
+      expect(calculateUsageCost(priced, CODEX, {
+        inputTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        reasoningTokens: 20,
+      })).toEqual({ status: "unknown", missing: ["outputTokens"] });
+    }
+  });
+
+  test("rejects fractional token counts defensively", () => {
+    expect(() => calculateUsageCost(SNAPSHOT, CODEX, {
+      inputTokens: 1.5,
+    })).toThrow("inputTokens must be a non-negative safe integer");
+  });
+
+
   test("rejects reasoning tokens exceeding output tokens outside separate-rate", () => {
     expect(() => calculateUsageCost(withReasoning({ mode: "unbilled" }), CODEX, {
       inputTokens: 0,

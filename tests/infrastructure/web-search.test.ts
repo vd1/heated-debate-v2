@@ -236,3 +236,44 @@ describe("web search secret containment and request validation", () => {
     }
   });
 });
+
+describe("residual secret and schema boundaries", () => {
+  test("redacts endpoint-derived credentials echoed by a throwing transport", async () => {
+    const endpoint = "https://user:password@search.example.test/search?api_key=query-secret";
+    const port = createHttpWebSearchPort({
+      provider: "test-search",
+      endpoint,
+      fetchFn: (url) => Promise.reject(new Error(`transport failed for ${url}`)),
+      now: () => 0,
+    });
+
+    let caught: unknown;
+    try {
+      await port.search({ query: "x" });
+    } catch (error) {
+      caught = error;
+    }
+    const message = (caught as Error).message;
+    expect(message).not.toContain("password");
+    expect(message).not.toContain("query-secret");
+  });
+
+  test("rejects whitespace-only queries at the tool schema before execution", async () => {
+    const { validateToolArguments } = await import("@earendil-works/pi-ai/compat");
+    const registration = createWebSearchToolRegistration(createHttpWebSearchPort({
+      provider: "test-search",
+      endpoint: "https://search.example.test/search",
+      fetchFn: fakeBackend(THREE_RESULTS),
+      now: () => 0,
+    }));
+
+    expect(() => {
+      validateToolArguments(registration.tool, {
+        type: "toolCall",
+        id: "c1",
+        name: "web-search",
+        arguments: { query: "   " },
+      });
+    }).toThrow();
+  });
+});

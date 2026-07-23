@@ -9,6 +9,9 @@ import type {
 } from "../domain/web-search";
 import type { PiToolRegistration } from "./pi-agent";
 
+/** Queries must contain at least one non-whitespace character. */
+export const QUERY_PATTERN = "\\S";
+
 export const MIN_RESULTS = 1;
 export const MAX_RESULTS = 20;
 
@@ -36,9 +39,17 @@ export function createHttpWebSearchPort(options: HttpWebSearchPortOptions): WebS
   const endpoint = new URL(options.endpoint);
   // Provenance must stay credential-free: origin and path only.
   const provenanceEndpoint = `${endpoint.origin}${endpoint.pathname}`;
-  const redact = (message: string): string => options.apiKey === undefined
-    ? message
-    : message.split(options.apiKey).join("[REDACTED]");
+  // Redact the header key plus every credential the configured endpoint carries.
+  const redactionValues = [
+    options.apiKey,
+    endpoint.username === "" ? undefined : decodeURIComponent(endpoint.username),
+    endpoint.password === "" ? undefined : decodeURIComponent(endpoint.password),
+    ...[...endpoint.searchParams.values()],
+  ].filter((value): value is string => value !== undefined && value.length > 0);
+  const redact = (message: string): string => redactionValues.reduce(
+    (redacted, secret) => redacted.split(secret).join("[REDACTED]"),
+    message,
+  );
 
   async function search(
     request: WebSearchRequest,
@@ -127,7 +138,7 @@ export function createWebSearchToolRegistration(port: WebSearchPort): PiToolRegi
       label: "Web search",
       description: "Search the web and return titled results with URLs and snippets.",
       parameters: Type.Object({
-        query: Type.String({ minLength: 1 }),
+        query: Type.String({ minLength: 1, pattern: QUERY_PATTERN }),
         maxResults: Type.Optional(Type.Integer({ minimum: MIN_RESULTS, maximum: MAX_RESULTS })),
       }),
       execute: async (_toolCallId, params, signal) => {
