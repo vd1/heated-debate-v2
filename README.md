@@ -13,7 +13,7 @@ C-JSONL, C-REPLAY, C-LIVE-ARTIFACT, C-MARKDOWN, C-FAILURES, and C-TOOL-POLICY ar
 Milestone C is
 complete; D-PRICING, D-CONFIG, and D-CONTROLS landed pricing, the validated
 `ExperimentConfig`, and the control propagation audit; see the
-[`D-CONTROLS review`](plans/d-controls-review.md). Milestone D is complete; Milestone E is complete; F-ENGINE-CLI landed the contract executable; F-OPTUNA is next.
+[`D-CONTROLS review`](plans/d-controls-review.md). Milestone D is complete; Milestone E is complete; All Milestone F machinery has landed; a live bounded study remains an opt-in execution, and the codex review continues.
 
 The original implementation remains in the sibling repository `../heated-debate/` and is treated
 as reference behavior, not as code to copy wholesale.

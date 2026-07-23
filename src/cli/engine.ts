@@ -30,7 +30,7 @@ import { runConfigForSpecification } from "../infrastructure/study-runner";
 interface EngineArgs {
   casesPath: string;
   artifactRoot: string;
-  agents: "scripted" | "hang";
+  agents: "scripted" | "hang" | "pi";
   allowNonPreregistered: boolean;
   attestationOut?: string;
 }
@@ -54,8 +54,8 @@ function parseArgs(argv: readonly string[]): EngineArgs {
   }
   if (args.casesPath === undefined) throw new Error("--cases is required");
   if (args.artifactRoot === undefined) throw new Error("--artifact-root is required");
-  if (args.agents !== "scripted" && args.agents !== "hang") {
-    throw new Error("--agents must be scripted or hang (Pi-backed agents arrive with F-STUDY)");
+  if (args.agents !== "scripted" && args.agents !== "hang" && args.agents !== "pi") {
+    throw new Error("--agents must be scripted, hang, or pi");
   }
   return args as EngineArgs;
 }
@@ -97,11 +97,20 @@ function scriptedReplyFor(model: { providerId: string; modelId: string }, text: 
   };
 }
 
-function createAgents(
+async function createAgents(
   mode: EngineArgs["agents"],
   model: { providerId: string; modelId: string },
   roundCount: number,
-): { proposer: AgentPort; reviewer: AgentPort } {
+): Promise<{ proposer: AgentPort; reviewer: AgentPort }> {
+  if (mode === "pi") {
+    const { ModelRuntime } = await import("@earendil-works/pi-coding-agent");
+    const { createPiAgentFromRuntime } = await import("../infrastructure/pi-agent");
+    const runtime = await ModelRuntime.create();
+    return {
+      proposer: await createPiAgentFromRuntime({ runtime, model }),
+      reviewer: await createPiAgentFromRuntime({ runtime, model }),
+    };
+  }
   if (mode === "hang") {
     const hang: AgentPort = {
       reply: () => new Promise(() => {
@@ -185,7 +194,7 @@ export async function runEngine(
     });
 
     const config = runConfigForSpecification(input.spec, run, benchmarkCase);
-    const agents = createAgents(args.agents, config.proposer.controls.model, config.roundCount);
+    const agents = await createAgents(args.agents, config.proposer.controls.model, config.roundCount);
     const artifactPath = join(args.artifactRoot, artifactPathForRun(run));
     await mkdir(dirname(artifactPath), { recursive: true });
     const temporary = `${artifactPath}.tmp`;

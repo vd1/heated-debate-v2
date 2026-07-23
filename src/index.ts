@@ -17,6 +17,7 @@ export * from "./domain/experiment-config";
 export * from "./domain/pricing";
 export * from "./domain/reliability";
 export * from "./domain/replay";
+export * from "./domain/report";
 export * from "./domain/reward";
 export * from "./domain/roles";
 export * from "./domain/rubric";
@@ -26,7 +27,9 @@ export * from "./domain/tool-policy";
 export * from "./domain/web-search";
 export * from "./infrastructure/jsonl-events";
 export * from "./infrastructure/pi-agent";
+export * from "./infrastructure/engine-client";
 export * from "./infrastructure/judge";
+export * from "./infrastructure/study-driver";
 export * from "./infrastructure/study-runner";
 export * from "./infrastructure/web-search";
 
