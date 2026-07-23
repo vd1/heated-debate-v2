@@ -1,7 +1,10 @@
 import type { BenchmarkCase } from "./cases";
 import { studyRunId, type StudySpec } from "./study-spec";
 
+export type MatrixPurpose = "selection" | "final-evaluation";
+
 export interface RunSpecification {
+  purpose: MatrixPurpose;
   runId: string;
   caseId: string;
   holdout: boolean;
@@ -19,7 +22,9 @@ export interface RunSpecification {
 export function generateExperimentMatrix(
   spec: StudySpec,
   cases: readonly BenchmarkCase[],
+  options: { purpose?: MatrixPurpose } = {},
 ): readonly RunSpecification[] {
+  const purpose = options.purpose ?? "selection";
   const byId = new Map<string, BenchmarkCase>();
   for (const benchmarkCase of cases) {
     if (byId.has(benchmarkCase.caseId)) {
@@ -27,7 +32,11 @@ export function generateExperimentMatrix(
     }
     byId.set(benchmarkCase.caseId, benchmarkCase);
   }
-  const orderedCaseIds = [...spec.benchmarkCaseIds, ...spec.holdoutCaseIds];
+  // Selection matrices never execute holdout cases; final evaluation is a
+  // separate explicitly requested matrix over the holdout set only.
+  const orderedCaseIds = purpose === "selection"
+    ? [...spec.benchmarkCaseIds]
+    : [...spec.holdoutCaseIds];
   for (const caseId of orderedCaseIds) {
     if (!byId.has(caseId)) throw new Error(`case ${caseId} is not defined`);
   }
@@ -50,6 +59,7 @@ export function generateExperimentMatrix(
         if (seen.has(runId)) throw new Error(`duplicate run ID ${runId}`);
         seen.add(runId);
         runs.push(Object.freeze({
+          purpose,
           runId,
           caseId,
           holdout: spec.holdoutCaseIds.includes(caseId),

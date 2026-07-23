@@ -16,6 +16,7 @@ import {
   evaluateTokenUsage,
   runDeterministicEvaluators,
 } from "../../src/domain/evaluators";
+import type { DeterministicScore } from "../../src/domain/evaluators";
 import type { CanonicalEvent } from "../../src/domain/events";
 import { PROPOSER_ROLE, REVIEWER_ROLE } from "../../src/domain/roles";
 
@@ -79,6 +80,11 @@ async function recordedRun(
   return sink.events;
 }
 
+function known(result: DeterministicScore): Extract<DeterministicScore, { status: "known" }> {
+  if (result.status !== "known") throw new Error(`expected known result: ${result.reason}`);
+  return result;
+}
+
 describe("deterministic evaluators", () => {
   test("scores a fully completed run as 1 and a failed run below it", async () => {
     const events = await recordedRun(
@@ -86,7 +92,7 @@ describe("deterministic evaluators", () => {
       [reply("- Review", 100, 50)],
       1,
     );
-    expect(evaluateCompletion(events).score).toBe(1);
+    expect(known(evaluateCompletion(events)).score).toBe(1);
 
     const sink = new MemorySink();
     const failing: AgentPort = {
@@ -111,7 +117,7 @@ describe("deterministic evaluators", () => {
       caught = error;
     }
     expect(caught).toBeDefined();
-    const failed = evaluateCompletion(sink.events);
+    const failed = known(evaluateCompletion(sink.events));
     expect(failed.score).toBe(0);
     expect(failed.detail).toContain("0 of 2 turns completed");
   });
@@ -122,7 +128,7 @@ describe("deterministic evaluators", () => {
       [reply("prose review without markers", 100, 10)],
       1,
     );
-    const score = evaluateContractMarkers(events, { contractMarkers: ["- "] });
+    const score = known(evaluateContractMarkers(events, { contractMarkers: ["- "] }));
     expect(score.score).toBe(0.5);
     expect(score.value).toBe(1);
   });
@@ -133,14 +139,14 @@ describe("deterministic evaluators", () => {
       [reply("first review here", 100, 10), reply("wholly different words", 100, 10)],
       2,
     );
-    expect(evaluateRepetition(repeated).score).toBe(0);
+    expect(known(evaluateRepetition(repeated)).score).toBe(0);
 
     const varied = await recordedRun(
       [reply("alpha beta gamma", 100, 10), reply("delta epsilon zeta", 100, 10)],
       [reply("first review here", 100, 10), reply("second look now", 100, 10)],
       2,
     );
-    expect(evaluateRepetition(varied).score).toBe(1);
+    expect(known(evaluateRepetition(varied)).score).toBe(1);
   });
 
   test("scores output shape within inclusive character bounds", async () => {
@@ -149,7 +155,7 @@ describe("deterministic evaluators", () => {
       [reply("x".repeat(50), 100, 10)],
       1,
     );
-    const score = evaluateOutputShape(events, { outputShape: { minChars: 3, maxChars: 60 } });
+    const score = known(evaluateOutputShape(events, { outputShape: { minChars: 3, maxChars: 60 } }));
     expect(score.score).toBe(0.5);
     expect(score.detail).toContain("1 of 2 replies");
   });
@@ -160,10 +166,10 @@ describe("deterministic evaluators", () => {
       [reply("- R", 100, 200)],
       1,
     );
-    const score = evaluateTokenUsage(events, { tokenBudget: 1_000 });
+    const score = known(evaluateTokenUsage(events, { tokenBudget: 1_000 }));
     expect(score.value).toBe(500);
     expect(score.score).toBe(0.5);
-    expect(evaluateTokenUsage(events).score).toBe(0);
+    expect(evaluateTokenUsage(events).status).toBe("unavailable");
   });
 
   test("normalizes mean turn latency against the target", async () => {
@@ -172,10 +178,10 @@ describe("deterministic evaluators", () => {
       [reply("- R", 400, 10)],
       1,
     );
-    const score = evaluateLatency(events, { latencyTargetMs: 600 });
+    const score = known(evaluateLatency(events, { latencyTargetMs: 600 }));
     expect(score.value).toBe(300);
     expect(score.score).toBe(0.5);
-    expect(evaluateLatency(events).score).toBe(0);
+    expect(evaluateLatency(events).status).toBe("unavailable");
   });
 
   test("runs all six evaluators with stable identities", async () => {
@@ -197,8 +203,51 @@ describe("deterministic evaluators", () => {
       "deterministic-latency",
     ]);
     for (const item of scores) {
-      expect(item.score).toBeGreaterThanOrEqual(0);
-      expect(item.score).toBeLessThanOrEqual(1);
+      const value = known(item);
+      expect(value.score).toBeGreaterThanOrEqual(0);
+      expect(value.score).toBeLessThanOrEqual(1);
     }
+  });
+});
+
+describe("evaluator boundary cases", () => {
+  test("missing usage evidence is unavailable, never a perfect score", async () => {
+    const noUsage: ScriptedReply = {
+      ...reply("- text", 100, 0),
+      trace: {
+        attempts: [{
+          attempt: 1,
+          status: "succeeded",
+          httpStatus: 200,
+          usage: {},
+          usageEvidence: { explicitlyReported: [], source: "test" },
+        }],
+      },
+    };
+    const events = await recordedRun([noUsage], [structuredClone(noUsage)], 1);
+
+    const result = evaluateTokenUsage(events, { tokenBudget: 100 });
+    expect(result.status).toBe("unavailable");
+  });
+
+  test("rejects invalid evaluator configuration instead of producing NaN", async () => {
+    const events = await recordedRun([reply("- P", 100, 10)], [reply("- R", 100, 10)], 1);
+    expect(() => evaluateLatency(events, { latencyTargetMs: Number.NaN })).toThrow(
+      "latencyTargetMs must be a finite positive number",
+    );
+    expect(() => evaluateTokenUsage(events, { tokenBudget: 0 })).toThrow(
+      "tokenBudget must be a positive safe integer",
+    );
+  });
+
+  test("repetition similarity stays within range for duplicated words", async () => {
+    const events = await recordedRun(
+      [reply("a", 100, 10), reply("a a a", 100, 10)],
+      [reply("x y", 100, 10), reply("p q", 100, 10)],
+      2,
+    );
+    const result = known(evaluateRepetition(events));
+    expect(result.value).toBeLessThanOrEqual(1);
+    expect(result.score).toBe(0);
   });
 });

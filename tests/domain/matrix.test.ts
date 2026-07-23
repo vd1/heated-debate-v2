@@ -49,10 +49,18 @@ describe("experiment matrix", () => {
     const first = generateExperimentMatrix(spec, FIXTURE_CASES);
     const second = generateExperimentMatrix(spec, FIXTURE_CASES);
 
-    // 3 cases (2 benchmark + 1 holdout) x 4 variants x 2 repetitions.
-    expect(first).toHaveLength(24);
+    // Selection: 2 benchmark cases x 4 variants x 2 repetitions; no holdout runs.
+    expect(first).toHaveLength(16);
     expect(second).toEqual(first);
-    expect(new Set(first.map((run) => run.runId)).size).toBe(24);
+    expect(new Set(first.map((run) => run.runId)).size).toBe(16);
+    expect(first.every((run) => run.purpose === "selection" && !run.holdout)).toBe(true);
+
+    const finalEvaluation = generateExperimentMatrix(spec, FIXTURE_CASES, {
+      purpose: "final-evaluation",
+    });
+    expect(finalEvaluation).toHaveLength(8);
+    expect(finalEvaluation.every((run) => run.holdout && run.purpose === "final-evaluation"))
+      .toBe(true);
 
     const sample = first[0];
     if (!sample) throw new Error("empty matrix");
@@ -66,7 +74,6 @@ describe("experiment matrix", () => {
       temperature: 0.2,
     });
     expect(sample.holdout).toBe(false);
-    expect(first.filter((run) => run.holdout)).toHaveLength(8);
   });
 
   test("rejects missing and duplicate case definitions", () => {

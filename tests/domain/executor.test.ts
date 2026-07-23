@@ -5,6 +5,7 @@ import type { RunSpecification } from "../../src/domain/matrix";
 
 function run(n: number): RunSpecification {
   return {
+    purpose: "selection",
     runId: `study:abc123def456:case-${String(n)}:thinkingLevel=low:rep1`,
     caseId: `case-${String(n)}`,
     holdout: false,
@@ -19,15 +20,22 @@ const id = (n: number): string => run(n).runId;
 
 describe("matrix executor", () => {
   test("maps run IDs to deterministic artifact paths", () => {
-    expect(artifactPathForRun(run(1))).toBe(
-      "study/abc123def456/case-1/thinkingLevel=low/rep1.jsonl",
+    const path = artifactPathForRun(run(1));
+    expect(path).toMatch(
+      /^study\/abc123def456\/case-1\/thinkingLevel=low\/rep1-[0-9a-f]{8}\.jsonl$/,
     );
-    // Path characters outside the safe set are replaced.
-    expect(artifactPathForRun({
+    // Sanitization is lossy, so distinct variant keys keep distinct paths.
+    const slash = artifactPathForRun({
       ...run(1),
-      runId: "study:abc123def456:case-1:temperature=0.2,x=a/b:rep1",
-      variantKey: "temperature=0.2,x=a/b",
-    })).toBe("study/abc123def456/case-1/temperature=0.2,x=a_b/rep1.jsonl");
+      runId: "study:abc123def456:case-1:x=a/b:rep1",
+      variantKey: "x=a/b",
+    });
+    const underscore = artifactPathForRun({
+      ...run(1),
+      runId: "study:abc123def456:case-1:x=a_b:rep1",
+      variantKey: "x=a_b",
+    });
+    expect(slash).not.toBe(underscore);
   });
 
   test("bounds concurrency and reports results in input order", async () => {

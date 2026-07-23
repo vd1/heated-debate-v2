@@ -66,7 +66,12 @@ function assertPlainJsonRecord(value: unknown, path: string): void {
 function ownProperties(value: Record<string, unknown>): Record<string, unknown> {
   const own: Record<string, unknown> = {};
   for (const key of Object.keys(value)) {
-    own[key] = value[key];
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (descriptor === undefined || descriptor.get !== undefined || descriptor.set !== undefined) {
+      throw new Error(`case fields must be plain data properties: ${key}`);
+    }
+    if (key === "toJSON") throw new Error("case fields must not define toJSON");
+    own[key] = descriptor.value;
   }
   return own;
 }
@@ -75,9 +80,7 @@ function ownProperties(value: Record<string, unknown>): Record<string, unknown> 
 export function defineCaseSet(values: readonly unknown[]): readonly BenchmarkCase[] {
   const seen = new Set<string>();
   const cases = values.map((value) => {
-    const parsed = value !== null && typeof value === "object" && Object.isFrozen(value)
-      ? parseBenchmarkCase(JSON.parse(JSON.stringify(value)))
-      : parseBenchmarkCase(value);
+    const parsed = parseBenchmarkCase(value);
     if (seen.has(parsed.caseId)) {
       throw new Error(`duplicate case ID ${parsed.caseId}`);
     }

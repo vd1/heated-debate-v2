@@ -36,6 +36,8 @@ export interface ReplayParticipantConfiguration {
 export interface ReplayConfiguration {
   /** Expected experiment identity; compared against recorded evidence when set. */
   experiment?: { configHash: string; caseId?: string };
+  /** Explicitly skip experiment-identity verification for a recorded identity. */
+  allowUnverifiedExperiment?: boolean;
   debateId: string;
   topic: string;
   roundCount: number;
@@ -142,6 +144,10 @@ async function replayCanonicalRunInternal(input: ReplayCanonicalRunInput): Promi
       configHash: configuration.experiment.configHash,
       caseId: configuration.experiment.caseId ?? null,
     }, "experiment");
+  } else if (trace.experiment !== null && configuration.allowUnverifiedExperiment !== true) {
+    throw new Error(
+      "recorded experiment identity requires an expected identity or allowUnverifiedExperiment",
+    );
   }
   const scheduler = new DebateScheduler(configuration);
   const reconstructed: DeepReadonly<TurnRequest>[] = [];

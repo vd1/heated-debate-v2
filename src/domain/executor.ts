@@ -1,15 +1,19 @@
+import { createHash } from "node:crypto";
+
 import type { RunSpecification } from "./matrix";
 
 /** Deterministic artifact path for one run, derived from its run-ID segments. */
 export function artifactPathForRun(run: RunSpecification): string {
   const safe = (segment: string): string => segment.replace(/[^A-Za-z0-9_.,=-]/g, "_");
   const [studyId, specHash] = run.runId.split(":", 2);
+  // Sanitization is lossy, so the full run ID digest keeps paths injective.
+  const digest = createHash("sha256").update(run.runId).digest("hex").slice(0, 8);
   return [
     safe(studyId ?? "study"),
     safe(specHash ?? "spec"),
     safe(run.caseId),
     safe(run.variantKey),
-    `rep${String(run.repetition)}.jsonl`,
+    `rep${String(run.repetition)}-${digest}.jsonl`,
   ].join("/");
 }
 
