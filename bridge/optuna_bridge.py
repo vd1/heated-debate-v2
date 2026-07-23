@@ -19,7 +19,7 @@ import sys
 ENGINE_SCHEMA_VERSION = "1"
 
 
-def run_trial(engine: list[str], engine_input: dict) -> dict:
+def run_engine(engine: list[str], engine_input: dict) -> dict:
     completed = subprocess.run(
         engine,
         input=json.dumps(engine_input).encode(),
@@ -29,11 +29,31 @@ def run_trial(engine: list[str], engine_input: dict) -> dict:
     stdout = completed.stdout.decode()
     lines = [line for line in stdout.split("\n") if line]
     if len(lines) != 1:
-        raise RuntimeError(f"engine stdout must be exactly one line, got {len(lines)}")
-    output = json.loads(lines[0])
+        raise RuntimeError(
+            f"engine stdout must be exactly one line, got {len(lines)}: "
+            f"{completed.stderr.decode()[-500:]}"
+        )
+    return json.loads(lines[0])
+
+
+def run_trial(engine: list[str], engine_input: dict) -> dict:
+    output = run_engine(engine, engine_input)
     if output.get("schemaVersion") != ENGINE_SCHEMA_VERSION:
         raise RuntimeError(f"unsupported engine schema version: {output.get('schemaVersion')}")
     return output
+
+
+def resolve_run_id(engine: list[str], spec: dict, case_id: str, point: dict) -> str:
+    """The engine computes run identity; the bridge never re-derives it."""
+    output = run_engine(engine + ["--print-run-id"], {
+        "schemaVersion": ENGINE_SCHEMA_VERSION,
+        "spec": spec,
+        "run": {"caseId": case_id, "point": point, "repetition": 0},
+    })
+    run_id = output.get("runId")
+    if not isinstance(run_id, str) or not run_id:
+        raise RuntimeError(f"engine did not resolve a run identity: {output}")
+    return run_id
 
 
 def objective_factory(spec: dict, cases_path: str, engine: list[str], artifact_root: str):
@@ -46,21 +66,22 @@ def objective_factory(spec: dict, cases_path: str, engine: list[str], artifact_r
             dimension: trial.suggest_categorical(dimension, values)
             for dimension, values in varied.items()
         }
+        engine_flags = engine + ["--cases", cases_path, "--artifact-root", artifact_root,
+                                 "--agents", "scripted"]
+        case_id = spec["benchmarkCaseIds"][0]
+        run_id = resolve_run_id(engine_flags, spec, case_id, point)
+        trial.set_user_attr("runId", run_id)
         engine_input = {
             "schemaVersion": ENGINE_SCHEMA_VERSION,
             "spec": spec,
             "run": {
-                "runId": trial.user_attrs["runId"],
-                "caseId": spec["benchmarkCaseIds"][0],
+                "runId": run_id,
+                "caseId": case_id,
                 "point": point,
                 "repetition": 0,
             },
         }
-        output = run_trial(
-            engine + ["--cases", cases_path, "--artifact-root", artifact_root,
-                      "--agents", "scripted"],
-            engine_input,
-        )
+        output = run_trial(engine_flags, engine_input)
         if output["status"] == "failure":
             raise optuna.TrialPruned(output["failure"]["message"])
         reward = output["reward"]

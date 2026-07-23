@@ -97,10 +97,15 @@ async function spawnEngine(
 
 describe("engine CLI", () => {
   test("executes a run, writes the artifact, and frames one reward line", async () => {
+    // Git evidence is pinned to a dirty worktree so the asserted development
+    // mode does not depend on whether the checkout running the suite is clean.
     const { code, stdout, stderr } = await spawnEngine(engineInput(), [
       "--allow-non-preregistered",
       "--attestation-out", join(workdir, "attestation.json"),
-    ]);
+    ], {
+      HEATED_DEBATE_GIT_COMMIT: "testcommit1",
+      HEATED_DEBATE_GIT_CLEAN: "0",
+    });
 
     expect(code).toBe(0);
     const output = parseEngineOutput(stdout);
@@ -216,5 +221,26 @@ describe("engine CLI", () => {
     const output = parseEngineOutput(stdout);
     if (output.status !== "failure") throw new Error(output.status);
     expect(output.failure.code).toBe("interrupted");
+  }, 20_000);
+
+  test("prints the computed run identity for input without a runId", async () => {
+    const spec = parseStudySpec(structuredClone(SPEC_JSON));
+    const queueCase = FIXTURE_CASES.find((item) => item.caseId === "fixture-bounded-queue");
+    if (!queueCase) throw new Error("missing fixture");
+    const expected = studyRunId(spec, {
+      caseId: "fixture-bounded-queue",
+      caseHash: benchmarkCaseHash(queueCase),
+      point: { thinkingLevel: "low" },
+      repetition: 0,
+    });
+
+    const { code, stdout } = await spawnEngine(JSON.stringify({
+      schemaVersion: ENGINE_SCHEMA_VERSION,
+      spec: SPEC_JSON,
+      run: { caseId: "fixture-bounded-queue", point: { thinkingLevel: "low" }, repetition: 0 },
+    }), ["--print-run-id", "--allow-non-preregistered"]);
+
+    expect(code).toBe(0);
+    expect(JSON.parse(stdout)).toEqual({ runId: expected });
   }, 20_000);
 });

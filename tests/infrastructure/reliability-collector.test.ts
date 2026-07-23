@@ -168,12 +168,73 @@ describe("reliability collector", () => {
       createAgent: () => Promise.resolve(new ScriptedAgent([judgeReply(VALID_RESPONSE)])),
       persistRecord: () => Promise.resolve(),
       sampleCount: 4,
-      budgets: { maxTotalTokens: 300 },
+      budgets: { maxTotalTokens: 300, maxSampleTokens: 150 },
     });
 
     expect(outcome.samples).toHaveLength(2);
     expect(outcome.missingEvaluations).toHaveLength(2);
     expect(outcome.missingEvaluations[0]?.reason).toContain("budget");
+  });
+
+  test("never dispatches when even the first sample bound exceeds the ceiling", async () => {
+    const events = await sourceEvents();
+    const outcome = await collectReliabilitySamples({
+      spec: parseStudySpec(structuredClone(SPEC_JSON)),
+      rubric: RUBRIC,
+      events,
+      judgeControls: { model: JUDGE_MODEL, thinkingLevel: "low" },
+      createAgent: () => Promise.resolve(new ScriptedAgent([judgeReply(VALID_RESPONSE)])),
+      persistRecord: () => Promise.resolve(),
+      sampleCount: 4,
+      budgets: { maxTotalTokens: 100, maxSampleTokens: 150 },
+    });
+
+    // A 100-token ceiling with a 150-token bound admits nothing; the ceiling
+    // is a hard limit, not a target that the first sample may overshoot.
+    expect(outcome.samples).toHaveLength(0);
+    expect(outcome.totalTokens).toBe(0);
+    expect(outcome.missingEvaluations).toHaveLength(4);
+  });
+
+  test("a ceiling without a declared per-sample bound is rejected", async () => {
+    const events = await sourceEvents();
+    let caught: unknown;
+    try {
+      await collectReliabilitySamples({
+        spec: parseStudySpec(structuredClone(SPEC_JSON)),
+        rubric: RUBRIC,
+        events,
+        judgeControls: { model: JUDGE_MODEL, thinkingLevel: "low" },
+        createAgent: () => Promise.resolve(new ScriptedAgent([judgeReply(VALID_RESPONSE)])),
+        persistRecord: () => Promise.resolve(),
+        sampleCount: 2,
+        budgets: { maxTotalTokens: 300 },
+      });
+    } catch (error) {
+      caught = error;
+    }
+    expect(String(caught)).toContain("per-sample bound");
+  });
+
+  test("a sample exceeding its declared bound fails loudly", async () => {
+    const events = await sourceEvents();
+    let caught: unknown;
+    try {
+      await collectReliabilitySamples({
+        spec: parseStudySpec(structuredClone(SPEC_JSON)),
+        rubric: RUBRIC,
+        events,
+        judgeControls: { model: JUDGE_MODEL, thinkingLevel: "low" },
+        createAgent: () => Promise.resolve(new ScriptedAgent([judgeReply(VALID_RESPONSE)])),
+        persistRecord: () => Promise.resolve(),
+        sampleCount: 2,
+        budgets: { maxTotalTokens: 1_000, maxSampleTokens: 100 },
+      });
+    } catch (error) {
+      caught = error;
+    }
+    // 150 observed tokens falsify the declared 100-token bound.
+    expect(String(caught)).toContain("declared bound");
   });
 
   test("keeps unavailable evaluations instead of silently dropping them", async () => {
@@ -288,12 +349,12 @@ describe("reliability collector", () => {
       createAgent: () => Promise.resolve(new ScriptedAgent([judgeReply(VALID_RESPONSE)])),
       persistRecord: () => Promise.resolve(),
       sampleCount: 4,
-      budgets: { maxTotalTokens: 400 },
+      budgets: { maxTotalTokens: 400, maxSampleTokens: 150 },
     });
 
-    // Each sample costs 150 tokens. After two samples (300), the observed
-    // conservative bound (150) no longer fits the remaining 100, so the third
-    // sample must not dispatch and the ceiling is never crossed.
+    // Each sample costs 150 tokens. After two samples (300), the declared
+    // bound (150) no longer fits the remaining 100, so the third sample must
+    // not dispatch and the ceiling is never crossed.
     expect(outcome.samples).toHaveLength(2);
     expect(outcome.totalTokens).toBe(300);
     expect(outcome.missingEvaluations).toHaveLength(2);

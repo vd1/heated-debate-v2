@@ -126,4 +126,38 @@ describe("engine schema", () => {
     if (parsed.status !== "reward") throw new Error(parsed.status);
     expect(parsed.reward.status).toBe("known");
   });
+
+  test("rejects reward objects that do not satisfy the reward contract", () => {
+    const frame = (reward: unknown): string =>
+      JSON.stringify({ schemaVersion: ENGINE_SCHEMA_VERSION, status: "reward", reward }) + "\n";
+    expect(() => parseEngineOutput(frame({}))).toThrow("reward");
+    expect(() => parseEngineOutput(frame({
+      rewardVersion: "1", rewardId: "reward", configHash: "a".repeat(64),
+      status: "known",
+    }))).toThrow("reward");
+    expect(() => parseEngineOutput(frame({
+      rewardVersion: "1", rewardId: "reward", configHash: "a".repeat(64),
+      status: "known",
+      measurements: {
+        scope: "single-run", quality: 1, tokensUsedFraction: 0, latencyFraction: 0,
+        failed: false, variance: null, monetaryFraction: null,
+      },
+      vector: {
+        qualityTerm: Number.NaN, tokenCostTerm: 0, latencyTerm: 0,
+        failureTerm: 0, varianceTerm: 0, monetaryTerm: 0,
+      },
+      scalar: 1,
+    }))).toThrow("finite");
+    expect(() => parseEngineOutput(frame({
+      rewardVersion: "1", rewardId: "reward", configHash: "short",
+      status: "unavailable", reason: "r",
+    }))).toThrow("configHash");
+    // A conformant unavailable reward still parses.
+    const unavailable = parseEngineOutput(frame({
+      rewardVersion: "1", rewardId: "reward", configHash: "a".repeat(64),
+      status: "unavailable", reason: "quality is unavailable",
+    }));
+    if (unavailable.status !== "reward") throw new Error(unavailable.status);
+    expect(unavailable.reward.status).toBe("unavailable");
+  });
 });

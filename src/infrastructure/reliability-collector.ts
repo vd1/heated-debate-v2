@@ -16,7 +16,17 @@ export interface ReliabilityCollectionInput {
   createAgent(): Promise<AgentPort>;
   persistRecord(record: EvaluationRecord): Promise<void>;
   sampleCount: number;
-  budgets?: { maxTotalTokens?: number; maxTotalAmount?: number };
+  /**
+   * Hard ceilings with their DECLARED per-sample worst-case bounds. A ceiling
+   * without its bound is rejected: the bound is what lets the collector prove
+   * before dispatch that a sample cannot cross the ceiling.
+   */
+  budgets?: {
+    maxTotalTokens?: number;
+    maxSampleTokens?: number;
+    maxTotalAmount?: number;
+    maxSampleAmount?: number;
+  };
   secrets?: readonly string[];
 }
 
@@ -95,38 +105,43 @@ export async function collectReliabilitySamples(
   }
   const debaterModel = debaterModelOf(input.events);
   const orderings = presentationPlan(input.spec.samplerSeed, input.sampleCount);
+  const tokenCeiling = input.budgets?.maxTotalTokens ?? null;
+  const tokenBound = input.budgets?.maxSampleTokens ?? null;
+  if (tokenCeiling !== null && tokenBound === null) {
+    throw new Error("a token ceiling requires a declared per-sample bound");
+  }
   const maxAmountScaled = input.budgets?.maxTotalAmount === undefined
     ? null
     : scaledCurrencyAmount(input.budgets.maxTotalAmount, "budgets.maxTotalAmount");
+  const amountBoundScaled = input.budgets?.maxSampleAmount === undefined
+    ? null
+    : scaledCurrencyAmount(input.budgets.maxSampleAmount, "budgets.maxSampleAmount");
+  if (maxAmountScaled !== null && amountBoundScaled === null) {
+    throw new Error("a monetary ceiling requires a declared per-sample bound");
+  }
 
   const samples: ReliabilitySample[] = [];
   const missingEvaluations: { sampleId: string; reason: string }[] = [];
   let totalTokens = 0;
   let totalCostScaled = 0n;
-  // Conservative per-sample bounds observed so far: repeated evaluations of
-  // the same artifact under the same controls; the most expensive sample seen
-  // bounds the next one. The first dispatch has no observation and is the
-  // documented allowed overage.
-  let maxSampleTokens = 0;
-  let maxSampleCostScaled = 0n;
-
   for (const [index, ordering] of orderings.entries()) {
     const start = input.events[0];
     const runId = start?.runId ?? "unknown";
     const sampleId = `${runId}:rel-${String(index)}`;
-    if (input.budgets?.maxTotalTokens !== undefined
-      && totalTokens + maxSampleTokens > input.budgets.maxTotalTokens) {
+    // Every dispatch, including the first, must provably fit the ceiling.
+    if (tokenCeiling !== null && tokenBound !== null
+      && totalTokens + tokenBound > tokenCeiling) {
       missingEvaluations.push({
         sampleId,
-        reason: "token budget cannot cover the sample's conservative bound",
+        reason: "token budget cannot cover the sample's declared bound",
       });
       continue;
     }
-    if (maxAmountScaled !== null
-      && totalCostScaled + maxSampleCostScaled > maxAmountScaled) {
+    if (maxAmountScaled !== null && amountBoundScaled !== null
+      && totalCostScaled + amountBoundScaled > maxAmountScaled) {
       missingEvaluations.push({
         sampleId,
-        reason: "monetary budget cannot cover the sample's conservative bound",
+        reason: "monetary budget cannot cover the sample's declared bound",
       });
       continue;
     }
@@ -167,10 +182,18 @@ export async function collectReliabilitySamples(
     }
     totalTokens += sampleTokens;
     totalCostScaled += sampleCostScaled;
-    maxSampleTokens = Math.max(maxSampleTokens, sampleTokens);
-    maxSampleCostScaled = sampleCostScaled > maxSampleCostScaled
-      ? sampleCostScaled
-      : maxSampleCostScaled;
+    // An observation above the declared bound falsifies the budget proof.
+    if (tokenBound !== null && sampleTokens > tokenBound) {
+      throw new Error(
+        `judge sample ${sampleId} used ${String(sampleTokens)} tokens, `
+        + `exceeding its declared bound of ${String(tokenBound)}`,
+      );
+    }
+    if (amountBoundScaled !== null && sampleCostScaled > amountBoundScaled) {
+      throw new Error(
+        `judge sample ${sampleId} spend exceeded its declared monetary bound`,
+      );
+    }
     if (result.status !== "known") {
       missingEvaluations.push({ sampleId, reason: result.reason });
       continue;

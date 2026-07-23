@@ -49,7 +49,14 @@ if (!LIVE_ENABLED || SPEC_PATH === undefined) {
         createAgent: () => createPiAgentFromRuntime({ runtime, model: LIVE_MODEL }),
         persistRecord: () => Promise.resolve(),
         sampleCount: Math.min(spec.reliabilityThresholds.minimumSampleCount, 6),
-        budgets: { maxTotalTokens: spec.budgets.perRun.maxTokens },
+        budgets: {
+          // Each judge sample is bounded by the spec's per-run token budget;
+          // the ceiling covers the whole bounded probe.
+          maxTotalTokens:
+            spec.budgets.perRun.maxTokens
+            * Math.min(spec.reliabilityThresholds.minimumSampleCount, 6),
+          maxSampleTokens: spec.budgets.perRun.maxTokens,
+        },
       }),
       LIVE_TURN_TIMEOUT_MS * 6,
       "reliability collection",

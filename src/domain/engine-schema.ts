@@ -22,8 +22,14 @@ export type EngineOutput =
       failure: { code: string; message: string };
     };
 
-/** Parses one engine invocation from untrusted stdin text. */
-export function parseEngineInput(text: string): EngineInput {
+/**
+ * Parses one engine invocation from untrusted stdin text. Identity-resolution
+ * callers may omit run.runId; every execution path requires it.
+ */
+export function parseEngineInput(
+  text: string,
+  options: { requireRunId?: boolean } = {},
+): EngineInput {
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
@@ -55,7 +61,10 @@ export function parseEngineInput(text: string): EngineInput {
       throw new Error(`unknown field at engine input run: ${key}`);
     }
   }
-  if (typeof run.runId !== "string" || run.runId.length === 0) {
+  const requireRunId = options.requireRunId ?? true;
+  if (run.runId === undefined && !requireRunId) {
+    run.runId = "";
+  } else if (typeof run.runId !== "string" || run.runId.length === 0) {
     throw new Error("run.runId must be a non-empty string");
   }
   if (typeof run.caseId !== "string" || run.caseId.length === 0) {
@@ -71,7 +80,7 @@ export function parseEngineInput(text: string): EngineInput {
     schemaVersion: ENGINE_SCHEMA_VERSION,
     spec,
     run: {
-      runId: run.runId,
+      runId: run.runId as string,
       caseId: run.caseId,
       point: structuredClone(run.point) as Readonly<Record<string, unknown>>,
       repetition: run.repetition as number,
@@ -109,9 +118,7 @@ export function parseEngineOutput(text: string): EngineOutput {
     throw new Error(`unsupported engine schema version: ${String(raw.schemaVersion)}`);
   }
   if (raw.status === "reward") {
-    if (typeof raw.reward !== "object" || raw.reward === null) {
-      throw new Error("reward output must carry a reward object");
-    }
+    validateRewardOutput(raw.reward);
     return structuredClone(parsed) as EngineOutput;
   }
   if (raw.status === "failure") {
@@ -127,4 +134,67 @@ export function parseEngineOutput(text: string): EngineOutput {
     return structuredClone(parsed) as EngineOutput;
   }
   throw new Error(`unknown engine output status: ${String(raw.status)}`);
+}
+
+/** Full reward-contract validation; a bare or partial object is not a reward. */
+function validateRewardOutput(value: unknown): void {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("reward output must carry a reward object");
+  }
+  const reward = value as Record<string, unknown>;
+  if (reward.rewardVersion !== "1") {
+    throw new Error("reward.rewardVersion must be \"1\"");
+  }
+  if (typeof reward.rewardId !== "string" || reward.rewardId.trim().length === 0) {
+    throw new Error("reward.rewardId must be a non-empty string");
+  }
+  if (typeof reward.configHash !== "string" || !/^[0-9a-f]{64}$/.test(reward.configHash)) {
+    throw new Error("reward.configHash must be a sha256 hex digest");
+  }
+  if (reward.status === "unavailable") {
+    if (typeof reward.reason !== "string" || reward.reason.length === 0) {
+      throw new Error("unavailable reward must carry a reason");
+    }
+    return;
+  }
+  if (reward.status !== "known") {
+    throw new Error(`reward.status must be known or unavailable, got ${String(reward.status)}`);
+  }
+  const vector = reward.vector;
+  if (typeof vector !== "object" || vector === null || Array.isArray(vector)) {
+    throw new Error("known reward must carry a vector object");
+  }
+  const terms = [
+    "qualityTerm", "tokenCostTerm", "latencyTerm",
+    "failureTerm", "varianceTerm", "monetaryTerm",
+  ];
+  for (const term of terms) {
+    const termValue = (vector as Record<string, unknown>)[term];
+    if (typeof termValue !== "number" || !Number.isFinite(termValue)) {
+      throw new Error(`reward.vector.${term} must be a finite number`);
+    }
+  }
+  if (typeof reward.scalar !== "number" || !Number.isFinite(reward.scalar)) {
+    throw new Error("reward.scalar must be a finite number");
+  }
+  const measurements = reward.measurements;
+  if (typeof measurements !== "object" || measurements === null || Array.isArray(measurements)) {
+    throw new Error("known reward must carry a measurements object");
+  }
+  const record = measurements as Record<string, unknown>;
+  if (record.scope !== "single-run") {
+    throw new Error("reward.measurements.scope must be \"single-run\"");
+  }
+  for (const name of [
+    "quality", "tokensUsedFraction", "latencyFraction", "variance", "monetaryFraction",
+  ]) {
+    const measurement = record[name];
+    if (measurement !== null
+      && (typeof measurement !== "number" || !Number.isFinite(measurement))) {
+      throw new Error(`reward.measurements.${name} must be null or a finite number`);
+    }
+  }
+  if (typeof record.failed !== "boolean") {
+    throw new Error("reward.measurements.failed must be a boolean");
+  }
 }

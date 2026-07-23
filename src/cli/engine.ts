@@ -32,11 +32,13 @@ interface EngineArgs {
   artifactRoot: string;
   agents: "scripted" | "hang" | "pi";
   allowNonPreregistered: boolean;
+  /** Resolve and print the run identity for input without a runId, then exit. */
+  printRunId: boolean;
   attestationOut?: string;
 }
 
 function parseArgs(argv: readonly string[]): EngineArgs {
-  const args: Partial<EngineArgs> = { allowNonPreregistered: false };
+  const args: Partial<EngineArgs> = { allowNonPreregistered: false, printRunId: false };
   for (let index = 0; index < argv.length; index += 1) {
     const flag = argv[index];
     const next = (): string => {
@@ -49,6 +51,7 @@ function parseArgs(argv: readonly string[]): EngineArgs {
     else if (flag === "--artifact-root") args.artifactRoot = next();
     else if (flag === "--agents") args.agents = next() as EngineArgs["agents"];
     else if (flag === "--allow-non-preregistered") args.allowNonPreregistered = true;
+    else if (flag === "--print-run-id") args.printRunId = true;
     else if (flag === "--attestation-out") args.attestationOut = next();
     else throw new Error(`unknown flag: ${flag ?? ""}`);
   }
@@ -149,10 +152,30 @@ export async function runEngine(
   }
   let input;
   try {
-    input = parseEngineInput(stdinText);
+    input = parseEngineInput(stdinText, { requireRunId: !args.printRunId });
   } catch (error) {
     emit(serializeEngineOutput(fail("invalid_input", messageOf(error))));
     return 2;
+  }
+  if (args.printRunId) {
+    // Identity resolution keeps run-ID computation on one side of the
+    // process boundary; consumers like the Optuna bridge never re-derive it.
+    try {
+      const cases = defineCaseSet(JSON.parse(await Bun.file(args.casesPath).text()) as unknown[]);
+      const benchmarkCase = cases.find((item) => item.caseId === input.run.caseId);
+      if (!benchmarkCase) throw new Error(`case ${input.run.caseId} is not defined`);
+      const runId = studyRunId(input.spec, {
+        caseId: input.run.caseId,
+        caseHash: benchmarkCaseHash(benchmarkCase),
+        point: input.run.point,
+        repetition: input.run.repetition,
+      });
+      emit(`${JSON.stringify({ runId })}\n`);
+      return 0;
+    } catch (error) {
+      emit(serializeEngineOutput(fail("invalid_input", messageOf(error))));
+      return 2;
+    }
   }
   try {
     const attestation = assertPreregisteredStudy(input.spec, {

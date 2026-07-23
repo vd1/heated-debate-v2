@@ -75,6 +75,11 @@ describe("engine trial client", () => {
         status: "reward",
         reward: {
           rewardVersion: "1", rewardId: "reward", status: "known",
+          configHash: "a".repeat(64),
+          measurements: {
+            scope: "single-run", quality: 1, tokensUsedFraction: 0,
+            latencyFraction: 0, failed: false, variance: null, monetaryFraction: null,
+          },
           vector: {
             qualityTerm: 1, tokenCostTerm: 0, latencyTerm: 0,
             failureTerm: 0, varianceTerm: 0, monetaryTerm: 0,
