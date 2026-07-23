@@ -94,6 +94,30 @@ describe("experiment matrix", () => {
     expect(sample.holdout).toBe(false);
   });
 
+  test("normalizes semantically unordered declarations and fails closed on collisions", () => {
+    const spec = parseStudySpec(structuredClone(SPEC_JSON));
+    const reordered = parseStudySpec({
+      ...structuredClone(SPEC_JSON),
+      variedParameters: [
+        { dimensionId: "temperature", values: [1, 0.2] },
+        { dimensionId: "thinkingLevel", values: ["high", "low"] },
+      ],
+    });
+    // Dimension and value declaration order is not semantic.
+    expect(studySpecHash(reordered)).toBe(studySpecHash(spec));
+    expect(generateExperimentMatrix(reordered, FIXTURE_CASES))
+      .toEqual(generateExperimentMatrix(spec, FIXTURE_CASES));
+
+    // The digest is injectable; within one matrix the identity segments keep
+    // run IDs distinct, and cross-matrix collisions fail closed at the
+    // executor's artifact-identity comparison.
+    const injected = generateExperimentMatrix(spec, FIXTURE_CASES, {
+      specDigestFn: () => "0".repeat(64),
+    });
+    expect(injected.every((item) => item.runId.includes(":000000000000:"))).toBe(true);
+    expect(new Set(injected.map((item) => item.runId)).size).toBe(injected.length);
+  });
+
   test("rejects missing and duplicate case definitions", () => {
     const spec = parseStudySpec(structuredClone(SPEC_JSON));
 

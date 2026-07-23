@@ -92,23 +92,36 @@ describe("study spec", () => {
     const runId = studyRunId(spec, {
       caseId: "fixture-bounded-queue",
       caseHash,
-      variantKey: 'thinkingLevel="low"',
+      point: { thinkingLevel: "low" },
       repetition: 2,
     });
     expect(runId).toBe(
       `study-thinking-sweep:${hash.slice(0, 12)}:fixture-bounded-queue:`
       + `${caseHash.slice(0, 12)}:thinkingLevel="low":rep2`,
     );
+    // The variant key derives from a validated point, never from caller text.
+    expect(() => studyRunId(spec, {
+      caseId: "fixture-bounded-queue",
+      caseHash,
+      point: { nonsense: true },
+      repetition: 0,
+    })).toThrow("parameter point must cover exactly the varied dimensions");
+    expect(() => studyRunId(spec, {
+      caseId: "fixture-bounded-queue",
+      caseHash,
+      point: { thinkingLevel: "medium" },
+      repetition: 0,
+    })).toThrow("point value for thinkingLevel is not among the declared values");
     expect(() => studyRunId(spec, {
       caseId: "unknown-case",
       caseHash,
-      variantKey: 'thinkingLevel="low"',
+      point: { thinkingLevel: "low" },
       repetition: 0,
     })).toThrow("caseId unknown-case is not part of the study");
     expect(() => studyRunId(spec, {
       caseId: "fixture-bounded-queue",
       caseHash,
-      variantKey: 'thinkingLevel="low"',
+      point: { thinkingLevel: "low" },
       repetition: 3,
     })).toThrow("repetition must be an integer from 0 to 2");
   });

@@ -1,8 +1,8 @@
 import { benchmarkCaseHash, type BenchmarkCase } from "./cases";
 import {
-  canonicalParameterValue,
   studyRunId,
   studySpecHash,
+  variantKeyForPoint,
   type StudySpec,
 } from "./study-spec";
 
@@ -32,7 +32,11 @@ export interface RunSpecification {
 export function generateExperimentMatrix(
   spec: StudySpec,
   cases: readonly BenchmarkCase[],
-  options: { purpose?: MatrixPurpose } = {},
+  options: {
+    purpose?: MatrixPurpose;
+    /** Injectable digest so identity collisions fail closed in tests. */
+    specDigestFn?: (spec: StudySpec) => string;
+  } = {},
 ): readonly RunSpecification[] {
   const purpose = options.purpose ?? "selection";
   const byId = new Map<string, BenchmarkCase>();
@@ -66,9 +70,7 @@ export function generateExperimentMatrix(
       );
   const variants = points.map((variant) => ({
     variant,
-    variantKey: Object.keys(variant).sort()
-      .map((key) => `${key}=${canonicalParameterValue(variant[key])}`)
-      .join(","),
+    variantKey: variantKeyForPoint(spec, variant),
   })).sort((left, right) => left.variantKey.localeCompare(right.variantKey));
   const specHash = studySpecHash(spec);
 
@@ -80,10 +82,15 @@ export function generateExperimentMatrix(
     const caseHash = benchmarkCaseHash(benchmarkCase);
     for (const { variant, variantKey } of variants) {
       for (let repetition = 0; repetition < spec.repetitions; repetition += 1) {
-        const runId = studyRunId(spec, { caseId, caseHash, variantKey, repetition });
+        const runId = studyRunId(
+          spec,
+          { caseId, caseHash, point: variant, repetition },
+          options.specDigestFn,
+        );
+        void variantKey;
         if (seen.has(runId)) throw new Error(`duplicate run ID ${runId}`);
         seen.add(runId);
-        runs.push(Object.freeze({
+        runs.push(deepFreezeRun({
           purpose,
           runId,
           specHash,
@@ -112,4 +119,14 @@ function finalEvaluationPoint(spec: StudySpec): Record<string, unknown> {
     point[dimension.dimensionId] = structuredClone(value);
   }
   return point;
+}
+
+function deepFreezeRun(run: RunSpecification): RunSpecification {
+  const freeze = (value: unknown): void => {
+    if (typeof value !== "object" || value === null || Object.isFrozen(value)) return;
+    for (const key of Reflect.ownKeys(value)) freeze(Reflect.get(value, key));
+    Object.freeze(value);
+  };
+  freeze(run);
+  return run;
 }

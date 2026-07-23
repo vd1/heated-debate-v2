@@ -326,12 +326,13 @@ describe("D-CONTROLS end-to-end propagation audit", () => {
     expect(JSON.stringify(completed.controls)).not.toContain("web-search");
   });
 
-  test("declares exactly the five audited dimensions matrix-eligible", () => {
+  test("declares only variable audited dimensions matrix-eligible", () => {
+    // The creativity schedule stays audited but ineligible: only one
+    // implementation exists, so the dimension cannot take two distinct values.
     expect(MATRIX_ELIGIBLE_CONTROL_DIMENSIONS.map((dimension) => `${dimension.id}:${dimension.enforcement}`)).toEqual([
       "thinkingLevel:provider-taxonomy",
       "maxOutputTokens:provider-taxonomy",
       "temperature:provider-taxonomy",
-      "creativitySchedule:prompt-instruction",
       "toolCapabilityPolicy:project-dispatcher",
     ]);
     expect(Object.isFrozen(MATRIX_ELIGIBLE_CONTROL_DIMENSIONS)).toBe(true);

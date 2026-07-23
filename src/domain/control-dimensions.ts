@@ -17,12 +17,13 @@ export interface ControlDimension {
  * experiment matrix. Provider taxonomy applies to thinking, output limit, and
  * temperature; creativity is an exact prompt instruction and tool allowlists
  * are enforced by the project dispatcher, so neither ever carries provider
- * verification.
+ * verification. The creativity schedule is audited but not matrix-eligible:
+ * only linear-cooling@1 is implemented, so the dimension cannot take two
+ * distinct values until a second schedule exists.
  */
 export const MATRIX_ELIGIBLE_CONTROL_DIMENSIONS: readonly ControlDimension[] = Object.freeze([
   Object.freeze({ id: "thinkingLevel", enforcement: "provider-taxonomy" as const }),
   Object.freeze({ id: "maxOutputTokens", enforcement: "provider-taxonomy" as const }),
   Object.freeze({ id: "temperature", enforcement: "provider-taxonomy" as const }),
-  Object.freeze({ id: "creativitySchedule", enforcement: "prompt-instruction" as const }),
   Object.freeze({ id: "toolCapabilityPolicy", enforcement: "project-dispatcher" as const }),
 ]);

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 import { MATRIX_ELIGIBLE_CONTROL_DIMENSIONS } from "./control-dimensions";
 import { definePricingSnapshot, type PricingSnapshot } from "./pricing";
+import { assertToolCapabilityPolicy } from "./tool-policy";
 
 export interface StudySpec {
   specVersion: "1";
@@ -66,16 +67,11 @@ export function parseDimensionValue(dimensionId: string, value: unknown): unknow
         throw new Error(`maxOutputTokens value ${JSON.stringify(value)} is invalid`);
       }
       return value;
-    case "creativitySchedule": {
-      const schedule = record(value, "creativitySchedule value");
-      exactFields(schedule, ["scheduleId", "scheduleVersion"], "creativitySchedule value");
-      if (schedule.scheduleId !== "linear-cooling" || schedule.scheduleVersion !== "1") {
-        throw new Error("creativitySchedule value must be linear-cooling@1");
-      }
-      return { scheduleId: "linear-cooling", scheduleVersion: "1" };
+    case "toolCapabilityPolicy": {
+      const policy = structuredClone(record(value, "toolCapabilityPolicy value"));
+      assertToolCapabilityPolicy(policy);
+      return policy;
     }
-    case "toolCapabilityPolicy":
-      return structuredClone(record(value, "toolCapabilityPolicy value"));
     default:
       throw new Error(`varied dimension ${dimensionId} is not matrix-eligible`);
   }
@@ -141,12 +137,29 @@ export function parseStudySpec(value: unknown): StudySpec {
       canonicalValues.add(canonical);
       return parsed;
     });
-    return { dimensionId, values };
+    return {
+      dimensionId,
+      values: [...values].sort((left, right) =>
+        canonicalParameterValue(left).localeCompare(canonicalParameterValue(right))),
+    };
   });
-  const fixedParameters = record(raw.fixedParameters, "fixedParameters");
-  for (const key of Object.keys(fixedParameters)) {
+  variedParameters.sort((left, right) => left.dimensionId.localeCompare(right.dimensionId));
+  const fixedRaw = record(raw.fixedParameters, "fixedParameters");
+  const fixedParameters: Record<string, unknown> = {};
+  for (const key of Object.keys(fixedRaw)) {
     if (seenDimensions.has(key)) {
       throw new Error(`fixed parameter ${key} overlaps a varied dimension`);
+    }
+    // Fixed parameters go through the same run-configuration value rules.
+    if (key === "roundCount") {
+      if (!Number.isSafeInteger(fixedRaw.roundCount) || (fixedRaw.roundCount as number) <= 0) {
+        throw new Error("fixedParameters.roundCount must be a positive safe integer");
+      }
+      fixedParameters.roundCount = fixedRaw.roundCount;
+    } else if (eligible.has(key)) {
+      fixedParameters[key] = parseDimensionValue(key, fixedRaw[key]);
+    } else {
+      throw new Error(`unknown fixed parameter ${key}`);
     }
   }
 
@@ -247,6 +260,11 @@ export function parseStudySpec(value: unknown): StudySpec {
       throw new Error(`baseline value for ${key} is not among the declared values`);
     }
   }
+  for (const dimension of variedParameters) {
+    if (!(dimension.dimensionId in baseline)) {
+      throw new Error(`baseline must cover varied dimension ${dimension.dimensionId}`);
+    }
+  }
 
   return deepFreeze({
     specVersion: "1",
@@ -292,9 +310,35 @@ export function studySpecHash(spec: StudySpec): string {
  * Every generated run ID references the study-spec hash and the case content
  * hash; repetitions are zero-based.
  */
+/** Derives the canonical variant key from a validated parameter point. */
+export function variantKeyForPoint(
+  spec: StudySpec,
+  point: Readonly<Record<string, unknown>>,
+): string {
+  const keys = Object.keys(point).sort();
+  const expected = spec.variedParameters.map((item) => item.dimensionId).sort();
+  if (keys.join(",") !== expected.join(",")) {
+    throw new Error("parameter point must cover exactly the varied dimensions");
+  }
+  return keys.map((key) => {
+    const dimension = spec.variedParameters.find((item) => item.dimensionId === key);
+    const canonical = canonicalParameterValue(parseDimensionValue(key, point[key]));
+    if (!dimension?.values.some((value) => canonicalParameterValue(value) === canonical)) {
+      throw new Error(`point value for ${key} is not among the declared values`);
+    }
+    return `${key}=${canonical}`;
+  }).join(",");
+}
+
 export function studyRunId(
   spec: StudySpec,
-  run: { caseId: string; caseHash: string; variantKey: string; repetition: number },
+  run: {
+    caseId: string;
+    caseHash: string;
+    point: Readonly<Record<string, unknown>>;
+    repetition: number;
+  },
+  digestFn?: (spec: StudySpec) => string,
 ): string {
   if (!spec.benchmarkCaseIds.includes(run.caseId) && !spec.holdoutCaseIds.includes(run.caseId)) {
     throw new Error(`caseId ${run.caseId} is not part of the study`);
@@ -310,10 +354,10 @@ export function studyRunId(
   }
   return [
     spec.studyId,
-    studySpecHash(spec).slice(0, 12),
+    (digestFn ?? studySpecHash)(spec).slice(0, 12),
     run.caseId,
     run.caseHash.slice(0, 12),
-    run.variantKey,
+    variantKeyForPoint(spec, run.point),
     `rep${String(run.repetition)}`,
   ].join(":");
 }
@@ -366,7 +410,15 @@ function record(value: unknown, path: string): Record<string, unknown> {
   if (prototype !== Object.prototype && prototype !== null) {
     throw new Error(`${path} must be a plain JSON object`);
   }
-  return value as Record<string, unknown>;
+  const own: Record<string, unknown> = {};
+  for (const key of Object.keys(value)) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (descriptor === undefined || descriptor.get !== undefined || descriptor.set !== undefined) {
+      throw new Error(`${path} fields must be plain data properties`);
+    }
+    own[key] = descriptor.value;
+  }
+  return own;
 }
 
 function exactFields(value: Record<string, unknown>, known: readonly string[], path: string): void {
@@ -387,7 +439,7 @@ function stringArray(value: unknown, path: string, allowEmpty = false): string[]
     || value.some((item) => typeof item !== "string" || item.trim().length === 0)) {
     throw new Error(`${path} must be a non-empty string array`);
   }
-  return value as string[];
+  return [...(value as string[])];
 }
 
 function assertUnique(values: readonly string[], path: string): void {
