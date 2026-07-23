@@ -17,6 +17,12 @@ export const JUDGE_EVALUATOR_VERSION = "1";
 export interface JudgeEvaluatorOptions {
   rubric: Rubric;
   controls: RequestedControls;
+  /**
+   * Deterministic presentation permutation for reliability probes. It reorders
+   * only how completed turns are SHOWN to the judge; the canonical source
+   * chronology is never altered.
+   */
+  presentation?: { order: "forward" | "reversed" };
   /** A fresh agent per evaluation; the judge disposes it. */
   createAgent(): Promise<AgentPort>;
   /** Atomic persistence for the linked evaluation record. */
@@ -30,20 +36,25 @@ export interface JudgeEvaluation {
 }
 
 /** Renders the judge's source text solely from the declared canonical events. */
-export function renderJudgeSource(events: readonly CanonicalEvent[]): string {
+export function renderJudgeSource(
+  events: readonly CanonicalEvent[],
+  presentation: { order: "forward" | "reversed" } = { order: "forward" },
+): string {
   const roleByTurn = new Map<string, string>();
-  const lines: string[] = [];
+  let topic = "";
+  const turnLines: string[] = [];
   for (const event of events) {
     if (event.type === "run.started") {
-      lines.push(`Topic: ${event.data.topic}`);
+      topic = `Topic: ${event.data.topic}`;
     } else if (event.type === "turn.requested") {
       roleByTurn.set(event.data.request.turnId, event.data.request.role.id);
     } else if (event.type === "turn.completed") {
       const role = roleByTurn.get(event.data.turnId) ?? "unknown";
-      lines.push(`[${role}] ${event.data.reply.text}`);
+      turnLines.push(`[${role}] ${event.data.reply.text}`);
     }
   }
-  return lines.join("\n\n");
+  if (presentation.order === "reversed") turnLines.reverse();
+  return [topic, ...turnLines].join("\n\n");
 }
 
 function judgePrompt(rubric: Rubric, sourceText: string): string {
@@ -103,6 +114,7 @@ export function createJudgeEvaluator(options: JudgeEvaluatorOptions): {
     instruction: "Score precisely and conservatively.",
   });
   const contextPolicy = Object.freeze({ policyId: "last-exchange", policyVersion: "1" });
+  const presentation = Object.freeze(structuredClone(options.presentation ?? { order: "forward" as const }));
   // The full canonical digest of the complete semantic configuration.
   const configurationId = createHash("sha256")
     .update(canonicalJson({
@@ -115,6 +127,7 @@ export function createJudgeEvaluator(options: JudgeEvaluatorOptions): {
       creativity,
       contextPolicy,
       capabilities: "deny-all",
+      presentation,
     }))
     .digest("hex");
 
@@ -126,7 +139,7 @@ export function createJudgeEvaluator(options: JudgeEvaluatorOptions): {
       throw new Error("judge evaluation requires an initial run.started event");
     }
     const runId = start.runId;
-    const sourceText = renderJudgeSource(events);
+    const sourceText = renderJudgeSource(events, presentation);
     const messages = [{ role: "user" as const, content: judgePrompt(rubric, sourceText) }];
     const sourceArtifact = { runId, artifactHash: artifactEventsHash(events) };
     const base = {

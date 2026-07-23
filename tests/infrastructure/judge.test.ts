@@ -283,6 +283,49 @@ describe("judge evaluator", () => {
     expect(record.execution.attempts).toEqual([]);
   });
 
+  test("permutes presentation order without touching canonical chronology", async () => {
+    const events = await sourceEvents();
+    const frozen = structuredClone(events);
+    const requests: TurnRequest[] = [];
+    const response = JSON.stringify({
+      dimensions: {
+        specificity: { score: 4, evidence: "TTL needs jitter to avoid stampedes." },
+        verbosity: { score: 2 },
+      },
+    });
+    const build = (order: "forward" | "reversed") => createJudgeEvaluator({
+      rubric: RUBRIC,
+      controls: { model: MODEL, thinkingLevel: "high" },
+      presentation: { order },
+      createAgent: () => {
+        const agent = new ScriptedAgent([judgeReply(response)]);
+        return Promise.resolve({
+          reply: (request: TurnRequest) => {
+            requests.push(structuredClone(request));
+            return agent.reply(request);
+          },
+          dispose: () => agent.dispose(),
+        });
+      },
+      persistRecord: () => Promise.resolve(),
+    });
+
+    const forward = await build("forward").evaluate(events);
+    const reversed = await build("reversed").evaluate(events);
+
+    // The canonical source is untouched and both artifacts hash identically.
+    expect(events).toEqual(frozen);
+    expect(reversed.record.sourceArtifact.artifactHash)
+      .toBe(forward.record.sourceArtifact.artifactHash);
+    // The reversed transcript presents the completed turns in opposite order.
+    const forwardPrompt = requests[0]?.context.messages[0]?.content ?? "";
+    const reversedPrompt = requests[1]?.context.messages[0]?.content ?? "";
+    expect(forwardPrompt.indexOf("LRU cache")).toBeLessThan(forwardPrompt.indexOf("jitter"));
+    expect(reversedPrompt.indexOf("jitter")).toBeLessThan(reversedPrompt.indexOf("LRU cache"));
+    // Presentation is part of the executed configuration identity.
+    expect(forward.result.configurationId).not.toBe(reversed.result.configurationId);
+  });
+
   test("rejects fabricated evidence through the derived outcome", async () => {
     const events = await sourceEvents();
     const { evaluator } = harness(JSON.stringify({

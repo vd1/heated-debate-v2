@@ -27,6 +27,7 @@ export * from "./domain/tool-policy";
 export * from "./domain/web-search";
 export * from "./infrastructure/jsonl-events";
 export * from "./infrastructure/pi-agent";
+export * from "./infrastructure/reliability-collector";
 export * from "./infrastructure/engine-client";
 export * from "./infrastructure/judge";
 export * from "./infrastructure/study-driver";

@@ -36,6 +36,8 @@ export interface StudySpec {
     minimumSampleCount: number;
     maximumJudgeVariance: number;
     maximumOrderingBiasEffect: number;
+    maximumSelfPreferenceEffect?: number;
+    maximumJudgeDisagreement?: number;
   };
 }
 
@@ -225,6 +227,7 @@ export function parseStudySpec(value: unknown): StudySpec {
     thresholdsRaw,
     ["minimumSampleCount", "maximumJudgeVariance", "maximumOrderingBiasEffect"],
     "reliabilityThresholds",
+    ["maximumSelfPreferenceEffect", "maximumJudgeDisagreement"],
   );
   const reliabilityThresholds = {
     minimumSampleCount: safeCount(thresholdsRaw.minimumSampleCount, "minimumSampleCount"),
@@ -233,6 +236,18 @@ export function parseStudySpec(value: unknown): StudySpec {
       thresholdsRaw.maximumOrderingBiasEffect,
       "maximumOrderingBiasEffect",
     ),
+    ...(thresholdsRaw.maximumSelfPreferenceEffect === undefined ? {} : {
+      maximumSelfPreferenceEffect: nonNegativeNumber(
+        thresholdsRaw.maximumSelfPreferenceEffect,
+        "maximumSelfPreferenceEffect",
+      ),
+    }),
+    ...(thresholdsRaw.maximumJudgeDisagreement === undefined ? {} : {
+      maximumJudgeDisagreement: nonNegativeNumber(
+        thresholdsRaw.maximumJudgeDisagreement,
+        "maximumJudgeDisagreement",
+      ),
+    }),
   };
 
   if (!Number.isSafeInteger(raw.samplerSeed) || (raw.samplerSeed as number) < 0) {
@@ -427,9 +442,16 @@ function record(value: unknown, path: string): Record<string, unknown> {
   return own;
 }
 
-function exactFields(value: Record<string, unknown>, known: readonly string[], path: string): void {
+function exactFields(
+  value: Record<string, unknown>,
+  known: readonly string[],
+  path: string,
+  optional: readonly string[] = [],
+): void {
   for (const key of Object.keys(value)) {
-    if (!known.includes(key)) throw new Error(`unknown field at ${path}: ${key}`);
+    if (!known.includes(key) && !optional.includes(key)) {
+      throw new Error(`unknown field at ${path}: ${key}`);
+    }
   }
 }
 
