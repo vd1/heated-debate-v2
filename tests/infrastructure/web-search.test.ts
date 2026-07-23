@@ -170,3 +170,69 @@ describe("web search tool registration", () => {
     });
   });
 });
+
+describe("web search secret containment and request validation", () => {
+  test("redacts the API key from transport errors and normalizes the failure", async () => {
+    const port = createHttpWebSearchPort({
+      provider: "test-search",
+      endpoint: "https://search.example.test/search",
+      apiKey: "search-secret-123",
+      fetchFn: () => Promise.reject(new Error("transport logged Bearer search-secret-123")),
+      now: () => 0,
+    });
+
+    let caught: unknown;
+    try {
+      await port.search({ query: "queues" });
+    } catch (error) {
+      caught = error;
+    }
+    if (!(caught instanceof Error)) throw new Error("expected a transport failure");
+    expect(caught.message).not.toContain("search-secret-123");
+    expect(caught.message).toContain("[REDACTED]");
+  });
+
+  test("sanitizes credential-bearing endpoints out of provenance", async () => {
+    const port = createHttpWebSearchPort({
+      provider: "test-search",
+      endpoint: "https://user:password@search.example.test/search?api_key=query-secret",
+      fetchFn: fakeBackend(THREE_RESULTS),
+      now: () => 0,
+    });
+
+    const response = await port.search({ query: "queues" });
+
+    expect(response.provenance.endpoint).toBe("https://search.example.test/search");
+    const serialized = JSON.stringify(response);
+    expect(serialized).not.toContain("password");
+    expect(serialized).not.toContain("query-secret");
+  });
+
+  test("validates the request at the port boundary", async () => {
+    const port = createHttpWebSearchPort({
+      provider: "test-search",
+      endpoint: "https://search.example.test/search",
+      fetchFn: fakeBackend(THREE_RESULTS),
+      now: () => 0,
+    });
+
+    for (const query of ["", "   "]) {
+      let caught: unknown;
+      try {
+        await port.search({ query });
+      } catch (error) {
+        caught = error;
+      }
+      expect((caught as Error).message).toBe("query must be non-empty");
+    }
+    for (const maxResults of [0, -1, 1.5, Number.NaN, 21]) {
+      let caught: unknown;
+      try {
+        await port.search({ query: "queues", maxResults });
+      } catch (error) {
+        caught = error;
+      }
+      expect((caught as Error).message).toBe("maxResults must be an integer from 1 to 20");
+    }
+  });
+});
