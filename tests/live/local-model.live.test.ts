@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { Api, Model } from "@earendil-works/pi-ai";
 
+import { calculateUsageCost, definePricingSnapshot, pricingSnapshotHash } from "../../src/domain/pricing";
 import { createDenyAllToolPolicy } from "../../src/domain/tool-policy";
 import type { TurnRequest } from "../../src/domain/agent";
 import { PiAgent, streamFromModelRuntime } from "../../src/infrastructure/pi-agent";
@@ -65,7 +66,43 @@ if (!LIVE_ENABLED || LOCAL_URL === undefined) {
         "local model turn",
       );
       expect(reply.text.length).toBeGreaterThan(0);
-      expect(reply.model.providerId).toBe("local");
+      // Exact requested and returned identity, or an explicit alias mismatch failure.
+      expect(reply.model).toEqual({ providerId: "local", modelId: LOCAL_MODEL_ID });
+      expect(reply.controls.model.requested).toEqual({
+        providerId: "local",
+        modelId: LOCAL_MODEL_ID,
+      });
+      expect(reply.controls.model.forwarded).toEqual({
+        providerId: "local",
+        modelId: LOCAL_MODEL_ID,
+      });
+      expect(reply.controls.thinkingLevel.requested).toBe("off");
+      expect(reply.controls.maxOutputTokens?.requested).toBe(64);
+      // Zero API price per the versioned local entry; hardware and electricity
+      // cost are explicitly out of scope for this snapshot.
+      const localPricing = definePricingSnapshot({
+        snapshotId: "pricing-local-smoke",
+        snapshotVersion: "1",
+        currency: "USD",
+        effectiveDate: "2026-07-01",
+        provenance: "zero API price for a self-hosted endpoint; excludes hardware cost",
+        entries: [{
+          model: { providerId: "local", modelId: LOCAL_MODEL_ID },
+          inputRatePerMillionTokens: 0,
+          outputRatePerMillionTokens: 0,
+          cacheReadRatePerMillionTokens: 0,
+          cacheWriteRatePerMillionTokens: 0,
+          reasoningBilling: { mode: "included-in-output" },
+        }],
+      });
+      expect(pricingSnapshotHash(localPricing)).toMatch(/^[0-9a-f]{64}$/);
+      const cost = calculateUsageCost(localPricing, reply.model, reply.usage);
+      expect(cost).toEqual({
+        status: "known",
+        amount: 0,
+        amountScaled: 0n,
+        currency: "USD",
+      });
     } finally {
       await agent.dispose();
     }
