@@ -303,6 +303,29 @@ describe("judge evaluator", () => {
     expect(records).toHaveLength(0);
   });
 
+  test("rejects a source with more than one terminal event", async () => {
+    const events = await sourceEvents();
+    const terminal = events.at(-1);
+    if (terminal?.type !== "run.completed") throw new Error("bad fixture");
+    // A second terminal with a valid sequence number: still not a closed run.
+    const doubled = [...events, { ...structuredClone(terminal), sequence: events.length }];
+    const { evaluator, records } = harness(JSON.stringify({
+      dimensions: {
+        specificity: { score: 4, evidence: "Use an LRU cache with TTL." },
+        verbosity: { score: 2 },
+      },
+    }));
+
+    let caught: unknown;
+    try {
+      await evaluator.evaluate(doubled);
+    } catch (error) {
+      caught = error;
+    }
+    expect(String(caught)).toContain("terminal");
+    expect(records).toHaveLength(0);
+  });
+
   test("persists the record even when agent cleanup fails", async () => {
     const events = await sourceEvents();
     const records: EvaluationRecord[] = [];

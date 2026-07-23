@@ -139,9 +139,14 @@ export function createJudgeEvaluator(
     if (start?.type !== "run.started") {
       throw new Error("judge evaluation requires an initial run.started event");
     }
-    const terminal = events.at(-1);
-    if (terminal?.type !== "run.completed" && terminal?.type !== "run.failed") {
-      throw new Error("judge evaluation requires a terminal run.completed or run.failed event");
+    // A closed run has EXACTLY ONE terminal event, and it is the final one.
+    const terminals = events.filter(
+      (event) => event.type === "run.completed" || event.type === "run.failed",
+    );
+    if (terminals.length !== 1 || terminals[0] !== events.at(-1)) {
+      throw new Error(
+        "judge evaluation requires exactly one final terminal run.completed or run.failed event",
+      );
     }
     const runId = start.runId;
     const sourceText = renderJudgeSource(events, presentation);
