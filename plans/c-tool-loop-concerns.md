@@ -1,301 +1,193 @@
 # Implementation concerns for Fable
 
-Status: all twenty concerns resolved
+Status: concerns 1-13, 16-18, and 20 are resolved. Concerns 14, 15, and 19 are
+partially resolved. Concerns 21 and 22 are open.
 
-Updated on 2026-07-23 (Fable pass after the codex review at `e8516c9`).
+Updated on 2026-07-23 after reviewing through commit `3829d42`.
 
-Resolutions for the latest findings:
+Validation at `3829d42`:
 
-- Concern 5: `ReplayResult` states the achieved tool-replay guarantee (`no-tool-calls`,
-  `independent`, or `reauthorization-only`), and `requireIndependentToolReplay` fails closed
-  when a recorded tool turn lacks an independent driver.
-- Concern 10: a model step with no observed response reserves its shared sequence at step
-  completion, before its tool calls dispatch, so no-hook loops keep attempt, call, attempt order.
-- Concern 12: loop-guard and no-policy failures are `protocol_failure` and retain only the
-  attempts that occurred; no synthetic adapter attempt is appended for local protocol failures.
-- Concern 13: `orderedTurnEvidence` rejects mixed or non-consecutive shared sequences before
-  projection or the first sink append, so producers cannot persist artifacts their own
-  validator rejects.
-- Concern 14: the search boundary redacts the configured API key from transport and decoding
-  failures, and provenance records only the credential-free origin and path.
-- Concern 15: the port validates queries and result limits with the same named constraints as
-  the Pi tool schema.
-- Concern 16: one validated, frozen monetary configuration resolved at run start drives
-  controls, hashing, and every enforcement check; caller mutation after `run.started` has no
-  effect.
-- Concern 17: successful turns are priced by the returned model identity; the requested
-  identity remains the documented failure-path fallback, and an unpriced returned model fails
-  closed as `cost_unknown`.
-- Concern 18: money accumulates as exact scaled integers (1e-12 currency units) with rates and
-  budgets limited to six decimal places; an exact-limit run completes.
-- Concern 19: the reasoning-subset invariant applies to `included-in-output` as well as
-  `unbilled`.
-- Concern 20: effective dates must be real calendar dates.
-
-Validation at `e8516c9`:
-
-- `bun test`: 202 passed, 3 skipped, 0 failed.
+- `bun test`: 215 passed, 3 skipped, 0 failed.
 - `bun run typecheck`: passed.
 - `bun run lint`: passed.
 
-Passing checks do not close the remaining trace and accounting gaps below. The task contract in
+Passing checks do not cover the remaining boundary cases below. The task contract in
 `plans/implementation-plan.md` remains the acceptance baseline.
 
 ## Open concerns
 
-### 5. Full canonical replay is optional and silently falls back to self-comparison
+### 14. Endpoint credentials can still reach web-search failure records
 
 Severity: high
 
-Commit `ce2c1f5` adds the needed independent path. When `toolLoopDrivers` supplies a driver for a
-turn, canonical replay feeds it recorded results and detects request and final-text tampering. The
-new integration tests demonstrate that path.
+Status: partially resolved by `193469a`.
 
-The option is not required for a turn containing tool calls. If the callback is omitted or returns
-`undefined`, `replayRecordedToolLoop` retains the driver built from the same recorded calls and
-reply. `replayCanonicalRun` still succeeds and returns the same result type even though only policy
-re-authorization occurred. A caller can therefore believe it requested deterministic replay while
-silently receiving the weaker self-comparison path.
+The configured `apiKey` is now redacted from transport and decoding errors, and successful
+provenance records only the endpoint origin and path. Those changes close the originally
+reproduced Authorization-secret path and the successful-provenance path.
 
-Acceptance check: make full replay fail closed when a recorded tool turn lacks an independent
-driver, or expose the weaker operation under a separate API or explicit mode with a result that
-states which guarantee was achieved. Keep historical request reconstruction available, but do not
-report it as full tool-loop replay.
+The error boundary still preserves credentials carried in the configured endpoint. Its redactor
+only removes `options.apiKey`. If a transport includes the requested URL in its error, userinfo
+and credential-bearing query parameters are returned unchanged. This direct reproduction:
 
-### 10. A model step without a response hook is sequenced after its tool calls
+```text
+endpoint: https://user:password@example.test/search?api_key=query-secret
+transport error: transport failed for <requested URL>
+```
 
-Severity: high
+produces:
 
-Commit `87fd863` fixes the original accounting defect: model steps are grouped, successful
-tool-use responses remain successful, per-step usage is retained, and `AgentReply.usage` sums the
-steps. The response-hook path now has the expected attempt, tool call, attempt sequence.
+```text
+transport failed for https://user:password@example.test/search?api_key=query-secret&q=x&format=json
+```
 
-The no-hook path is still ordered incorrectly. A `ModelStep` with no observed response does not
-reserve a `turnSequence` when its result arrives. `appendStepAttempts` allocates that sequence only
-while building the trace after the whole loop. Any tool call from that step has already taken a
-sequence number from the shared counter. A two-step exchange without response hooks therefore
-records tool call 1, attempt 2, attempt 3 even though the first attempt occurred before the tool
-call.
+That message can still become a failed `turn.tool_call` outcome. The new tests exercise an API-key
+error and endpoint sanitization separately, so they do not cover this combined path or a canonical
+artifact.
 
-The current no-hook test covers a single model step without tools, so it cannot detect this
-inversion.
+Acceptance check: normalize transport and decoding errors without returning the raw request URL,
+or redact userinfo and sensitive query values derived from the configured endpoint as well as the
+header key. Add a canonical JSONL sentinel test whose credential-bearing endpoint is repeated by a
+throwing transport, and verify the serialized tool failure contains none of its credentials.
 
-Acceptance check: reserve the fallback attempt sequence as soon as a model step completes without
-an `onResponse` observation and before dispatching any returned calls. Add a two-step no-hook test
-that produces a tool call and final response, then assert attempt 1, tool call 2, attempt 3.
-
-### 12. Local tool-loop failures invent an adapter attempt that never occurred
-
-Severity: high
-
-The loop guard and the no-policy check both throw after a model step has completed successfully.
-The common catch path calls `buildFailureTrace`. When all completed attempts succeeded and there
-is no pending provider response, that function appends a synthetic failed attempt under the
-assumption that a model step failed without an observable response.
-
-No additional model request occurred in either local failure path. The resulting trace therefore
-claims an adapter attempt that did not happen and classifies the local protocol failure as
-`provider_failure`. This weakens attempt accounting and makes the new shared ordering contain a
-fictitious entry.
-
-Acceptance check: distinguish failures raised during an in-flight model step from failures raised
-after a completed step. The guard and no-policy tests should retain the completed successful
-attempts and calls without appending another adapter attempt. Record a normalized local loop or
-protocol failure code rather than a provider failure if the failure vocabulary permits it.
-
-### 13. Producers can emit a sequence that canonical validation later rejects
+### 15. Whitespace-only web queries pass the Pi schema before failing in the port
 
 Severity: medium
 
-Commit `ce2c1f5` adds strong read-time checks for annotated evidence: duplicates, gaps, inversions,
-and mixed sequenced and unsequenced entries are rejected by `validateCanonicalSequence`.
+Status: partially resolved by `193469a`.
 
-The production helper `orderedTurnEvidence` does not apply those checks. If every item is
-annotated, it sorts duplicate or gapped positions and emits them. If annotations are mixed, it
-falls back to bucket order and emits the mixed evidence. `projectDebateEvents` and live
-`runDebate` can therefore produce and persist a schema-v5 artifact that their own sequence
-validator rejects when it is later read or replayed.
+The exported port now rejects empty or whitespace-only queries and every invalid result-limit
+class. The numeric constraints are shared with the Pi tool schema.
 
-Acceptance check: validate shared turn positions before projection or the first sink append. Mixed
-annotations and non-consecutive annotated positions must fail before an invalid artifact is
-returned or persisted. Preserve the all-unsequenced compatibility path only where its weaker
-ordering guarantee is deliberate.
+The query constraint is not shared. The Pi schema still uses only `Type.String({ minLength: 1 })`,
+which accepts a string containing spaces. Such a call passes schema authorization, consumes an
+accepted tool execution, reaches the port, and becomes a tool error. The same semantic input is
+supposed to be rejected at the schema boundary as malformed arguments.
 
-### 14. Web-search credentials can still reach tool failure records and provenance
+Acceptance check: express the non-whitespace query rule in the Pi schema as well as the direct
+port validator. Add a dispatcher-level whitespace-query test that proves the executor is not
+entered and the result is classified consistently with other malformed arguments.
 
-Severity: high
-
-The normal status-error test does not exercise an error from the injected transport. The fetch
-function receives the Authorization value and can throw an error containing it. `search` forwards
-that error unchanged, the Pi tool forwards it unchanged, and the dispatcher persists it unless the
-same secret was separately supplied to `PiAgent`. `createWebSearchToolRegistration` does not expose
-the API key to that redaction boundary, and the runtime Pi factory has no secrets option.
-
-A direct reproduction with a fetch function that throws
-`transport logged Bearer search-secret-123` returns that exact message. This can become a failed
-`turn.tool_call` outcome.
-
-The success path has a second leak. `provenance.endpoint` copies the configured endpoint verbatim.
-An endpoint such as `https://user:password@example.test/search?api_key=query-secret` places both
-credentials in the successful JSON tool result and therefore in the run artifact. The current
-sentinel tests use a credential-free endpoint and inspect the port response, not serialized
-canonical success and failure events.
-
-Acceptance check: define a public, credential-free provenance endpoint separately or sanitize and
-validate the configured URL before use. Normalize transport and JSON-decoding failures without
-including raw backend messages, or redact the configured API key inside this boundary. Add
-canonical JSONL sentinel tests for a throwing transport and a credential-bearing endpoint, and
-verify neither the success nor failure artifact contains the secrets.
-
-### 15. The exported WebSearchPort implementation accepts invalid request limits
+### 19. Reasoning subset validation still permits reasoning without an output total
 
 Severity: medium
 
-The Pi tool schema requires a non-empty query and an integer `maxResults` from 1 through 20, but
-`createHttpWebSearchPort` does not enforce the same contract. The port is exported and can be used
-without Pi. Empty queries, zero, negative, fractional, non-finite, and oversized limits therefore
-reach the backend or JavaScript `slice` directly.
+Status: partially resolved by `6aedaae`.
 
-For example, `maxResults: -1` with two results returns one result and reports truncation as though
-the negative cap were meaningful. This makes the domain response dependent on accidental array
-semantics rather than the declared search contract.
+The explicit `reasoningTokens > outputTokens` case is now rejected under both
+`included-in-output` and `unbilled`.
 
-Acceptance check: validate and normalize the request at the port boundary, with table tests for an
-empty or whitespace-only query and every invalid limit class. Keep the Pi schema aligned with the
-same named constraints so direct and tool-mediated calls behave identically.
+The check runs only when both counts are present. A record containing `reasoningTokens: 20` with
+no `outputTokens` cannot establish that reasoning is a subset of output. Under
+`included-in-output` with a zero output rate, `calculateUsageCost` nevertheless returns a known
+zero cost. The same gap exists for `unbilled` when the applicable rate does not otherwise make the
+missing output count affect price.
 
-### 16. Monetary enforcement does not use the snapshot and limits pinned in run controls
+Acceptance check: when the billing rule defines reasoning as an output subset, require an output
+count whenever a reasoning count is present, or define and test a different explicit semantic for
+that evidence combination. Do not report the subset invariant as validated when the containing
+total is absent.
 
-Severity: high
-
-`runDebate` builds immutable `runControls` first, including `maxAmount` and the pricing snapshot
-hash. It then assigns `monetary` directly from `input.budget.monetary` and uses that original object
-for every threshold and cost calculation. The input object and its `snapshot` are not cloned,
-frozen, or validated through `definePricingSnapshot` at the runner boundary.
-
-A caller can mutate `maxAmount`, a rate, or the snapshot metadata after `run.started` is emitted.
-The artifact keeps the original amount and hash while enforcement uses the changed values. Even a
-properly frozen snapshot does not protect the mutable surrounding monetary-budget object.
-
-Acceptance check: resolve one validated, deeply frozen monetary configuration at run start and use
-that same local value for validation, controls, hashing, replay identity, and all enforcement.
-Mutating the caller's budget or raw snapshot after the first dispatch must not affect cost or
-threshold behavior, and the artifact hash must identify the exact table actually used.
-
-### 17. Successful turns are priced by requested model identity instead of returned identity
-
-Severity: high
-
-After a successful reply, `runDebate` passes `turn.request.controls.model` into
-`emitTurnEvidence`. It does not use `reply.model`, even though the adapter records the actual
-response model there and canonical `turn.completed` persists that returned identity.
-
-Provider aliases and routed model versions can therefore be charged at the requested model's rate
-while the artifact says a different model produced the reply. Validation also checks only that the
-two requested participant models exist in the snapshot.
-
-Acceptance check: price successful evidence against `reply.model` and require that identity in the
-resolved snapshot. For failures where no returned identity exists, record and document the
-requested-identity fallback explicitly. Add a test whose requested and returned models have
-different rates and verify the returned model determines the charge.
-
-### 18. Floating-point accumulation can report an overage at an exact monetary limit
-
-Severity: high
-
-Costs and `observedCost` are JavaScript numbers. Two exactly intended attempt costs of `0.1` and
-`0.2` accumulate as `0.30000000000000004`; the post-turn comparison treats that as greater than a
-`0.3` budget. An exact-budget final turn can therefore fail depending on decimal representation
-rather than the declared rates and token counts.
-
-Acceptance check: calculate and accumulate money in an exact unit or rational decimal
-representation, converting only for display. Add a multi-attempt equality test using decimal rates
-whose mathematical sum equals the limit, plus a minimally greater case that must fail.
-
-### 19. Included reasoning is not validated as a subset of output
+### 21. Token counts are accepted as fractional numbers but exact pricing requires integers
 
 Severity: medium
 
-The pricing contract says reasoning is a subset of output unless the rule is `separate-rate`.
-`calculateUsageCost` enforces `reasoningTokens <= outputTokens` only for `unbilled`. Under
-`included-in-output`, a usage record with 20 reasoning tokens and 10 output tokens is accepted and
-priced as known.
+`normalizeUsage` and canonical usage validation accept any finite non-negative number. They do not
+require token counts to be safe integers. The exact pricing implementation converts each present
+count with `BigInt(tokens)`.
 
-Acceptance check: apply the subset invariant to both `included-in-output` and `unbilled`, while
-leaving the explicitly disjoint `separate-rate` mode unchanged. Test both invalid subset modes.
+A direct reproduction normalizes `inputTokens: 1.5` successfully and then
+`calculateUsageCost` throws `RangeError: Not an integer`. In `runDebate`, that exception becomes
+`cost_unknown`; with token-only accounting permitted, the fractional count can continue into
+budget accounting and canonical evidence. Unsafe integer values are also accepted even though
+their exact token count is no longer represented reliably by a JavaScript number.
 
-### 20. Effective-date validation accepts impossible calendar dates
+Acceptance check: validate every token count as a non-negative safe integer at normalization and
+canonical parsing boundaries, and keep a defensive check in direct pricing. Add fractional,
+unsafe-integer, and valid-boundary tests so exact monetary arithmetic never depends on an
+uncaught `BigInt` conversion error.
 
-Severity: medium
+### 22. Producer-side sequence rejection leaves a started artifact without a terminal event
 
-`definePricingSnapshot` checks only the `YYYY-MM-DD` shape. Values such as `2026-02-31` and
-`2026-99-99` pass, are frozen, and receive a canonical hash even though they are not dates. The
-review describes the field as a validated ISO effective date.
+Severity: high
 
-Acceptance check: parse the components and require a real Gregorian calendar date whose canonical
-round trip equals the input. Add leap-year, invalid-day, and invalid-month rows.
+Commit `3829d42` prevents mixed, duplicate, or gapped turn evidence from being written. That
+resolves the original concern that a producer could persist evidence its reader later rejects.
+
+In live recording, validation occurs after `run.started` and `turn.requested` have already been
+appended and flushed. It is also outside the dispatch failure handler. If an `AgentPort` returns
+duplicate turn positions, `orderedTurnEvidence` throws, the outer catch only disposes the agents,
+and the raw error escapes without `turn.failed` or `run.failed`.
+
+The reproduced artifact event types are:
+
+```text
+run.started
+turn.requested
+```
+
+This contradicts the C-FAILURES invariant that every started run emits exactly one terminal
+outcome. The new producer tests omit a recording sink, so they do not observe the incomplete
+artifact.
+
+Acceptance check: normalize evidence-validation failures through the run failure path without
+writing the invalid evidence. Add a recording test for duplicate and mixed positions that asserts
+one `turn.failed`, one `run.failed`, no invalid attempt or tool-call event, and successful artifact
+parsing after closure.
 
 ## Resolved concerns
 
-### 1. Pi bypassed the dispatcher for unknown names and schema-invalid arguments
+### 1-4, 6-9, and 11
 
-Resolved by `aff61a9`. `PiAgent` now owns the model/tool loop, dispatches unknown names as policy
-denials, and converts non-coercible schema failures to `malformed_arguments` without executing the
-tool. The new tests cover both paths.
+The previously recorded dispatcher, trace preservation, secret-redaction, ordering, byte-count,
+non-text-result, and loop-guard concerns remain resolved by commits `94efdc7`, `aff61a9`,
+`5fc2d80`, and `87fd863`.
 
-### 2. A synchronous executor throw escaped without a record
+### 5. Replay now states and can require its achieved guarantee
 
-Resolved by `94efdc7`. Executor invocation is normalized through the dispatcher's guarded async
-boundary, and a synchronous-throw regression test produces a charged `tool_error` record.
+Resolved by `3829d42`. `ReplayResult.toolReplayGuarantee` distinguishes no tool calls,
+independent replay, and authorization-only replay. `requireIndependentToolReplay` fails closed
+when a recorded tool turn lacks an independent driver.
 
-### 3. Attempts and tool calls were projected in separate buckets
+### 10. No-hook model steps reserve their sequence before tool dispatch
 
-Resolved by `ce2c1f5` for correctly sequenced evidence. `orderedTurnEvidence` merges both record
-types by `turnSequence` for live and post-hoc artifacts, and canonical validation enforces a unique,
-consecutive sequence consistent with event order. Concern 13 covers invalid producer input before
-that read-time validation runs.
+Resolved by `3829d42`. The fallback attempt position is allocated when the model step completes.
+The regression proves attempt 1, tool call 2, attempt 3 for a tool loop without response hooks.
 
-### 4. Failed turns lost completed tool calls
+### 12. Known local loop failures no longer invent provider attempts
 
-Resolved by `5fc2d80`. `AgentFailure` and `DebateRunFailure` carry completed tool-call records, and
-the runner emits those records before `turn.failed`. A hard timeout still cannot recover records
-from an arbitrary adapter that ignores cancellation and never returns them.
+Resolved by `3829d42`. The no-policy and loop-guard paths use `protocol_failure`, retain the model
+steps that occurred, and do not append a synthetic adapter attempt.
 
-### 6. Configured secrets could leak through persisted tool-call failures
+### 13. Invalid shared positions are rejected by producers
 
-Resolved by `94efdc7` for the acceptance boundary. Canonical serialization redacts configured
-secrets from failed `turn.tool_call` outcomes, and tests verify the serialized replay input.
-`PiAgent` also accepts a secrets list for dispatcher-side redaction.
+Resolved by `3829d42` for the original artifact-validity issue. `orderedTurnEvidence` rejects
+mixed or non-consecutive annotations before an invalid evidence event is emitted or returned.
+Concern 22 covers terminal closure after that rejection.
 
-### 7. Concurrent dispatcher traces used completion order
+### 16. Monetary enforcement uses a resolved snapshot and limit
 
-Resolved by `94efdc7`. Records reserve their ordinal at invocation and occupy that ordinal's trace
-slot even when calls complete out of order.
+Resolved by `6aedaae`. The runner validates and clones the pricing snapshot and scales the maximum
+amount before its first asynchronous boundary. Later caller mutation does not change recorded
+controls or enforcement.
 
-### 8. Canonical validation trusted incorrect output byte counts
+### 17. Successful attempts use the returned model identity
 
-Resolved by `94efdc7`. Validation compares recorded counts with the actual UTF-8 length for both
-truncated and untruncated success outcomes.
+Resolved by `6aedaae`. Successful evidence is priced using `reply.model`, a returned identity
+missing from the snapshot fails closed, and the differing-rate regression verifies the choice.
 
-### 9. Pi silently dropped non-text tool result content
+### 18. Monetary accumulation uses exact scaled integers
 
-Resolved by `94efdc7`. Mixed or non-text result content produces the explicit
-`unsupported_result_content` executor error instead of a successful altered result.
+Resolved by `6aedaae`. Rates and limits have a bounded decimal scale, costs accumulate as integer
+units of `1e-12` currency, and exact `0.1 + 0.2 = 0.3` exhaustion completes.
 
-### 11. The loop guard discarded a returned tool call before recording it
+### 20. Effective dates require real calendar dates
 
-Resolved by `87fd863`. `PiAgent` dispatches all calls from a returned model message before applying
-the iteration guard, so the guard failure carries those records. A model call returned without a
-recorded policy now fails explicitly instead of producing a successful reply with an empty call
-trace.
+Resolved by `6aedaae`. Validation now rejects invalid months and days and covers leap-year
+behavior.
 
 ## Completion status
 
-Milestone C should not be declared complete while concerns 5, 10, 12, 13, 14, and 15 remain open.
-D-PRICING should not be declared complete while concerns 16-20 remain open.
-`plans/c-tool-loop-review.md` also retains stale descriptions of Pi wrappers, canonical schema v4,
-and limitations that the newer commits changed. `plans/c-web-search-review.md` claims the API key
-cannot reach errors and that secret-free run evidence was proved, but its tests do not cover the
-transport-error or canonical-artifact paths described in concern 14. `plans/d-pricing-review.md`
-claims the run uses an immutable snapshot and exact budget semantics, which concerns 16 and 18
-contradict.
+Milestone C should not be declared complete while concerns 14, 15, and 22 remain.
+D-PRICING should not be declared complete while concerns 19 and 21 remain.
+The `3829d42` review-file claim that all twenty concerns are resolved is therefore premature.

@@ -33,6 +33,11 @@ const RATE_FIELDS = [
 ] as const;
 
 export function definePricingSnapshot(snapshot: PricingSnapshot): PricingSnapshot {
+  assertExactFields(snapshot, [
+    "snapshotId", "snapshotVersion", "currency", "effectiveDate", "provenance", "entries",
+  ], "snapshot");
+  const entriesValue: unknown = snapshot.entries;
+  if (!Array.isArray(entriesValue)) throw new Error("snapshot.entries must be an array");
   assertNonEmpty(snapshot.snapshotId, "snapshotId");
   assertNonEmpty(snapshot.snapshotVersion, "snapshotVersion");
   if (!/^[A-Z]{3}$/.test(snapshot.currency)) {
@@ -46,6 +51,11 @@ export function definePricingSnapshot(snapshot: PricingSnapshot): PricingSnapsho
 
   const seen = new Set<string>();
   for (const entry of snapshot.entries) {
+    assertExactFields(entry, [
+      "model", "inputRatePerMillionTokens", "outputRatePerMillionTokens",
+      "cacheReadRatePerMillionTokens", "cacheWriteRatePerMillionTokens", "reasoningBilling",
+    ], "snapshot entry");
+    assertExactFields(entry.model, ["providerId", "modelId"], "snapshot entry model");
     assertNonEmpty(entry.model.providerId, "model.providerId");
     assertNonEmpty(entry.model.modelId, "model.modelId");
     const key = `${entry.model.providerId}/${entry.model.modelId}`;
@@ -225,6 +235,15 @@ function canonicalJson(value: unknown): string {
     (key) => `${JSON.stringify(key)}:${canonicalJson(Reflect.get(value, key))}`,
   );
   return `{${fields.join(",")}}`;
+}
+
+function assertExactFields(value: unknown, known: readonly string[], path: string): void {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(`${path} must be a JSON object`);
+  }
+  for (const key of Object.keys(value)) {
+    if (!known.includes(key)) throw new Error(`unknown field at ${path}: ${key}`);
+  }
 }
 
 function assertNonEmpty(value: string, field: string): void {

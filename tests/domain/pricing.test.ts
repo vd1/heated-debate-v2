@@ -76,6 +76,13 @@ describe("pricing snapshot", () => {
     );
   });
 
+  test("rejects unknown fields in untrusted snapshot JSON", () => {
+    expect(() => definePricingSnapshot({
+      ...snapshot(),
+      note: "extra",
+    } as unknown as PricingSnapshot)).toThrow("unknown field at snapshot: note");
+  });
+
   test("rejects a separate reasoning rate that is not finite and non-negative", () => {
     const base = snapshot();
     const [first] = base.entries;

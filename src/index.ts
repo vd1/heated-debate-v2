@@ -6,6 +6,7 @@ export * from "./domain/dial";
 export * from "./domain/events";
 export * from "./domain/markdown";
 export * from "./domain/exchange";
+export * from "./domain/experiment-config";
 export * from "./domain/pricing";
 export * from "./domain/replay";
 export * from "./domain/roles";
