@@ -254,6 +254,7 @@ describe("D-CONTROLS end-to-end propagation audit", () => {
       const events = createAssistantMessageEventStream();
       const scripted = messages[Math.min(index, messages.length - 1)];
       index += 1;
+      if (!scripted) throw new Error("no scripted message");
       const message: AssistantMessage = {
         role: "assistant",
         content: structuredClone(scripted.content),
@@ -318,8 +319,7 @@ describe("D-CONTROLS end-to-end propagation audit", () => {
 
     expect(executed).toBe(1);
     const toolEvents = sink.events.filter((event) => event.type === "turn.tool_call");
-    expect(toolEvents.map((event) =>
-      event.type === "turn.tool_call" ? event.data.record.disposition : null)).toEqual([
+    expect(toolEvents.map((event) => event.data.record.disposition)).toEqual([
       { status: "accepted" },
       { status: "denied", reason: "tool_not_allowed" },
     ]);
