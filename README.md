@@ -13,7 +13,11 @@ C-JSONL, C-REPLAY, C-LIVE-ARTIFACT, C-MARKDOWN, C-FAILURES, and C-TOOL-POLICY ar
 Milestone C is
 complete; D-PRICING, D-CONFIG, and D-CONTROLS landed pricing, the validated
 `ExperimentConfig`, and the control propagation audit; see the
-[`D-CONTROLS review`](plans/d-controls-review.md). Milestone D is complete; Milestone E is complete; All Milestone F machinery has landed; a live bounded study remains an opt-in execution. The review hardening pass resolved the open critical findings: full spec/case identities travel in run-start evidence (schema v8), artifacts are validated before publication with terminal failures persisted and priced, rewards resolve the preregistered scalarizer, the judge validates and permutes presentation without touching chronology, reliability statistics fail closed on missing populations, and a real filesystem store with leases backs the executor.
+[`D-CONTROLS review`](plans/d-controls-review.md). Milestone D is complete; Milestone E is complete; All Milestone F machinery has landed; a live bounded study remains an opt-in execution. V2 was released as `v2.0.0` at commit `1218cd7` after the codex gate
+review approved it; the product boundary is a dependable debate runner with tool-policy
+support, and the deferred research-platform hardening is listed in
+[`plans/c-tool-loop-concerns.md`](plans/c-tool-loop-concerns.md) for v2.1. The review hardening
+pass resolved the open critical findings: full spec/case identities travel in run-start evidence (schema v8), artifacts are validated before publication with terminal failures persisted and priced, rewards resolve the preregistered scalarizer, the judge validates and permutes presentation without touching chronology, reliability statistics fail closed on missing populations, and a real filesystem store with leases backs the executor.
 
 The generated-artifact style gate applies to artifacts created or modified for a release,
 matching the tool's staged-file behavior. Two historical documents are grandfathered as repo-wide
