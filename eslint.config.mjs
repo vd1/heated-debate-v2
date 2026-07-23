@@ -4,7 +4,7 @@ import tseslint from "typescript-eslint";
 const typescriptFiles = ["**/*.ts"];
 
 export default tseslint.config(
-  { ignores: ["node_modules/**"] },
+  { ignores: ["node_modules/**", ".tmp-*/**"] },
   eslint.configs.recommended,
   ...tseslint.configs.strictTypeChecked.map((config) => ({
     ...config,

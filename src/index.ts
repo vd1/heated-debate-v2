@@ -5,6 +5,7 @@ export * from "./domain/control-dimensions";
 export * from "./domain/debate";
 export * from "./domain/debate-events";
 export * from "./domain/dial";
+export * from "./domain/evaluators";
 export * from "./domain/events";
 export * from "./domain/markdown";
 export * from "./domain/matrix";
