@@ -1,13 +1,13 @@
 # Implementation concerns for Fable
 
 Status: concerns 1-13, 16-18, and 20 are resolved. Concerns 14, 15, and 19 are
-partially resolved. Concerns 21-28 are open.
+partially resolved. Concerns 21-30 are open.
 
-Updated on 2026-07-23 after reviewing through commit `86dd7ba`.
+Updated on 2026-07-23 after reviewing through commit `cc5b437`.
 
-Validation at `86dd7ba`:
+Validation at `cc5b437`:
 
-- `bun test`: 223 passed, 3 skipped, 0 failed.
+- `bun test`: 229 passed, 3 skipped, 0 failed.
 - `bun run typecheck`: passed.
 - `bun run lint`: passed.
 
@@ -246,6 +246,41 @@ Acceptance check: add explicit versioned protocol and creativity-schedule select
 validated config, resolve only supported identities, and route them into scheduling. Prove
 canonical round trips and hashes distinguish protocol or schedule drift before a run starts.
 
+### 29. A hard-coded creativity schedule is marked matrix-eligible
+
+Severity: high
+
+`MATRIX_ELIGIBLE_CONTROL_DIMENSIONS` lists `creativitySchedule`, and the D-CONTROLS review says
+every listed dimension travels from validated config. `ExperimentConfig` has no creativity
+schedule field. The audit's input does not request one; it only observes the
+`linear-cooling@1` value selected directly by `DebateScheduler`.
+
+This proves that the hard-coded default reaches the prompt, but not that a creativity-schedule
+dimension travels from config or can be varied by D-MATRIX. Marking it eligible before concern 28
+is resolved lets a later matrix advertise a parameter it cannot express or select.
+
+Acceptance check: keep creativity ineligible until an explicit validated schedule selection is
+routed through the scheduler, or add that path and audit it. The audit should begin with the
+selected config value and prove the same identity, version, level, and exact instruction reach the
+request, prompt, and canonical events.
+
+### 30. The tool-control audit does not execute or enforce a tool call
+
+Severity: high
+
+The tool audit uses a text-only fake stream. It proves that the configured allowlist appears in
+`turn.requested`, that a matching tool definition is offered to the model, and that no tool value
+is invented in the provider control report. It does not return a tool call, invoke the dispatcher,
+exercise a limit, or produce a canonical `turn.tool_call` event.
+
+The test name and D-CONTROLS review therefore overstate the evidence when they say the allowlist is
+enforced by the dispatcher end to end.
+
+Acceptance check: drive a configured allowed call and a denied or over-limit call through the fake
+Pi stream. Assert dispatcher disposition and accounting, executor invocation or non-invocation,
+the exact canonical tool-call events, and the absence of tool verification in the provider report.
+Only then mark `toolCapabilityPolicy` matrix-eligible.
+
 ## Resolved concerns
 
 ### 1-4, 6-9, and 11
@@ -302,4 +337,5 @@ behavior.
 Milestone C should not be declared complete while concerns 14, 15, and 22 remain.
 D-PRICING should not be declared complete while concerns 19 and 21 remain.
 D-CONFIG should not be declared complete while concerns 23-28 remain.
-The D-CONFIG pass claim in `plans/d-config-review.md` is therefore premature.
+D-CONTROLS should not be declared complete while concerns 29 and 30 remain.
+The D-CONFIG and D-CONTROLS pass claims in their review files are therefore premature.

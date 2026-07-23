@@ -1,6 +1,6 @@
 # D-CONFIG review
 
-Status: pass
+Status: in progress; codex concerns 23-28 remain open
 
 Reviewed on 2026-07-23.
 

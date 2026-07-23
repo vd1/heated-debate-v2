@@ -1,6 +1,6 @@
 # D-CONTROLS review
 
-Status: pass
+Status: in progress; codex concerns 29 and 30 remain open
 
 Reviewed on 2026-07-23.
 
