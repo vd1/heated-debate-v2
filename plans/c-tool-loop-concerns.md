@@ -1,15 +1,18 @@
 # Implementation concerns for Fable
 
-Status: concerns 1-26 and 28-32 are resolved. Concerns 27 and 33 are partially
-resolved. Concerns 34-44 are open.
+Status: concerns 1-26 and 28-33 are resolved. Concerns 27, 36, 41, 43, and 44
+are partially resolved. Concerns 34, 35, 37-40, and 42 are open.
 
-Updated on 2026-07-23 after reviewing through commit `cef997f`.
+Updated on 2026-07-23 after reviewing through commit `9a294df`.
 
-Validation at `cef997f`:
+Last clean full validation at `cef997f`:
 
 - `bun test tests`: 270 passed, 4 skipped, 0 failed.
 - `bun run typecheck`: passed.
 - `bun run lint`: passed.
+
+Focused counterexamples were rerun at `9a294df`. Full validation is deferred while Fable's
+uncommitted STUDY-SPEC follow-up is in progress.
 
 Passing checks do not cover the counterexamples below. The contracts in
 `plans/implementation-plan.md` and `plans/implementation-plan-review.md` remain the acceptance
@@ -17,50 +20,23 @@ baseline.
 
 ## Open concerns
 
-### 27. Recorded experiment identity can still be ignored during replay
-
-Severity: high
-
-Status: partially resolved by `997834d` and `5b84160`.
-
-Replay now retains `run.started.data.experiment` and compares the hash and case ID when
-`ReplayConfiguration.experiment` is supplied. Omitting that optional field disables the check
-even for a new artifact that records a non-null identity. I generated a schema-v7 run with a
-config hash and case ID, replayed it with a configuration that omitted `experiment`, and got:
-
-```text
-new-artifact-identity-bypass-accepted
-```
-
-The historical compatibility test covers a `null` recorded identity. It does not justify
-silently ignoring identity that is present.
-
-Acceptance check: when the artifact records a non-null experiment identity, require a matching
-expected identity unless an explicit weakened-replay mode is selected and reported. Preserve
-automatic compatibility only for migrated artifacts whose recorded identity is `null`.
-
-### 33. Case parsing still accepts accessors and a frozen `toJSON` replacement
+### 27. Weakened experiment replay is explicit but not reported
 
 Severity: medium
 
-Status: partially resolved by `4c94872`.
+Status: partially resolved by `997834d`, `5b84160`, and `9a294df`.
 
-The parser now rejects prototype-backed required fields and `defineCaseSet` rejects duplicate
-IDs. Plain-prototype validation does not ensure JSON data properties. An enumerable getter is
-executed and accepted as `caseId`:
+Replay now fails closed when a non-null recorded experiment identity has no expected identity,
+unless `allowUnverifiedExperiment` is explicitly true. Historical `null` identity remains
+compatible. This closes the silent bypass.
 
-```text
-parsed.caseId: getter-id
-getterReads: 1
-```
+The achieved guarantee is not present in `ReplayResult`. A caller that receives the result cannot
+distinguish verified identity, explicitly unverified identity, and a historical artifact with no
+identity. Tool replay already reports its weakest achieved guarantee, so experiment identity
+should follow the same pattern.
 
-`defineCaseSet` has another bypass for frozen inputs. It serializes them before validation, so a
-frozen object containing only `toJSON` can replace itself with a valid case and be accepted as
-`caseId: forged`.
-
-Acceptance check: validate the original value and its own property descriptors before reading
-fields. Reject accessors and `toJSON`; do not serialize an unvalidated frozen object to decide
-what case it represents. Add the accessor and frozen-replacement regressions requested earlier.
+Acceptance check: add an experiment replay guarantee such as `verified`, `unverified`, or
+`legacy-absent` to `ReplayResult`, and pin each mode in tests.
 
 ### 34. Study specs omit required preregistration decisions
 
@@ -112,21 +88,23 @@ matrix-eligible dimension a value parser and canonical encoder, reject duplicate
 values, and reject fixed-versus-varied overlap. Add cross-field checks for possible sample counts,
 run limits, budgets, and selected model pricing.
 
-### 36. The selection matrix executes holdout cases
+### 36. Holdout execution is separated but not governed by the spec
 
 Severity: high
 
-The preregistration contract says holdouts stay out of the selection matrix unless a separate
-final-evaluation matrix is explicitly defined. `generateExperimentMatrix` concatenates benchmark
-and holdout IDs and generates the same variants and repetitions for both.
+Status: partially resolved by `9a294df`.
 
-In a focused run with a benchmark case and a holdout case, half of the generated runs had
-`holdout: true`. The flag labels the leak but does not prevent selection code from receiving and
-evaluating those artifacts.
+The default selection matrix now excludes holdouts, and final evaluation has a distinct
+`purpose`. The final-evaluation mode remains a caller option rather than a decision enforced from
+the hashed study spec. Any caller can request it, even when holdout use was not preregistered.
 
-Acceptance check: generate benchmark selection runs by default. Add an explicit mode governed by
-the spec's holdout-use policy for final evaluation, and return a distinct matrix purpose so
-selection consumers cannot mix holdout results accidentally.
+It also expands every search-space variant over the holdout set. A final evaluation normally
+applies the preregistered selected or baseline configuration; exposing all variants permits
+holdout comparison and reselection.
+
+Acceptance check: consume the spec's holdout-use policy and reject incompatible matrix purposes.
+Define the exact final-evaluation parameter point in the spec and generate only that point for
+holdouts.
 
 ### 37. Matrix run identity does not pin case content or typed parameter values
 
@@ -199,24 +177,30 @@ cost in aggregate accounting, and reserve declared maximum spend before dispatch
 the permitted in-flight overshoot or cancel and await excess work. Validate all direct numeric
 inputs if a lower-level helper remains public.
 
-### 41. Distinct runs can map to the same artifact path
+### 41. The shortened path digest still collides
 
-Severity: medium
+Severity: high
 
-`artifactPathForRun` replaces every unsafe character with `_`. This is not injective:
+Status: partially resolved by `9a294df`.
 
-```text
-variantKey x=a/b -> x=a_b
-variantKey x=a_b -> x=a_b
-pathCollision: true
+Artifact paths now append the first eight hex characters of a SHA-256 run-ID digest. This avoids
+the original slash-versus-underscore example, but a 32-bit prefix is not injective. A focused
+search found two run IDs whose variant segments sanitize identically and whose prefixes collide:
+
+```json
+{
+  "values": ["/*?{///", "}${/?//"],
+  "digest": "202481c7",
+  "pathsEqual": true,
+  "path": "study/abc/case/x=_______/rep1-202481c7.jsonl"
+}
 ```
 
-The function also combines parsed run-ID segments with separate mutable fields without checking
-that they describe the same identity.
+The commit message and code comment claim injectivity, which a truncated digest cannot provide.
 
-Acceptance check: use a reversible encoding or append a canonical identity digest to every
-unsafe segment. Validate the complete run specification before path derivation and test path
-collisions, traversal characters, Unicode, and mismatched run fields.
+Acceptance check: use a reversible encoding, or use the full canonical digest and detect an
+existing-path identity mismatch before reuse. Inject the digest function so collision handling is
+tested. Validate the complete run specification before path derivation.
 
 ### 42. The local-model smoke does not prove identity, control, or pricing linkage
 
@@ -235,52 +219,64 @@ Acceptance check: assert exact requested and returned identities or an explicit 
 assert the full control report, and run pricing against the selected snapshot entry. Record or
 verify the snapshot identity and document the scope of zero price.
 
-### 43. Deterministic evaluation has no unavailable result and rewards missing usage
+### 43. Evaluator results still lack the shared evidence-bearing contract
 
 Severity: high
 
-The E-DETERMINISTIC contract requires a shared `EvaluatorPort` and a versioned result carrying
-known or unavailable status, range, direction, and evidence event references. The implementation
-returns only `DeterministicScore` with an unconditional numeric score, value, and detail string.
+Status: partially resolved by `9a294df`.
 
-`readRun` maps every absent token kind to zero. A completed run with no usage evidence and a
-positive token budget receives a perfect efficiency score:
+`DeterministicScore` now has `known` and `unavailable` variants, and entirely absent attempt usage
+is unavailable. The E-DETERMINISTIC contract also requires a shared `EvaluatorPort`, declared
+range and direction, evaluator configuration identity, and canonical evidence event references.
+None of those fields or boundaries exists yet.
+
+Partial usage is still treated as exact. Attempts that report input tokens but omit output tokens
+produce a known efficiency score, with every missing kind added as zero:
 
 ```json
 {
-  "score": 1,
-  "value": 0,
-  "detail": "0 observed tokens against a budget of 100"
+  "status": "known",
+  "score": 0.8,
+  "value": 20,
+  "detail": "20 observed tokens against a budget of 100"
 }
 ```
 
-This directly violates the required missing-data behavior.
+Both attempts in that reproduction omitted output usage.
 
-Acceptance check: introduce the shared evaluator boundary and a discriminated
-`known | unavailable` result. Include range, direction, evaluator configuration identity, and
-canonical evidence references. Missing required token evidence must be unavailable, never zero
-usage or a perfect score.
+Acceptance check: introduce the shared evaluator boundary and include range, direction, versioned
+configuration identity, and evidence event references. Define which usage kinds the measurement
+requires and return unavailable whenever required evidence is absent; do not convert partial
+evidence into an exact total.
 
-### 44. Evaluator configuration and algorithms can produce invalid measurements
+### 44. Missing comparison data is still scored as success
 
 Severity: medium
 
-Evaluator options are neither validated nor included in result identity. The same evaluator
-ID/version can therefore mean different marker sets, shape bounds, budgets, and latency targets.
-A `NaN` latency target produces a `NaN` score, which serializes as `null`.
+Status: partially resolved by `9a294df`.
 
-The repetition calculation compares a set for the previous reply with an array for the current
-reply. Duplicate current words are counted repeatedly, so `"a"` followed by `"a a a"` reports a
-Jaccard similarity of `3.000`, outside its mathematical range.
+The patch validates numeric options, uses set-based Unicode-aware Jaccard similarity, counts
+cache usage, and defines output length in code points. Those fixes close the reproduced `NaN` and
+out-of-range measurements.
 
-Token usage sums input and output only, while the domain's retry-inclusive token budget also
-counts cache reads and writes. Output length uses UTF-16 code units while reporting characters,
-and ASCII-only tokenization treats repeated non-Latin text as empty.
+A one-round run has no consecutive same-role pair to compare. `evaluateRepetition` nevertheless
+returns a known perfect score:
 
-Acceptance check: parse a versioned evaluator configuration with finite, ordered bounds and
-non-empty markers. Use set-to-set similarity with a locked Unicode tokenization rule, align token
-measurement with the domain budget definition, and define the output-length unit. Table-test
-invalid options, missing evidence, cache usage, Unicode, duplicate words, and serialization.
+```json
+{
+  "status": "known",
+  "score": 1,
+  "value": 0,
+  "detail": "worst consecutive same-role Jaccard similarity 0.000"
+}
+```
+
+Evaluator options also remain absent from result identity, so the same evaluator version can
+still represent different markers, bounds, budgets, and targets.
+
+Acceptance check: return unavailable when the required comparison population does not exist.
+Move options into a validated, versioned evaluator configuration referenced by every result.
+Table-test one-round, empty, partial, and failed artifacts for every evaluator.
 
 ## Resolved concerns
 
@@ -310,11 +306,16 @@ work and reuses it for live events and the returned result.
 
 Resolved by `4c94872`. `defineCaseSet` validates the collection and rejects duplicate case IDs.
 
+### 33. Case parsing rejects prototype and property-descriptor substitution
+
+Resolved by `9a294df`. Parsing now rejects accessor fields and `toJSON`, and `defineCaseSet`
+validates original frozen inputs rather than serializing a replacement value.
+
 ## Completion status
 
 Milestone C and D-PRICING have no remaining concern in this file.
 D-CONFIG remains open on concern 27.
-D-CASES remains open on concern 33.
+D-CASES has no remaining concern in this file.
 D-STUDY-SPEC remains open on concerns 34 and 35.
 D-MATRIX remains open on concerns 36-38.
 D-EXECUTOR remains open on concerns 39-41.

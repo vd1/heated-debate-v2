@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { FIXTURE_CASES } from "../../src/domain/cases";
+import { benchmarkCaseHash, FIXTURE_CASES } from "../../src/domain/cases";
 import { generateExperimentMatrix } from "../../src/domain/matrix";
 import { parseStudySpec, studySpecHash } from "../../src/domain/study-spec";
 
@@ -33,6 +33,13 @@ const SPEC_JSON = {
       reasoningBilling: { mode: "included-in-output" },
     }],
   },
+  samplerSeed: 7,
+  caseOrderPolicy: "spec-order",
+  baseline: { thinkingLevel: "low" },
+  holdoutUsePolicy: "final-evaluation-only",
+  failureHandling: "record-and-continue",
+  unknownCostPolicy: "fail-closed",
+  rewardScalarization: { rewardId: "reward-default", rewardVersion: "1" },
   budgets: { perRun: { maxTurns: 8, maxTokens: 200_000 } },
   stoppingRules: { maxRuns: 48 },
   plannedAnalysis: "Pairwise comparison per case.",
@@ -64,13 +71,20 @@ describe("experiment matrix", () => {
 
     const sample = first[0];
     if (!sample) throw new Error("empty matrix");
+    const queueCase = FIXTURE_CASES.find((item) => item.caseId === "fixture-bounded-queue");
+    if (!queueCase) throw new Error("missing fixture");
+    const caseHash = benchmarkCaseHash(queueCase);
+    // Variants sort by canonical typed key; repetitions are zero-based.
     expect(sample.runId).toBe(
       `study-thinking-sweep:${studySpecHash(spec).slice(0, 12)}`
-      + ":fixture-bounded-queue:temperature=0.2,thinkingLevel=low:rep1",
+      + `:fixture-bounded-queue:${caseHash.slice(0, 12)}`
+      + ':temperature=0.2,thinkingLevel="high":rep0',
     );
+    expect(sample.specHash).toBe(studySpecHash(spec));
+    expect(sample.caseHash).toBe(caseHash);
     expect(sample.parameters).toEqual({
       roundCount: 2,
-      thinkingLevel: "low",
+      thinkingLevel: "high",
       temperature: 0.2,
     });
     expect(sample.holdout).toBe(false);

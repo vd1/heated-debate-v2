@@ -35,6 +35,13 @@ const SPEC = {
   evaluators: [{ evaluatorId: "judge-default", evaluatorVersion: "1" }],
   rubric: { rubricId: "debate-quality", rubricVersion: "1" },
   pricingSnapshot: SNAPSHOT,
+  samplerSeed: 7,
+  caseOrderPolicy: "spec-order",
+  baseline: { thinkingLevel: "low" },
+  holdoutUsePolicy: "final-evaluation-only",
+  failureHandling: "record-and-continue",
+  unknownCostPolicy: "fail-closed",
+  rewardScalarization: { rewardId: "reward-default", rewardVersion: "1" },
   budgets: { perRun: { maxTurns: 8, maxTokens: 200_000 }, maxTotalRuns: 24 },
   stoppingRules: { maxRuns: 24, maxConsecutiveFailures: 3 },
   plannedAnalysis: "Compare mean rubric scores between thinking levels with per-case pairing.",
@@ -81,33 +88,49 @@ describe("study spec", () => {
     expect(hash).toMatch(/^[0-9a-f]{64}$/);
     expect(studySpecHash(parseStudySpec(structuredClone(SPEC)))).toBe(hash);
 
+    const caseHash = "c".repeat(64);
     const runId = studyRunId(spec, {
       caseId: "fixture-bounded-queue",
-      variantKey: "thinkingLevel=low",
+      caseHash,
+      variantKey: 'thinkingLevel="low"',
       repetition: 2,
     });
     expect(runId).toBe(
-      `study-thinking-sweep:${hash.slice(0, 12)}:fixture-bounded-queue:thinkingLevel=low:rep2`,
+      `study-thinking-sweep:${hash.slice(0, 12)}:fixture-bounded-queue:`
+      + `${caseHash.slice(0, 12)}:thinkingLevel="low":rep2`,
     );
-    expect(runId).toContain(hash.slice(0, 12));
     expect(() => studyRunId(spec, {
       caseId: "unknown-case",
-      variantKey: "thinkingLevel=low",
-      repetition: 1,
+      caseHash,
+      variantKey: 'thinkingLevel="low"',
+      repetition: 0,
     })).toThrow("caseId unknown-case is not part of the study");
+    expect(() => studyRunId(spec, {
+      caseId: "fixture-bounded-queue",
+      caseHash,
+      variantKey: 'thinkingLevel="low"',
+      repetition: 3,
+    })).toThrow("repetition must be an integer from 0 to 2");
   });
 
   test("rejects an uncommitted spec unless development mode is explicit", () => {
     const spec = parseStudySpec(structuredClone(SPEC));
 
     expect(() => {
-      assertPreregisteredStudy(spec, { committed: false });
-    }).toThrow("study spec must be committed before execution");
+      assertPreregisteredStudy(spec, {});
+    }).toThrow("study spec must be committed in a clean worktree before execution");
     expect(() => {
-      assertPreregisteredStudy(spec, { committed: false, allowNonPreregistered: true });
-    }).not.toThrow();
-    expect(() => {
-      assertPreregisteredStudy(spec, { committed: true });
-    }).not.toThrow();
+      assertPreregisteredStudy(spec, { commit: "abc", cleanWorktree: false });
+    }).toThrow("study spec must be committed in a clean worktree before execution");
+
+    const development = assertPreregisteredStudy(spec, { allowNonPreregistered: true });
+    expect(development.mode).toBe("development");
+    const attested = assertPreregisteredStudy(spec, { commit: "abc123", cleanWorktree: true });
+    expect(attested).toEqual({
+      specHash: studySpecHash(spec),
+      mode: "preregistered",
+      commit: "abc123",
+      cleanWorktree: true,
+    });
   });
 });

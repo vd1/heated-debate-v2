@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import type { RunSpecification } from "./matrix";
+import { studySpecHash, type StudySpec } from "./study-spec";
 
 /** Deterministic artifact path for one run, derived from its run-ID segments. */
 export function artifactPathForRun(run: RunSpecification): string {
@@ -108,4 +109,67 @@ export async function executeMatrix(input: MatrixExecutionInput): Promise<Matrix
     failed,
     ...(stopped === undefined ? {} : { stopped }),
   };
+}
+
+export interface StudyExecutionInput {
+  spec: StudySpec;
+  runs: readonly RunSpecification[];
+  concurrency?: number;
+  /**
+   * Resume evidence per run: "completed" only for an artifact whose terminal
+   * event and identities were validated by the caller-provided reader.
+   */
+  readArtifactState: (run: RunSpecification) => Promise<"completed" | "absent" | "invalid">;
+  /** Atomic claim so competing workers cannot execute the same run. */
+  claim?: (runId: string) => Promise<boolean>;
+  execute: (run: RunSpecification) => Promise<void>;
+}
+
+/**
+ * Study-bound execution: limits and failure handling come from the
+ * preregistered spec, never from invocation arguments. Prior validated
+ * completions count toward the study run budget, so resume cannot exceed it.
+ * Failure stopping halts scheduling at the threshold; already in-flight work
+ * (at most concurrency - 1 items) completes and is recorded.
+ */
+export async function executeStudyRuns(input: StudyExecutionInput): Promise<MatrixExecutionReport> {
+  const specHash = studySpecHash(input.spec);
+  for (const run of input.runs) {
+    if (run.specHash !== specHash) {
+      throw new Error(`run ${run.runId} was generated from a different study spec`);
+    }
+  }
+  const maxRuns = Math.min(
+    input.spec.stoppingRules.maxRuns,
+    input.spec.budgets.maxTotalRuns ?? Number.MAX_SAFE_INTEGER,
+  );
+  const completed = new Set<string>();
+  for (const run of input.runs) {
+    const state = await input.readArtifactState(run);
+    if (state === "completed") completed.add(run.runId);
+    else if (state === "invalid") {
+      throw new Error(`artifact for ${run.runId} exists but failed validation`);
+    }
+  }
+  const remainingBudget = maxRuns - completed.size;
+  if (remainingBudget < 0) {
+    throw new Error("validated completions already exceed the study run budget");
+  }
+  const claim = input.claim;
+  return executeMatrix({
+    runs: input.runs,
+    completedRunIds: completed,
+    ...(input.concurrency === undefined ? {} : { concurrency: input.concurrency }),
+    maxTotalRuns: remainingBudget,
+    ...(input.spec.failureHandling === "stop-after-max-consecutive"
+      && input.spec.stoppingRules.maxConsecutiveFailures !== undefined
+      ? { maxConsecutiveFailures: input.spec.stoppingRules.maxConsecutiveFailures }
+      : {}),
+    execute: async (run) => {
+      if (claim !== undefined && !(await claim(run.runId))) {
+        throw new Error(`run ${run.runId} is already claimed by another worker`);
+      }
+      await input.execute(run);
+    },
+  });
 }
