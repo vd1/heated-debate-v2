@@ -35,7 +35,7 @@ export interface ReplayParticipantConfiguration {
 
 export interface ReplayConfiguration {
   /** Expected experiment identity; compared against recorded evidence when set. */
-  experiment?: { configHash: string; caseId?: string };
+  experiment?: { configHash: string; caseId?: string; specHash?: string; caseHash?: string };
   /** Explicitly skip experiment-identity verification for a recorded identity. */
   allowUnverifiedExperiment?: boolean;
   debateId: string;
@@ -148,6 +148,8 @@ async function replayCanonicalRunInternal(input: ReplayCanonicalRunInput): Promi
     assertNoDrift(trace.runId, trace.experiment, {
       configHash: configuration.experiment.configHash,
       caseId: configuration.experiment.caseId ?? null,
+      specHash: configuration.experiment.specHash ?? null,
+      caseHash: configuration.experiment.caseHash ?? null,
     }, "experiment");
     experimentGuarantee = "verified";
   } else if (trace.experiment === null) {
@@ -277,7 +279,12 @@ function readSuccessfulTrace(events: readonly CanonicalEvent[]): {
   roundCount: number;
   controls: CanonicalRunControls;
   turns: RecordedTurn[];
-  experiment: { configHash: string; caseId: string | null } | null;
+  experiment: {
+    configHash: string;
+    caseId: string | null;
+    specHash: string | null;
+    caseHash: string | null;
+  } | null;
 } {
   const first = events[0];
   if (first?.type !== "run.started") throw new Error("canonical replay must start with run.started");

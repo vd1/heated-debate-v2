@@ -25,7 +25,7 @@ afterEach(async () => {
 function runEvents(): CanonicalEvent[] {
   return [
     {
-      schemaVersion: 7,
+      schemaVersion: 8,
       runId: "run-1",
       sequence: 0,
       type: "run.started",
@@ -46,7 +46,7 @@ function runEvents(): CanonicalEvent[] {
       },
     },
     {
-      schemaVersion: 7,
+      schemaVersion: 8,
       runId: "run-1",
       sequence: 1,
       type: "run.completed",

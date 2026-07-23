@@ -175,7 +175,7 @@ describe("engine CLI", () => {
       point: { thinkingLevel: "low" },
       repetition: 0,
     });
-    const { code, stdout } = await spawnEngine(JSON.stringify({
+    const { code, stdout, stderr } = await spawnEngine(JSON.stringify({
       schemaVersion: ENGINE_SCHEMA_VERSION,
       spec: specJson,
       run: { runId, caseId: "fixture-bounded-queue", point: { thinkingLevel: "low" }, repetition: 0 },
@@ -185,6 +185,11 @@ describe("engine CLI", () => {
     const output = parseEngineOutput(stdout);
     if (output.status !== "failure") throw new Error(output.status);
     expect(output.failure.code).toBe("turn_budget_exhausted");
+    // The terminal failure is evidence: its artifact is persisted, not discarded.
+    const artifactLine = stderr.split("\n").find((line) => line.startsWith("artifact "));
+    if (!artifactLine) throw new Error("missing failure artifact diagnostic");
+    const artifact = await readCanonicalJsonl(artifactLine.slice("artifact ".length));
+    expect(artifact.events.at(-1)?.type).toBe("run.failed");
   }, 20_000);
 
   test("emits an interruption failure on SIGTERM", async () => {

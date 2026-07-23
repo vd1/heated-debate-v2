@@ -108,8 +108,8 @@ export interface RunDebateInput {
   roundCount: number;
   proposer: ExchangeParticipant;
   reviewer: ExchangeParticipant;
-  /** Immutable experiment-config identity recorded in run.started. */
-  experiment?: { configHash: string; caseId?: string };
+  /** Immutable experiment identity recorded in run.started. */
+  experiment?: { configHash: string; caseId?: string; specHash?: string; caseHash?: string };
   /** Selected identities, resolved to implementations by the scheduler. */
   protocol?: { protocolId: string; protocolVersion: string };
   creativitySchedule?: { scheduleId: string; scheduleVersion: string };
@@ -128,7 +128,12 @@ export interface DebateRound {
 }
 
 export interface DebateResult {
-  readonly experiment: { configHash: string; caseId: string | null } | null;
+  readonly experiment: {
+    configHash: string;
+    caseId: string | null;
+    specHash: string | null;
+    caseHash: string | null;
+  } | null;
   readonly debateId: string;
   readonly topic: string;
   readonly rounds: readonly DebateRound[];
@@ -144,6 +149,8 @@ export async function runDebate(input: RunDebateInput): Promise<DebateResult> {
     : Object.freeze({
         configHash: input.experiment.configHash,
         caseId: input.experiment.caseId ?? null,
+        specHash: input.experiment.specHash ?? null,
+        caseHash: input.experiment.caseHash ?? null,
       });
   if (experiment !== null) {
     if (!/^[0-9a-f]{64}$/.test(experiment.configHash)) {
@@ -151,6 +158,12 @@ export async function runDebate(input: RunDebateInput): Promise<DebateResult> {
     }
     if (experiment.caseId !== null && experiment.caseId.trim().length === 0) {
       throw new Error("experiment.caseId must be non-empty when present");
+    }
+    for (const field of ["specHash", "caseHash"] as const) {
+      const value = experiment[field];
+      if (value !== null && !/^[0-9a-f]{64}$/.test(value)) {
+        throw new Error(`experiment.${field} must be a sha256 hex digest`);
+      }
     }
   }
   const monetary = input.budget?.monetary === undefined

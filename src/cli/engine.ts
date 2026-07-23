@@ -194,7 +194,6 @@ export async function runEngine(
     });
 
     const config = runConfigForSpecification(input.spec, run, benchmarkCase);
-    const agents = await createAgents(args.agents, config.proposer.controls.model, config.roundCount);
     const artifactPath = join(args.artifactRoot, artifactPathForRun(run));
     await mkdir(dirname(artifactPath), { recursive: true });
     const temporary = `${artifactPath}.tmp`;
@@ -220,12 +219,17 @@ export async function runEngine(
     };
     process.once("SIGTERM", onSignal);
     process.once("SIGINT", onSignal);
+    // Created last before dispatch: runDebate owns agent disposal from the
+    // moment it is called, success or failure.
+    const agents = await createAgents(args.agents, config.proposer.controls.model, config.roundCount);
     try {
       await runDebate({
         ...experimentDebateInput(config, agents),
         experiment: {
           configHash: experimentConfigHash(config),
           caseId: benchmarkCase.caseId,
+          specHash: run.specHash,
+          caseHash: run.caseHash,
         },
         recording: { runId: run.runId, sink: events },
         signal: controller.signal,
@@ -233,16 +237,24 @@ export async function runEngine(
       });
     } catch (error) {
       if (interruption.received) {
+        // Interruptions are retryable; they leave no artifact behind.
         await rm(temporary, { force: true });
         emit(serializeEngineOutput(fail("interrupted", "engine received a termination signal")));
         return 130;
+      }
+      if (buffered.at(-1)?.type === "run.failed") {
+        // Terminal failures are evidence: persist the run.failed artifact so
+        // resumption and spend accounting can see it.
+        await events.flush();
+        await rename(temporary, artifactPath);
+        diagnose(`artifact ${artifactPath}`);
+      } else {
+        await rm(temporary, { force: true });
       }
       throw error;
     } finally {
       process.removeListener("SIGTERM", onSignal);
       process.removeListener("SIGINT", onSignal);
-      await agents.proposer.dispose();
-      await agents.reviewer.dispose();
     }
     await events.flush();
     await rename(temporary, artifactPath);

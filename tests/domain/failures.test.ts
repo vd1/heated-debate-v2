@@ -425,7 +425,12 @@ describe("runDebate failure semantics", () => {
 
     const started = sink.events[0];
     if (started?.type !== "run.started") throw new Error("missing run start");
-    expect(started.data.experiment).toEqual({ configHash: "a".repeat(64), caseId: "case-7" });
+    expect(started.data.experiment).toEqual({
+      configHash: "a".repeat(64),
+      caseId: "case-7",
+      specHash: null,
+      caseHash: null,
+    });
 
     const absent = new MemorySink();
     await runDebate(debateInput(

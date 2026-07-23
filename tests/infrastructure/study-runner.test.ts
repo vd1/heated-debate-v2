@@ -251,7 +251,7 @@ describe("study runner", () => {
     expect(store.published.size).toBeLessThan(4);
   });
 
-  test("discards temporary output and releases claims on failure", async () => {
+  test("persists terminal-failure artifacts with their spend and releases claims", async () => {
     const { spec, runs, store, attestation } = fixture();
 
     const outcome = await executeStudy({
@@ -259,15 +259,222 @@ describe("study runner", () => {
       attestation,
       runs: runs.slice(0, 1),
       cases: FIXTURE_CASES,
+      // The proposer spends one priced attempt; the exhausted reviewer fails
+      // the run afterwards, so real spend precedes the terminal failure.
       createAgents: () => Promise.resolve({
-        proposer: new ScriptedAgent([]),
+        proposer: new ScriptedAgent([reply("Proposal")]),
         reviewer: new ScriptedAgent([]),
       }),
       store,
     });
 
     expect(outcome.failed).toHaveLength(1);
-    expect(store.published.size).toBe(0);
     expect(store.claims.size).toBe(0);
+    const artifact = store.published.get(runs[0]?.runId ?? "");
+    expect(artifact?.at(-1)?.type).toBe("run.failed");
+    // 1 attempt x 100k input tokens at 1 USD/M, charged despite the failure.
+    expect(outcome.totalCostScaled).toBe(100_000_000_000n);
+  });
+
+  test("resume treats persisted failures as terminal and counts their spend", async () => {
+    const { spec, runs, store, attestation } = fixture();
+    await executeStudy({
+      spec,
+      attestation,
+      runs: runs.slice(0, 1),
+      cases: FIXTURE_CASES,
+      createAgents: () => Promise.resolve({
+        proposer: new ScriptedAgent([reply("Proposal")]),
+        reviewer: new ScriptedAgent([]),
+      }),
+      store,
+    });
+
+    let executions = 0;
+    const resumed = await executeStudy({
+      spec,
+      attestation,
+      runs: runs.slice(0, 1),
+      cases: FIXTURE_CASES,
+      createAgents: () => {
+        executions += 1;
+        return agentsFactory();
+      },
+      store,
+    });
+
+    expect(executions).toBe(0);
+    expect(resumed.failed).toHaveLength(1);
+    expect(resumed.executed).toHaveLength(0);
+    expect(resumed.totalCostScaled).toBe(100_000_000_000n);
+  });
+
+  test("discards infrastructure failures without publishing an artifact", async () => {
+    const { spec, runs, store, attestation } = fixture();
+
+    const outcome = await executeStudy({
+      spec,
+      attestation,
+      runs: runs.slice(0, 1),
+      cases: FIXTURE_CASES,
+      createAgents: () => Promise.reject(new Error("credentials missing")),
+      store,
+    });
+
+    expect(outcome.failed).toHaveLength(1);
+    expect(store.published.size).toBe(0);
+    // The claim and reservation must not leak when agent creation fails.
+    expect(store.claims.size).toBe(0);
+  });
+
+  test("disposes every agent and releases the claim when one disposal throws", async () => {
+    const { spec, runs, store, attestation } = fixture();
+    const disposed: string[] = [];
+    class LeakyAgent extends ScriptedAgent {
+      constructor(private readonly name: string, replies: ScriptedReply[]) {
+        super(replies);
+      }
+      override dispose(): Promise<void> {
+        disposed.push(this.name);
+        if (this.name === "proposer") return Promise.reject(new Error("hung session"));
+        return Promise.resolve();
+      }
+    }
+
+    const outcome = await executeStudy({
+      spec,
+      attestation,
+      runs: runs.slice(0, 1),
+      cases: FIXTURE_CASES,
+      createAgents: () => Promise.resolve({
+        proposer: new LeakyAgent("proposer", [reply("Proposal")]),
+        reviewer: new LeakyAgent("reviewer", [reply("Review")]),
+      }),
+      store,
+    });
+
+    // runDebate owns disposal and disposes the reviewer first; each exactly once.
+    expect([...disposed].sort()).toEqual(["proposer", "reviewer"]);
+    expect(store.claims.size).toBe(0);
+    expect(outcome.failed.some((item) => item.message.includes("hung session"))).toBe(true);
+  });
+
+  test("rejects resumed artifacts recorded under a different study spec", async () => {
+    const { spec, runs, store, attestation } = fixture();
+    await executeStudy({
+      spec, attestation, runs, cases: FIXTURE_CASES, createAgents: agentsFactory, store,
+    });
+    const events = store.published.get(runs[0]?.runId ?? "") ?? [];
+    const start = events[0];
+    if (start?.type !== "run.started" || start.data.experiment === null) {
+      throw new Error("bad fixture");
+    }
+    start.data = {
+      ...start.data,
+      experiment: { ...start.data.experiment, specHash: "b".repeat(64) },
+    };
+
+    let caught: unknown;
+    try {
+      await executeStudy({
+        spec, attestation, runs, cases: FIXTURE_CASES, createAgents: agentsFactory, store,
+      });
+    } catch (error) {
+      caught = error;
+    }
+    expect(String(caught)).toContain("different study spec");
+  });
+
+  test("rejects resumed artifacts whose config hash does not match the run", async () => {
+    const { spec, runs, store, attestation } = fixture();
+    await executeStudy({
+      spec, attestation, runs, cases: FIXTURE_CASES, createAgents: agentsFactory, store,
+    });
+    const events = store.published.get(runs[0]?.runId ?? "") ?? [];
+    const start = events[0];
+    if (start?.type !== "run.started" || start.data.experiment === null) {
+      throw new Error("bad fixture");
+    }
+    start.data = {
+      ...start.data,
+      experiment: { ...start.data.experiment, configHash: "c".repeat(64) },
+    };
+
+    let caught: unknown;
+    try {
+      await executeStudy({
+        spec, attestation, runs, cases: FIXTURE_CASES, createAgents: agentsFactory, store,
+      });
+    } catch (error) {
+      caught = error;
+    }
+    expect(String(caught)).toContain("experiment config");
+  });
+
+  test("rejects resumed artifacts with a corrupted canonical sequence", async () => {
+    const { spec, runs, store, attestation } = fixture();
+    await executeStudy({
+      spec, attestation, runs, cases: FIXTURE_CASES, createAgents: agentsFactory, store,
+    });
+    const events = store.published.get(runs[0]?.runId ?? "") ?? [];
+    // Drop a mid-stream event; the artifact is no longer a canonical run.
+    events.splice(1, 1);
+
+    let caught: unknown;
+    try {
+      await executeStudy({
+        spec, attestation, runs, cases: FIXTURE_CASES, createAgents: agentsFactory, store,
+      });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeDefined();
+  });
+
+  test("prices resumed artifacts by the returned model identity", async () => {
+    const returned = { providerId: "openai-codex", modelId: "gpt-5.6-luna" };
+    const { spec, runs, store, attestation } = fixture({
+      pricingSnapshot: {
+        ...structuredClone(SPEC_JSON.pricingSnapshot),
+        entries: [
+          ...structuredClone(SPEC_JSON.pricingSnapshot.entries),
+          {
+            model: returned,
+            inputRatePerMillionTokens: 3,
+            outputRatePerMillionTokens: 0,
+            cacheReadRatePerMillionTokens: 0,
+            cacheWriteRatePerMillionTokens: 0,
+            reasoningBilling: { mode: "included-in-output" },
+          },
+        ],
+      },
+    });
+    // The provider returned luna despite the requested sol identity.
+    const returnedReply = (text: string): ScriptedReply => ({ ...reply(text), model: returned });
+
+    const outcome = await executeStudy({
+      spec,
+      attestation,
+      runs: runs.slice(0, 1),
+      cases: FIXTURE_CASES,
+      createAgents: () => Promise.resolve({
+        proposer: new ScriptedAgent([returnedReply("Proposal")]),
+        reviewer: new ScriptedAgent([returnedReply("Review")]),
+      }),
+      store,
+    });
+
+    // 2 attempts x 100k input tokens priced at the RETURNED 3 USD/M rate.
+    expect(outcome.totalCostScaled).toBe(600_000_000_000n);
+
+    const resumed = await executeStudy({
+      spec,
+      attestation,
+      runs: runs.slice(0, 1),
+      cases: FIXTURE_CASES,
+      createAgents: agentsFactory,
+      store,
+    });
+    expect(resumed.totalCostScaled).toBe(600_000_000_000n);
   });
 });

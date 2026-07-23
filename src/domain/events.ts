@@ -21,7 +21,7 @@ import {
   type UnrecordedToolCapabilityPolicy,
 } from "./tool-policy";
 
-export const CANONICAL_SCHEMA_VERSION = 7 as const;
+export const CANONICAL_SCHEMA_VERSION = 8 as const;
 
 export interface CanonicalMonetaryBudget {
   maxAmount: number;
@@ -72,7 +72,12 @@ export type CanonicalEvent =
         topic: string;
         roundCount: number;
         controls: CanonicalRunControls;
-        experiment: { configHash: string; caseId: string | null } | null;
+        experiment: {
+          configHash: string;
+          caseId: string | null;
+          specHash: string | null;
+          caseHash: string | null;
+        } | null;
       };
     })
   | (EventEnvelope & {
@@ -251,6 +256,13 @@ function migrateHistoricalExperiment(event: Record<string, unknown>): void {
   const data = event.data as Record<string, unknown>;
   // Experiment identity did not exist before schema v7; none was recorded.
   if (!hasOwn(data, "experiment")) data.experiment = null;
+  else if (typeof data.experiment === "object" && data.experiment !== null
+    && !Array.isArray(data.experiment)) {
+    const experiment = data.experiment as Record<string, unknown>;
+    // Full spec/case identities were not recorded before schema v8.
+    if (!hasOwn(experiment, "specHash")) experiment.specHash = null;
+    if (!hasOwn(experiment, "caseHash")) experiment.caseHash = null;
+  }
 }
 
 function migrateHistoricalMonetary(event: Record<string, unknown>): void {
@@ -364,11 +376,22 @@ function validateRunStarted(value: unknown): void {
   );
   if (data.experiment !== null) {
     const experiment = assertRecord(data.experiment, "run.started.data.experiment");
-    assertExactFields(experiment, ["configHash", "caseId"], [], "run.started.data.experiment");
+    assertExactFields(
+      experiment,
+      ["configHash", "caseId", "specHash", "caseHash"],
+      [],
+      "run.started.data.experiment",
+    );
     if (typeof experiment.configHash !== "string" || !/^[0-9a-f]{64}$/.test(experiment.configHash)) {
       throw new Error("experiment.configHash must be a sha256 hex digest");
     }
     if (experiment.caseId !== null) assertNonEmptyString(experiment.caseId, "experiment.caseId");
+    for (const field of ["specHash", "caseHash"] as const) {
+      const value = experiment[field];
+      if (value !== null && (typeof value !== "string" || !/^[0-9a-f]{64}$/.test(value))) {
+        throw new Error(`experiment.${field} must be null or a sha256 hex digest`);
+      }
+    }
   }
   assertNonEmptyString(data.debateId, "run.started.data.debateId");
   assertString(data.topic, "run.started.data.topic");

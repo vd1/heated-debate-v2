@@ -8,7 +8,7 @@ import { renderDebateMarkdown } from "../../src/domain/markdown";
 
 const EVENTS: CanonicalEvent[] = [
   {
-    schemaVersion: 7,
+    schemaVersion: 8,
     runId: "artifact-1",
     sequence: 0,
     type: "run.started",
@@ -29,7 +29,7 @@ const EVENTS: CanonicalEvent[] = [
     },
   },
   {
-    schemaVersion: 7,
+    schemaVersion: 8,
     runId: "artifact-1",
     sequence: 1,
     type: "turn.requested",
@@ -70,7 +70,7 @@ const EVENTS: CanonicalEvent[] = [
     },
   },
   {
-    schemaVersion: 7,
+    schemaVersion: 8,
     runId: "artifact-1",
     sequence: 2,
     type: "adapter.attempt",
@@ -86,7 +86,7 @@ const EVENTS: CanonicalEvent[] = [
     },
   },
   {
-    schemaVersion: 7,
+    schemaVersion: 8,
     runId: "artifact-1",
     sequence: 3,
     type: "turn.completed",
@@ -111,7 +111,7 @@ const EVENTS: CanonicalEvent[] = [
     },
   },
   {
-    schemaVersion: 7,
+    schemaVersion: 8,
     runId: "artifact-1",
     sequence: 4,
     type: "run.completed",
@@ -290,7 +290,7 @@ Completed 1 turn.
     const base = EVENTS.slice(0, 3);
     const toolEvents: CanonicalEvent[] = [
       {
-        schemaVersion: 7,
+        schemaVersion: 8,
         runId: "artifact-1",
         sequence: 0,
         type: "turn.tool_call",
@@ -314,7 +314,7 @@ Completed 1 turn.
         },
       },
       {
-        schemaVersion: 7,
+        schemaVersion: 8,
         runId: "artifact-1",
         sequence: 0,
         type: "turn.tool_call",
@@ -355,7 +355,7 @@ Completed 1 turn.
       start,
       request,
       {
-        schemaVersion: 7,
+        schemaVersion: 8,
         runId: "artifact-1",
         sequence: 2,
         type: "turn.failed",
@@ -365,7 +365,7 @@ Completed 1 turn.
         },
       },
       {
-        schemaVersion: 7,
+        schemaVersion: 8,
         runId: "artifact-1",
         sequence: 3,
         type: "run.failed",
