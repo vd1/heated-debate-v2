@@ -191,6 +191,7 @@ test("whole-debate timeout cancels and awaits the runner before closing resource
       turnTimeoutMs: 60_000,
       wholeRunTimeoutMs: 1_000,
       budget: null,
+      monetary: null,
     });
     const failures = persisted.events.filter(
       (event) => event.type === "turn.failed" || event.type === "run.failed",

@@ -12,6 +12,7 @@ import {
   ReplayDriftError,
   type ReplayConfiguration,
 } from "../../src/domain/replay";
+import { definePricingSnapshot, pricingSnapshotHash } from "../../src/domain/pricing";
 import type { RoleDefinition } from "../../src/domain/roles";
 import type {
   ToolCallRecord,
@@ -145,7 +146,7 @@ function reply(text: string): CanonicalTurnReply {
 function recordedRun(): CanonicalEvent[] {
   return [
     {
-      schemaVersion: 5,
+      schemaVersion: 6,
       runId: "run-1",
       sequence: 0,
       type: "run.started",
@@ -160,39 +161,40 @@ function recordedRun(): CanonicalEvent[] {
           turnTimeoutMs: null,
           wholeRunTimeoutMs: null,
           budget: null,
+          monetary: null,
         },
       },
     },
     {
-      schemaVersion: 5,
+      schemaVersion: 6,
       runId: "run-1",
       sequence: 1,
       type: "turn.requested",
       data: { roundNumber: 1, request: PROPOSAL_REQUEST },
     },
     {
-      schemaVersion: 5,
+      schemaVersion: 6,
       runId: "run-1",
       sequence: 2,
       type: "turn.completed",
       data: { turnId: PROPOSAL_REQUEST.turnId, reply: reply("Recorded proposal") },
     },
     {
-      schemaVersion: 5,
+      schemaVersion: 6,
       runId: "run-1",
       sequence: 3,
       type: "turn.requested",
       data: { roundNumber: 1, request: REVIEW_REQUEST },
     },
     {
-      schemaVersion: 5,
+      schemaVersion: 6,
       runId: "run-1",
       sequence: 4,
       type: "turn.completed",
       data: { turnId: REVIEW_REQUEST.turnId, reply: reply("Recorded review") },
     },
     {
-      schemaVersion: 5,
+      schemaVersion: 6,
       runId: "run-1",
       sequence: 5,
       type: "run.completed",
@@ -209,35 +211,35 @@ function recordedTwoRoundRun(): CanonicalEvent[] {
     { ...start, data: { ...start.data, roundCount: 2 } },
     ...firstRound.slice(1),
     {
-      schemaVersion: 5,
+      schemaVersion: 6,
       runId: "run-1",
       sequence: 5,
       type: "turn.requested",
       data: { roundNumber: 2, request: SECOND_PROPOSAL_REQUEST },
     },
     {
-      schemaVersion: 5,
+      schemaVersion: 6,
       runId: "run-1",
       sequence: 6,
       type: "turn.completed",
       data: { turnId: SECOND_PROPOSAL_REQUEST.turnId, reply: reply("Second proposal") },
     },
     {
-      schemaVersion: 5,
+      schemaVersion: 6,
       runId: "run-1",
       sequence: 7,
       type: "turn.requested",
       data: { roundNumber: 2, request: SECOND_REVIEW_REQUEST },
     },
     {
-      schemaVersion: 5,
+      schemaVersion: 6,
       runId: "run-1",
       sequence: 8,
       type: "turn.completed",
       data: { turnId: SECOND_REVIEW_REQUEST.turnId, reply: reply("Second review") },
     },
     {
-      schemaVersion: 5,
+      schemaVersion: 6,
       runId: "run-1",
       sequence: 9,
       type: "run.completed",
@@ -529,7 +531,7 @@ describe("replayCanonicalRun", () => {
     const completion = events[2];
     if (completion?.type !== "turn.completed") throw new Error("bad fixture");
     events[2] = {
-      schemaVersion: 5,
+      schemaVersion: 6,
       runId: "run-1",
       sequence: 2,
       type: "adapter.attempt",
@@ -560,7 +562,7 @@ describe("replayCanonicalRun", () => {
   test("explicitly rejects turn failure, run failure, and a missing terminal event", async () => {
     const turnFailure = recordedRun();
     turnFailure[2] = {
-      schemaVersion: 5,
+      schemaVersion: 6,
       runId: "run-1",
       sequence: 2,
       type: "turn.failed",
@@ -579,7 +581,7 @@ describe("replayCanonicalRun", () => {
     const runFailure: CanonicalEvent[] = [
       start,
       {
-        schemaVersion: 5,
+        schemaVersion: 6,
         runId: "run-1",
         sequence: 1,
         type: "run.failed",
@@ -655,7 +657,7 @@ describe("replayCanonicalRun tool call records", () => {
   };
 
   const toolRecord = (ordinal: number): CanonicalEvent => ({
-    schemaVersion: 5,
+    schemaVersion: 6,
     runId: "run-1",
     sequence: 0,
     type: "turn.tool_call",
@@ -898,7 +900,7 @@ describe("replayCanonicalRun with independent tool drivers", () => {
       request: { ...PROPOSAL_REQUEST, capabilities: SEARCH_POLICY_2 },
     };
     events.splice(2, 0, {
-      schemaVersion: 5,
+      schemaVersion: 6,
       runId: "run-1",
       sequence: 0,
       type: "turn.tool_call",
@@ -983,5 +985,89 @@ describe("replayCanonicalRun with independent tool drivers", () => {
       configuration,
       toolLoopDrivers: scriptedTurnDriver(MATCHING_STEPS),
     }))).toBe("replay drift for run-1:round-1:proposer at finalText");
+  });
+});
+
+describe("replayCanonicalRun monetary controls", () => {
+  const PRICING = definePricingSnapshot({
+    snapshotId: "pricing-test",
+    snapshotVersion: "1",
+    currency: "USD",
+    effectiveDate: "2026-07-01",
+    provenance: "test fixture",
+    entries: [{
+      model: { providerId: "test", modelId: "model-v1" },
+      inputRatePerMillionTokens: 1,
+      outputRatePerMillionTokens: 10,
+      cacheReadRatePerMillionTokens: 0,
+      cacheWriteRatePerMillionTokens: 0,
+      reasoningBilling: { mode: "included-in-output" },
+    }],
+  });
+
+  function monetaryRun(): CanonicalEvent[] {
+    const events = recordedRun();
+    const start = events[0];
+    if (start?.type !== "run.started" || start.data.controls.evidence !== "recorded") {
+      throw new Error("bad fixture");
+    }
+    start.data = {
+      ...start.data,
+      controls: {
+        ...start.data.controls,
+        budget: { maxTurns: 4, maxTokens: 1_000_000 },
+        monetary: {
+          maxAmount: 5,
+          currency: "USD",
+          snapshotId: "pricing-test",
+          snapshotVersion: "1",
+          snapshotHash: pricingSnapshotHash(PRICING),
+          permitTokenOnlyAccounting: false,
+        },
+      },
+    };
+    return events;
+  }
+
+  test("replays a recorded monetary budget from an equivalent configuration", async () => {
+    const result = await replayCanonicalRun({
+      events: monetaryRun(),
+      configuration: {
+        ...CONFIGURATION,
+        budget: {
+          maxTurns: 4,
+          maxTokens: 1_000_000,
+          monetary: { maxAmount: 5, snapshot: PRICING },
+        },
+      },
+    });
+
+    expect(result.requests).toHaveLength(2);
+  });
+
+  test("detects monetary snapshot drift against the recorded hash", async () => {
+    const alteredSnapshot = definePricingSnapshot({
+      ...PRICING,
+      entries: [{
+        model: { providerId: "test", modelId: "model-v1" },
+        inputRatePerMillionTokens: 2,
+        outputRatePerMillionTokens: 10,
+        cacheReadRatePerMillionTokens: 0,
+        cacheWriteRatePerMillionTokens: 0,
+        reasoningBilling: { mode: "included-in-output" },
+      }],
+    });
+
+    expect(await rejectionMessage(replayCanonicalRun({
+      events: monetaryRun(),
+      configuration: {
+        ...CONFIGURATION,
+        budget: {
+          maxTurns: 4,
+          maxTokens: 1_000_000,
+          monetary: { maxAmount: 5, snapshot: alteredSnapshot },
+        },
+      },
+    }))).toBe("replay drift for run-1 at monetary.snapshotHash");
   });
 });

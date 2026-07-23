@@ -11,6 +11,7 @@ import {
   type CanonicalRunControls,
   type CanonicalTurnReply,
 } from "./events";
+import { pricingSnapshotHash } from "./pricing";
 import type { RoleDefinition } from "./roles";
 import { DebateScheduler } from "./scheduler";
 import {
@@ -103,10 +104,24 @@ async function replayCanonicalRunInternal(input: ReplayCanonicalRunInput): Promi
       turnTimeoutMs: trace.controls.turnTimeoutMs,
       wholeRunTimeoutMs: trace.controls.wholeRunTimeoutMs,
       budget: trace.controls.budget,
+      monetary: trace.controls.monetary,
     }, {
       turnTimeoutMs: configuration.turnTimeoutMs ?? null,
       wholeRunTimeoutMs: configuration.wholeRunTimeoutMs ?? null,
-      budget: configuration.budget ?? null,
+      budget: configuration.budget === undefined
+        ? null
+        : { maxTurns: configuration.budget.maxTurns, maxTokens: configuration.budget.maxTokens },
+      monetary: configuration.budget?.monetary === undefined
+        ? null
+        : {
+            maxAmount: configuration.budget.monetary.maxAmount,
+            currency: configuration.budget.monetary.snapshot.currency,
+            snapshotId: configuration.budget.monetary.snapshot.snapshotId,
+            snapshotVersion: configuration.budget.monetary.snapshot.snapshotVersion,
+            snapshotHash: pricingSnapshotHash(configuration.budget.monetary.snapshot),
+            permitTokenOnlyAccounting:
+              configuration.budget.monetary.permitTokenOnlyAccounting ?? false,
+          },
     });
   }
 

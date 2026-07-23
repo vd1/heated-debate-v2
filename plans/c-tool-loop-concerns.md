@@ -1,13 +1,13 @@
-# C-TOOL-LOOP concerns for Fable
+# Implementation concerns for Fable
 
-Status: concerns 1-4, 6-9, and 11 are resolved. Concern 5 is partially resolved. Concerns 10, 12,
-and 13 remain open.
+Status: C-TOOL-LOOP concerns 1-4, 6-9, and 11 are resolved. Concern 5 is partially resolved.
+Concerns 10, 12, and 13 remain open. C-WEB-SEARCH concerns 14 and 15 are open.
 
-Updated on 2026-07-23 after reviewing through commit `ce2c1f5`.
+Updated on 2026-07-23 after reviewing through commit `ba1b03f`.
 
-Validation at `5dbc03f`:
+Validation at `ba1b03f`:
 
-- `bun test`: 164 passed, 2 skipped, 0 failed.
+- `bun test`: 181 passed, 3 skipped, 0 failed.
 - `bun run typecheck`: passed.
 - `bun run lint`: passed.
 
@@ -94,6 +94,49 @@ annotations and non-consecutive annotated positions must fail before an invalid 
 returned or persisted. Preserve the all-unsequenced compatibility path only where its weaker
 ordering guarantee is deliberate.
 
+### 14. Web-search credentials can still reach tool failure records and provenance
+
+Severity: high
+
+The normal status-error test does not exercise an error from the injected transport. The fetch
+function receives the Authorization value and can throw an error containing it. `search` forwards
+that error unchanged, the Pi tool forwards it unchanged, and the dispatcher persists it unless the
+same secret was separately supplied to `PiAgent`. `createWebSearchToolRegistration` does not expose
+the API key to that redaction boundary, and the runtime Pi factory has no secrets option.
+
+A direct reproduction with a fetch function that throws
+`transport logged Bearer search-secret-123` returns that exact message. This can become a failed
+`turn.tool_call` outcome.
+
+The success path has a second leak. `provenance.endpoint` copies the configured endpoint verbatim.
+An endpoint such as `https://user:password@example.test/search?api_key=query-secret` places both
+credentials in the successful JSON tool result and therefore in the run artifact. The current
+sentinel tests use a credential-free endpoint and inspect the port response, not serialized
+canonical success and failure events.
+
+Acceptance check: define a public, credential-free provenance endpoint separately or sanitize and
+validate the configured URL before use. Normalize transport and JSON-decoding failures without
+including raw backend messages, or redact the configured API key inside this boundary. Add
+canonical JSONL sentinel tests for a throwing transport and a credential-bearing endpoint, and
+verify neither the success nor failure artifact contains the secrets.
+
+### 15. The exported WebSearchPort implementation accepts invalid request limits
+
+Severity: medium
+
+The Pi tool schema requires a non-empty query and an integer `maxResults` from 1 through 20, but
+`createHttpWebSearchPort` does not enforce the same contract. The port is exported and can be used
+without Pi. Empty queries, zero, negative, fractional, non-finite, and oversized limits therefore
+reach the backend or JavaScript `slice` directly.
+
+For example, `maxResults: -1` with two results returns one result and reports truncation as though
+the negative cap were meaningful. This makes the domain response dependent on accidental array
+semantics rather than the declared search contract.
+
+Acceptance check: validate and normalize the request at the port boundary, with table tests for an
+empty or whitespace-only query and every invalid limit class. Keep the Pi schema aligned with the
+same named constraints so direct and tool-mediated calls behave identically.
+
 ## Resolved concerns
 
 ### 1. Pi bypassed the dispatcher for unknown names and schema-invalid arguments
@@ -150,6 +193,8 @@ trace.
 
 ## Completion status
 
-`README.md` and `plans/c-tool-loop-review.md` should not declare C-TOOL-LOOP complete while concerns
-5, 10, 12, and 13 remain open. The review file also retains stale descriptions of Pi wrappers,
-canonical schema v4, and limitations that the newer commits changed.
+Milestone C should not be declared complete while concerns 5, 10, 12, 13, 14, and 15 remain open.
+`plans/c-tool-loop-review.md` also retains stale descriptions of Pi wrappers, canonical schema v4,
+and limitations that the newer commits changed. `plans/c-web-search-review.md` claims the API key
+cannot reach errors and that secret-free run evidence was proved, but its tests do not cover the
+transport-error or canonical-artifact paths described in concern 14.

@@ -58,7 +58,7 @@ const REPLY: AgentReply = {
 function events(): CanonicalEvent[] {
   return [
     {
-      schemaVersion: 5,
+      schemaVersion: 6,
       runId: "run-1",
       sequence: 0,
       type: "run.started",
@@ -73,18 +73,19 @@ function events(): CanonicalEvent[] {
           turnTimeoutMs: null,
           wholeRunTimeoutMs: null,
           budget: null,
+          monetary: null,
         },
       },
     },
     {
-      schemaVersion: 5,
+      schemaVersion: 6,
       runId: "run-1",
       sequence: 1,
       type: "turn.requested",
       data: { roundNumber: 1, request: REQUEST },
     },
     {
-      schemaVersion: 5,
+      schemaVersion: 6,
       runId: "run-1",
       sequence: 2,
       type: "adapter.attempt",
@@ -103,7 +104,7 @@ function events(): CanonicalEvent[] {
       },
     },
     {
-      schemaVersion: 5,
+      schemaVersion: 6,
       runId: "run-1",
       sequence: 3,
       type: "turn.completed",
@@ -118,7 +119,7 @@ function events(): CanonicalEvent[] {
       },
     },
     {
-      schemaVersion: 5,
+      schemaVersion: 6,
       runId: "run-1",
       sequence: 4,
       type: "run.completed",
@@ -144,14 +145,14 @@ describe("canonical event schema v3", () => {
     );
     const failureEvents: CanonicalEvent[] = [
       {
-        schemaVersion: 5,
+        schemaVersion: 6,
         runId: "run-1",
         sequence: 0,
         type: "turn.failed",
         data: { turnId: REQUEST.turnId, failure },
       },
       {
-        schemaVersion: 5,
+        schemaVersion: 6,
         runId: "run-1",
         sequence: 0,
         type: "run.failed",
@@ -169,7 +170,7 @@ describe("canonical event schema v3", () => {
 
   test("redacts configured secrets from a directly constructed failure", () => {
     const event: CanonicalEvent = {
-      schemaVersion: 5,
+      schemaVersion: 6,
       runId: "run-1",
       sequence: 0,
       type: "run.failed",
@@ -208,6 +209,58 @@ describe("canonical event schema v3", () => {
     expect(serializeCanonicalEvent(withSentinel, { secrets: ["secret-123"] })).toContain("secret-123");
   });
 
+
+  test("round-trips a recorded monetary budget and rejects an invalid hash", () => {
+    const event = events()[0];
+    if (event?.type !== "run.started" || event.data.controls.evidence !== "recorded") {
+      throw new Error("bad fixture");
+    }
+    const monetary = {
+      maxAmount: 12.5,
+      currency: "USD",
+      snapshotId: "pricing-test",
+      snapshotVersion: "1",
+      snapshotHash: "a".repeat(64),
+      permitTokenOnlyAccounting: false,
+    };
+    const withMonetary: CanonicalEvent = {
+      ...event,
+      data: { ...event.data, controls: { ...event.data.controls, monetary } },
+    };
+
+    expect(parseCanonicalEvent(serializeCanonicalEvent(withMonetary, { secrets: [] })))
+      .toEqual(withMonetary);
+
+    const invalid: CanonicalEvent = {
+      ...event,
+      data: {
+        ...event.data,
+        controls: {
+          ...event.data.controls,
+          monetary: { ...monetary, snapshotHash: "not-a-hash" },
+        },
+      },
+    };
+    expect(() => serializeCanonicalEvent(invalid, { secrets: [] })).toThrow(
+      "controls.monetary.snapshotHash must be a sha256 hex digest",
+    );
+  });
+
+  test("migrates historical recorded controls to an absent monetary budget", () => {
+    const historical = structuredClone(events()[0]) as unknown as Record<string, unknown>;
+    historical.schemaVersion = 5;
+    const data = historical.data as { controls: Record<string, unknown> };
+    delete data.controls.monetary;
+
+    const migrated = parseCanonicalEvent(JSON.stringify(historical));
+
+    expect(migrated.schemaVersion).toBe(6);
+    if (migrated.type !== "run.started" || migrated.data.controls.evidence !== "recorded") {
+      throw new Error("migration failed");
+    }
+    expect(migrated.data.controls.monetary).toBeNull();
+  });
+
   test("migrates a historical schema-v1 run start without inventing absent controls", () => {
     const historical = JSON.stringify({
       schemaVersion: 1,
@@ -219,7 +272,7 @@ describe("canonical event schema v3", () => {
 
     const migrated = parseCanonicalEvent(historical);
 
-    expect(migrated.schemaVersion).toBe(5);
+    expect(migrated.schemaVersion).toBe(6);
     expect(migrated.type).toBe("run.started");
     if (migrated.type !== "run.started") throw new Error("migration failed");
     expect(migrated.data.controls).toEqual({
@@ -228,7 +281,7 @@ describe("canonical event schema v3", () => {
       evidence: "unrecorded",
     });
     expect(JSON.parse(serializeCanonicalEvent(migrated, { secrets: [] }))).toMatchObject({
-      schemaVersion: 5,
+      schemaVersion: 6,
     });
   });
 
@@ -242,7 +295,7 @@ describe("canonical event schema v3", () => {
 
     const migrated = parseCanonicalEvent(JSON.stringify(historical));
 
-    expect(migrated.schemaVersion).toBe(5);
+    expect(migrated.schemaVersion).toBe(6);
     expect(migrated.type).toBe("turn.requested");
     if (migrated.type !== "turn.requested") throw new Error("migration failed");
     expect(migrated.data.request.capabilities).toEqual({
@@ -258,8 +311,8 @@ describe("canonical event schema v3", () => {
     if (!first) throw new Error("bad fixture");
     const valid = JSON.parse(serializeCanonicalEvent(first, { secrets: [] })) as Record<string, unknown>;
 
-    expect(() => parseCanonicalEvent(JSON.stringify({ ...valid, schemaVersion: 6 }))).toThrow(
-      "unsupported schema version: 6",
+    expect(() => parseCanonicalEvent(JSON.stringify({ ...valid, schemaVersion: 7 }))).toThrow(
+      "unsupported schema version: 7",
     );
     expect(() => parseCanonicalEvent(JSON.stringify({ ...valid, type: "future.event" }))).toThrow(
       "unknown event type: future.event",
@@ -412,7 +465,7 @@ function expectInvalidModelTrace(
 
 describe("canonical tool call events", () => {
   const toolCallEvent = (): CanonicalEvent => ({
-    schemaVersion: 5,
+    schemaVersion: 6,
     runId: "run-1",
     sequence: 2,
     type: "turn.tool_call",
@@ -590,7 +643,7 @@ describe("canonical tool call events", () => {
 
     const migrated = parseCanonicalEvent(JSON.stringify(historical));
 
-    expect(migrated.schemaVersion).toBe(5);
+    expect(migrated.schemaVersion).toBe(6);
     expect(migrated.type).toBe("run.started");
   });
 });
@@ -611,7 +664,7 @@ describe("shared turn sequence validation", () => {
       throw new Error("bad fixture");
     }
     const attempt = (turnSequence: number | undefined, n: number): CanonicalEvent => ({
-      schemaVersion: 5,
+      schemaVersion: 6,
       runId: "run-1",
       sequence: 0,
       type: "adapter.attempt",
@@ -628,7 +681,7 @@ describe("shared turn sequence validation", () => {
       },
     });
     const call: CanonicalEvent = {
-      schemaVersion: 5,
+      schemaVersion: 6,
       runId: "run-1",
       sequence: 0,
       type: "turn.tool_call",

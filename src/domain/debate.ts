@@ -15,6 +15,12 @@ import {
 } from "./events";
 import type { ExchangeParticipant, ExchangeResult } from "./exchange";
 import { orderedTurnEvidence } from "./debate-events";
+import {
+  calculateUsageCost,
+  findPricingEntry,
+  pricingSnapshotHash,
+  type PricingSnapshot,
+} from "./pricing";
 import { DebateScheduler } from "./scheduler";
 
 /**
@@ -33,10 +39,22 @@ export interface DebateRecording {
   failureSecrets?: readonly string[];
 }
 
+export interface DebateMonetaryBudget {
+  /** Maximum spend in the snapshot's currency, derived only from observed attempt usage. */
+  maxAmount: number;
+  snapshot: PricingSnapshot;
+  /**
+   * When true, attempts whose usage cannot be priced fall back to token-only
+   * accounting instead of failing the run closed.
+   */
+  permitTokenOnlyAccounting?: boolean;
+}
+
 export interface DebateBudget {
   maxTurns: number;
   /** Sum of observed input and output tokens across attempts. Reasoning is an output subset. */
   maxTokens: number;
+  monetary?: DebateMonetaryBudget;
 }
 
 export type DebateFailureCode =
@@ -46,7 +64,9 @@ export type DebateFailureCode =
   | "empty_output"
   | "provider_failure"
   | "turn_budget_exhausted"
-  | "token_budget_exhausted";
+  | "token_budget_exhausted"
+  | "monetary_budget_exhausted"
+  | "cost_unknown";
 
 type BudgetObservedUsage = Pick<
   NormalizedUsage,
@@ -121,6 +141,9 @@ export async function runDebate(input: RunDebateInput): Promise<DebateResult> {
   let terminalEmitted = false;
   let dispatchedTurns = 0;
   const observedUsage: BudgetObservedUsage = {};
+  const monetary = input.budget?.monetary;
+  let observedCost = 0;
+  let unpriceable: readonly string[] | undefined;
 
   const emit = async (event: CanonicalEvent, flush: boolean): Promise<void> => {
     if (!input.recording) return;
@@ -131,6 +154,7 @@ export async function runDebate(input: RunDebateInput): Promise<DebateResult> {
 
   const emitTurnEvidence = async (
     turnId: string,
+    model: AgentReply["model"],
     trace: AgentTrace,
     toolCalls: readonly ToolCallRecord[],
   ): Promise<void> => {
@@ -146,6 +170,14 @@ export async function runDebate(input: RunDebateInput): Promise<DebateResult> {
           }, false);
         }
         addObservedUsage(observedUsage, evidence.attempt.usage);
+        if (monetary) {
+          const cost = calculateUsageCost(monetary.snapshot, model, evidence.attempt.usage);
+          if (cost.status === "known") {
+            observedCost += cost.amount;
+          } else if (unpriceable === undefined) {
+            unpriceable = cost.missing;
+          }
+        }
       } else if (input.recording) {
         await emit({
           schemaVersion: CANONICAL_SCHEMA_VERSION,
@@ -222,6 +254,13 @@ export async function runDebate(input: RunDebateInput): Promise<DebateResult> {
           observedUsage,
         }));
       }
+      if (monetary && observedCost >= monetary.maxAmount) {
+        await endWithFailure(new DebateRunFailure({
+          code: "monetary_budget_exhausted",
+          message: `monetary budget exhausted before dispatch ${String(dispatchedTurns + 1)}`,
+          observedUsage,
+        }));
+      }
       if (runControls.budget && dispatchedTurns >= runControls.budget.maxTurns) {
         await endWithFailure(new DebateRunFailure({
           code: "turn_budget_exhausted",
@@ -252,7 +291,12 @@ export async function runDebate(input: RunDebateInput): Promise<DebateResult> {
         input.signalFailureCode ?? "cancelled",
       ).catch(async (error: unknown) => {
         const normalized = normalizeDispatchFailure(error, turn.request.turnId, observedUsage);
-        await emitTurnEvidence(turn.request.turnId, normalized.trace, normalized.toolCalls);
+        await emitTurnEvidence(
+          turn.request.turnId,
+          turn.request.controls.model,
+          normalized.trace,
+          normalized.toolCalls,
+        );
         return endWithFailure(new DebateRunFailure({
           code: normalized.code,
           message: normalized.message,
@@ -263,7 +307,31 @@ export async function runDebate(input: RunDebateInput): Promise<DebateResult> {
         }));
       });
 
-      await emitTurnEvidence(turn.request.turnId, reply.trace, reply.toolCalls);
+      await emitTurnEvidence(
+        turn.request.turnId,
+        turn.request.controls.model,
+        reply.trace,
+        reply.toolCalls,
+      );
+      if (monetary && unpriceable !== undefined && monetary.permitTokenOnlyAccounting !== true) {
+        await endWithFailure(new DebateRunFailure({
+          code: "cost_unknown",
+          message: `observed usage cannot be priced; missing ${unpriceable.join(", ")} `
+            + `for ${turn.request.turnId}`,
+          turnId: turn.request.turnId,
+          trace: reply.trace,
+          observedUsage,
+        }));
+      }
+      if (monetary && observedCost > monetary.maxAmount) {
+        await endWithFailure(new DebateRunFailure({
+          code: "monetary_budget_exhausted",
+          message: `observed monetary budget exceeded after ${turn.request.turnId}`,
+          turnId: turn.request.turnId,
+          trace: reply.trace,
+          observedUsage,
+        }));
+      }
       if (runControls.budget
         && observedTokenLowerBound(observedUsage) > runControls.budget.maxTokens) {
         await endWithFailure(new DebateRunFailure({
@@ -495,7 +563,20 @@ function canonicalRunControls(
 ): Extract<CanonicalRunControls, { evidence: "recorded" }> {
   const budget = input.budget === undefined
     ? null
-    : Object.freeze(structuredClone(input.budget));
+    : Object.freeze({
+        maxTurns: input.budget.maxTurns,
+        maxTokens: input.budget.maxTokens,
+      });
+  const monetary = input.budget?.monetary === undefined
+    ? null
+    : Object.freeze({
+        maxAmount: input.budget.monetary.maxAmount,
+        currency: input.budget.monetary.snapshot.currency,
+        snapshotId: input.budget.monetary.snapshot.snapshotId,
+        snapshotVersion: input.budget.monetary.snapshot.snapshotVersion,
+        snapshotHash: pricingSnapshotHash(input.budget.monetary.snapshot),
+        permitTokenOnlyAccounting: input.budget.monetary.permitTokenOnlyAccounting ?? false,
+      });
   return Object.freeze({
     policyId: "run-controls",
     policyVersion: "1",
@@ -503,6 +584,7 @@ function canonicalRunControls(
     turnTimeoutMs: input.turnTimeoutMs ?? null,
     wholeRunTimeoutMs: input.wholeRunTimeoutMs ?? null,
     budget,
+    monetary,
   });
 }
 
@@ -524,6 +606,18 @@ function validateLimits(input: RunDebateInput): void {
     }
     if (!Number.isFinite(input.budget.maxTokens) || input.budget.maxTokens < 0) {
       throw new Error("budget.maxTokens must be a finite non-negative number");
+    }
+    if (input.budget.monetary) {
+      const monetary = input.budget.monetary;
+      if (!Number.isFinite(monetary.maxAmount) || monetary.maxAmount < 0) {
+        throw new Error("budget.monetary.maxAmount must be a finite non-negative number");
+      }
+      for (const participant of [input.proposer, input.reviewer]) {
+        const model = participant.controls.model;
+        if (!findPricingEntry(monetary.snapshot, model)) {
+          throw new Error(`no pricing entry for ${model.providerId}/${model.modelId}`);
+        }
+      }
     }
   }
 }

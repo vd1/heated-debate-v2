@@ -21,7 +21,16 @@ import {
   type UnrecordedToolCapabilityPolicy,
 } from "./tool-policy";
 
-export const CANONICAL_SCHEMA_VERSION = 5 as const;
+export const CANONICAL_SCHEMA_VERSION = 6 as const;
+
+export interface CanonicalMonetaryBudget {
+  maxAmount: number;
+  currency: string;
+  snapshotId: string;
+  snapshotVersion: string;
+  snapshotHash: string;
+  permitTokenOnlyAccounting: boolean;
+}
 
 export type CanonicalRunControls =
   | {
@@ -31,6 +40,7 @@ export type CanonicalRunControls =
       turnTimeoutMs: number | null;
       wholeRunTimeoutMs: number | null;
       budget: { maxTurns: number; maxTokens: number } | null;
+      monetary: CanonicalMonetaryBudget | null;
     }
   | {
       policyId: "run-controls";
@@ -196,13 +206,18 @@ export function sanitizeFailure(
 function migrateHistoricalEvent(value: unknown): unknown {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return value;
   const event = value as Record<string, unknown>;
-  if (event.schemaVersion !== 1 && event.schemaVersion !== 2
-    && event.schemaVersion !== 3 && event.schemaVersion !== 4) {
+  if (typeof event.schemaVersion !== "number"
+    || !Number.isInteger(event.schemaVersion)
+    || event.schemaVersion < 1
+    || event.schemaVersion >= CANONICAL_SCHEMA_VERSION) {
     return value;
   }
   const migrated = structuredClone(event);
   migrated.schemaVersion = CANONICAL_SCHEMA_VERSION;
-  if (event.schemaVersion === 3 || event.schemaVersion === 4) return migrated;
+  if (event.schemaVersion >= 3) {
+    migrateHistoricalMonetary(migrated);
+    return migrated;
+  }
   if (migrated.type === "run.started"
     && typeof migrated.data === "object"
     && migrated.data !== null
@@ -222,8 +237,24 @@ function migrateHistoricalEvent(value: unknown): unknown {
       if (!hasOwn(controls, "wholeRunTimeoutMs")) controls.wholeRunTimeoutMs = null;
     }
   }
+  migrateHistoricalMonetary(migrated);
   migrateHistoricalCapabilities(migrated);
   return migrated;
+}
+
+function migrateHistoricalMonetary(event: Record<string, unknown>): void {
+  if (event.type !== "run.started"
+    || typeof event.data !== "object"
+    || event.data === null
+    || Array.isArray(event.data)) return;
+  const data = event.data as Record<string, unknown>;
+  if (typeof data.controls !== "object"
+    || data.controls === null
+    || Array.isArray(data.controls)) return;
+  const controls = data.controls as Record<string, unknown>;
+  if (controls.evidence !== "recorded") return;
+  // Monetary budgets did not exist before schema v6; none was configured.
+  if (!hasOwn(controls, "monetary")) controls.monetary = null;
 }
 
 function migrateHistoricalCapabilities(event: Record<string, unknown>): void {
@@ -340,10 +371,29 @@ function validateRunControls(value: unknown): asserts value is CanonicalRunContr
   }
   assertExactFields(
     controls,
-    ["policyId", "policyVersion", "evidence", "turnTimeoutMs", "wholeRunTimeoutMs", "budget"],
+    ["policyId", "policyVersion", "evidence", "turnTimeoutMs", "wholeRunTimeoutMs", "budget", "monetary"],
     [],
     "run.started.data.controls",
   );
+  if (controls.monetary !== null) {
+    const monetary = assertRecord(controls.monetary, "run.started.data.controls.monetary");
+    assertExactFields(
+      monetary,
+      ["maxAmount", "currency", "snapshotId", "snapshotVersion", "snapshotHash", "permitTokenOnlyAccounting"],
+      [],
+      "run.started.data.controls.monetary",
+    );
+    assertNonNegativeNumber(monetary.maxAmount, "controls.monetary.maxAmount");
+    assertNonEmptyString(monetary.currency, "controls.monetary.currency");
+    assertNonEmptyString(monetary.snapshotId, "controls.monetary.snapshotId");
+    assertNonEmptyString(monetary.snapshotVersion, "controls.monetary.snapshotVersion");
+    if (typeof monetary.snapshotHash !== "string" || !/^[0-9a-f]{64}$/.test(monetary.snapshotHash)) {
+      throw new Error("controls.monetary.snapshotHash must be a sha256 hex digest");
+    }
+    if (typeof monetary.permitTokenOnlyAccounting !== "boolean") {
+      throw new Error("controls.monetary.permitTokenOnlyAccounting must be a boolean");
+    }
+  }
   if (controls.turnTimeoutMs !== null) {
     assertPositiveNumber(controls.turnTimeoutMs, "run.started.data.controls.turnTimeoutMs");
   }

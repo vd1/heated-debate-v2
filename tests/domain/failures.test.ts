@@ -16,6 +16,7 @@ import {
   type RunDebateInput,
 } from "../../src/domain/debate";
 import type { CanonicalEvent } from "../../src/domain/events";
+import { definePricingSnapshot, pricingSnapshotHash } from "../../src/domain/pricing";
 import { PROPOSER_ROLE, REVIEWER_ROLE } from "../../src/domain/roles";
 
 const CONTROLS = {
@@ -211,6 +212,7 @@ describe("runDebate failure semantics", () => {
       turnTimeoutMs: 25,
       wholeRunTimeoutMs: null,
       budget: { maxTurns: 2, maxTokens: 100 },
+      monetary: null,
     });
 
     const absentSink = new MemorySink();
@@ -228,10 +230,154 @@ describe("runDebate failure semantics", () => {
       turnTimeoutMs: null,
       wholeRunTimeoutMs: null,
       budget: null,
+      monetary: null,
     });
   });
 
 
+
+
+  const PRICING = definePricingSnapshot({
+    snapshotId: "pricing-test",
+    snapshotVersion: "1",
+    currency: "USD",
+    effectiveDate: "2026-07-01",
+    provenance: "test fixture",
+    entries: [{
+      model: { providerId: "test", modelId: "model" },
+      inputRatePerMillionTokens: 1,
+      outputRatePerMillionTokens: 10,
+      cacheReadRatePerMillionTokens: 0,
+      cacheWriteRatePerMillionTokens: 0,
+      reasoningBilling: { mode: "included-in-output" },
+    }],
+  });
+
+  function pricedReply(text: string): AgentReply {
+    return {
+      ...reply(text),
+      trace: {
+        attempts: [{
+          attempt: 1,
+          status: "succeeded",
+          httpStatus: 200,
+          // 0.5 input + 2.0 output per attempt in USD.
+          usage: { inputTokens: 500_000, outputTokens: 200_000 },
+          usageEvidence: { explicitlyReported: [], source: "test" },
+        }],
+      },
+    };
+  }
+
+  test("records the monetary budget with its snapshot hash in run controls", async () => {
+    const proposer = new ScenarioAgent(() => Promise.resolve(pricedReply("Proposal")));
+    const reviewer = new ScenarioAgent(() => Promise.resolve(pricedReply("Review")));
+    const sink = new MemorySink();
+
+    await runDebate(debateInput(proposer, reviewer, sink, {
+      budget: {
+        maxTurns: 4,
+        maxTokens: 10_000_000,
+        monetary: { maxAmount: 100, snapshot: PRICING },
+      },
+    }));
+
+    const started = sink.events[0];
+    if (started?.type !== "run.started") throw new Error("missing run start");
+    if (started.data.controls.evidence !== "recorded") throw new Error("missing evidence");
+    expect(started.data.controls.monetary).toEqual({
+      maxAmount: 100,
+      currency: "USD",
+      snapshotId: "pricing-test",
+      snapshotVersion: "1",
+      snapshotHash: pricingSnapshotHash(PRICING),
+      permitTokenOnlyAccounting: false,
+    });
+
+    const absentSink = new MemorySink();
+    await runDebate(debateInput(
+      new ScenarioAgent(() => Promise.resolve(reply("Proposal"))),
+      new ScenarioAgent(() => Promise.resolve(reply("Review"))),
+      absentSink,
+    ));
+    const absentStart = absentSink.events[0];
+    if (absentStart?.type !== "run.started") throw new Error("missing run start");
+    if (absentStart.data.controls.evidence !== "recorded") throw new Error("missing evidence");
+    expect(absentStart.data.controls.monetary).toBeNull();
+  });
+
+  test("stops at the first observable monetary budget overage", async () => {
+    const proposer = new ScenarioAgent(() => Promise.resolve(pricedReply("Proposal")));
+    const reviewer = new ScenarioAgent(() => Promise.resolve(pricedReply("Review")));
+    const sink = new MemorySink();
+
+    const error = await debateError(debateInput(proposer, reviewer, sink, {
+      budget: {
+        maxTurns: 8,
+        maxTokens: 10_000_000,
+        // First turn costs 2.5 USD, so the reviewer dispatch must not happen.
+        monetary: { maxAmount: 2, snapshot: PRICING },
+      },
+    }));
+
+    expect(error.code).toBe("monetary_budget_exhausted");
+    expect(proposer.calls).toBe(1);
+    expect(reviewer.calls).toBe(0);
+  });
+
+  test("fails closed when observed usage cannot be priced", async () => {
+    const proposer = new ScenarioAgent(() => Promise.resolve(reply("Proposal", FAILED_TRACE)));
+    const reviewer = new ScenarioAgent(() => Promise.resolve(pricedReply("Review")));
+    const sink = new MemorySink();
+
+    const error = await debateError(debateInput(proposer, reviewer, sink, {
+      budget: {
+        maxTurns: 8,
+        maxTokens: 10_000_000,
+        monetary: { maxAmount: 100, snapshot: PRICING },
+      },
+    }));
+
+    expect(error.code).toBe("cost_unknown");
+    expect(reviewer.calls).toBe(0);
+  });
+
+  test("permits token-only accounting only when explicitly configured", async () => {
+    const proposer = new ScenarioAgent(() => Promise.resolve(reply("Proposal", FAILED_TRACE)));
+    const reviewer = new ScenarioAgent(() => Promise.resolve(pricedReply("Review")));
+    const sink = new MemorySink();
+
+    const result = await runDebate(debateInput(proposer, reviewer, sink, {
+      budget: {
+        maxTurns: 8,
+        maxTokens: 10_000_000,
+        monetary: { maxAmount: 100, snapshot: PRICING, permitTokenOnlyAccounting: true },
+      },
+    }));
+
+    expect(result.rounds).toHaveLength(1);
+  });
+
+  test("rejects a monetary budget whose snapshot lacks a participant model", async () => {
+    const proposer = new ScenarioAgent(() => Promise.resolve(reply("Proposal")));
+    const reviewer = new ScenarioAgent(() => Promise.resolve(reply("Review")));
+    const sink = new MemorySink();
+
+    const error = await rejectionMessage(runDebate(debateInput(proposer, reviewer, sink, {
+      reviewer: {
+        agent: reviewer,
+        role: REVIEWER_ROLE,
+        controls: { model: { providerId: "test", modelId: "unpriced" }, thinkingLevel: "high" as const },
+      },
+      budget: {
+        maxTurns: 8,
+        maxTokens: 10_000_000,
+        monetary: { maxAmount: 100, snapshot: PRICING },
+      },
+    })));
+
+    expect(error).toBe("no pricing entry for test/unpriced");
+  });
 
   test("emits sequenced attempts and tool calls in shared order while recording", async () => {
     const annotatedReply: AgentReply = {
@@ -341,6 +487,7 @@ describe("runDebate failure semantics", () => {
       turnTimeoutMs: 321,
       wholeRunTimeoutMs: null,
       budget: { maxTurns: 2, maxTokens: 100 },
+      monetary: null,
     });
   });
 
@@ -543,4 +690,13 @@ async function debateError(input: RunDebateInput): Promise<DebateRunFailure> {
     throw new Error(String(error));
   }
   throw new Error("expected debate to fail");
+}
+
+async function rejectionMessage(promise: Promise<unknown>): Promise<string> {
+  try {
+    await promise;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+  throw new Error("expected promise to reject");
 }
