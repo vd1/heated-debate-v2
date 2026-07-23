@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 import type { AgentPort, RequestedControls } from "../domain/agent";
-import { sanitizeFailure, type CanonicalEvent } from "../domain/events";
+import { sanitizeFailure, validateCanonicalSequence, type CanonicalEvent } from "../domain/events";
 import type { EvaluationResult } from "../domain/evaluators";
 import {
   createEvaluationRecord,
@@ -64,15 +64,16 @@ function judgePrompt(rubric: Rubric, sourceText: string): string {
   ].join("\n");
 }
 
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  return `{${Object.keys(value).sort().map(
+    (key) => `${JSON.stringify(key)}:${canonicalJson(Reflect.get(value, key))}`,
+  ).join(",")}}`;
+}
+
 export function artifactEventsHash(events: readonly CanonicalEvent[]): string {
-  const canonical = (value: unknown): string => {
-    if (value === null || typeof value !== "object") return JSON.stringify(value);
-    if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
-    return `{${Object.keys(value).sort().map(
-      (key) => `${JSON.stringify(key)}:${canonical(Reflect.get(value, key))}`,
-    ).join(",")}}`;
-  };
-  return createHash("sha256").update(canonical(events)).digest("hex");
+  return createHash("sha256").update(canonicalJson(events)).digest("hex");
 }
 
 /**
@@ -86,60 +87,89 @@ export function createJudgeEvaluator(options: JudgeEvaluatorOptions): {
   evaluatorVersion: typeof JUDGE_EVALUATOR_VERSION;
   evaluate(events: readonly CanonicalEvent[]): Promise<JudgeEvaluation>;
 } {
+  // Snapshot everything semantic at construction; later caller mutation can
+  // never desynchronize the executed request from the recorded identity.
+  const rubric = Object.freeze(structuredClone(options.rubric));
+  const controls = Object.freeze(structuredClone(options.controls));
+  const role = Object.freeze({
+    id: "judge",
+    version: JUDGE_EVALUATOR_VERSION,
+    systemPrompt: "You are a strict, consistent debate judge. Output only the requested JSON.",
+  });
+  const creativity = Object.freeze({
+    scheduleId: "linear-cooling",
+    scheduleVersion: "1",
+    level: 1,
+    instruction: "Score precisely and conservatively.",
+  });
+  const contextPolicy = Object.freeze({ policyId: "last-exchange", policyVersion: "1" });
+  // The full canonical digest of the complete semantic configuration.
   const configurationId = createHash("sha256")
-    .update(JSON.stringify({
-      rubricHash: rubricHash(options.rubric),
-      controls: options.controls,
+    .update(canonicalJson({
+      evaluatorId: JUDGE_EVALUATOR_ID,
+      evaluatorVersion: JUDGE_EVALUATOR_VERSION,
+      promptTemplate: "judge-rubric-json-v1",
+      rubricHash: rubricHash(rubric),
+      controls,
+      role,
+      creativity,
+      contextPolicy,
+      capabilities: "deny-all",
     }))
-    .digest("hex")
-    .slice(0, 12);
+    .digest("hex");
 
   async function evaluate(events: readonly CanonicalEvent[]): Promise<JudgeEvaluation> {
+    // The source must be a closed canonical artifact, not a plausible prefix.
+    validateCanonicalSequence(events);
     const start = events[0];
     if (start?.type !== "run.started") {
       throw new Error("judge evaluation requires an initial run.started event");
     }
     const runId = start.runId;
     const sourceText = renderJudgeSource(events);
-    const messages = [{ role: "user" as const, content: judgePrompt(options.rubric, sourceText) }];
+    const messages = [{ role: "user" as const, content: judgePrompt(rubric, sourceText) }];
     const sourceArtifact = { runId, artifactHash: artifactEventsHash(events) };
     const base = {
-      rubric: options.rubric,
+      rubric,
       sourceArtifact,
       judge: { evaluatorId: JUDGE_EVALUATOR_ID, evaluatorVersion: JUDGE_EVALUATOR_VERSION },
       declaredInputs: [runId],
       messages,
-      controls: options.controls,
+      controls,
       sourceText,
     };
     const completedSequences = events
       .filter((event) => event.type === "turn.completed")
       .map((event) => event.sequence);
 
-    const agent = await options.createAgent();
+    // Agent acquisition sits inside the failure-record lifecycle: a factory
+    // rejection is persisted as a sanitized failure, never silently dropped.
+    let agent: AgentPort | undefined;
     let record: EvaluationRecord;
     try {
+      agent = await options.createAgent();
       const reply = await agent.reply({
         turnId: `${runId}:judge`,
-        role: {
-          id: "judge",
-          version: JUDGE_EVALUATOR_VERSION,
-          systemPrompt: "You are a strict, consistent debate judge. Output only the requested JSON.",
-        },
-        creativity: {
-          scheduleId: "linear-cooling",
-          scheduleVersion: "1",
-          level: 1,
-          instruction: "Score precisely and conservatively.",
-        },
-        context: { policyId: "last-exchange", policyVersion: "1", messages },
-        controls: structuredClone(options.controls),
+        role: structuredClone(role),
+        creativity: structuredClone(creativity),
+        context: { ...contextPolicy, messages },
+        controls: structuredClone(controls),
         capabilities: createDenyAllToolPolicy({
-          role: { id: "judge", version: JUDGE_EVALUATOR_VERSION },
+          role: { id: role.id, version: role.version },
           phase: "review",
         }),
       });
-      record = createEvaluationRecord({ ...base, rawResponse: reply.text });
+      record = createEvaluationRecord({
+        ...base,
+        rawResponse: reply.text,
+        execution: {
+          returnedModel: reply.model,
+          controlReport: reply.controls,
+          usage: reply.usage,
+          attempts: reply.trace.attempts,
+          durationMs: reply.durationMs,
+        },
+      });
     } catch (error) {
       record = createEvaluationRecord({
         ...base,
@@ -149,11 +179,11 @@ export function createJudgeEvaluator(options: JudgeEvaluatorOptions): {
         }),
       });
     } finally {
-      await agent.dispose();
+      if (agent !== undefined) await agent.dispose();
     }
     await options.persistRecord(record);
 
-    return { result: toResult(options.rubric, configurationId, runId, completedSequences, record), record };
+    return { result: toResult(rubric, configurationId, runId, completedSequences, record), record };
   }
 
   return {

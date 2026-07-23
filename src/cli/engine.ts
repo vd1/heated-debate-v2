@@ -18,7 +18,7 @@ import {
 } from "../domain/experiment-config";
 import { runDeterministicEvaluators } from "../domain/evaluators";
 import type { RunSpecification } from "../domain/matrix";
-import { computeReward } from "../domain/reward";
+import { computeReward, resolveScalarizer } from "../domain/reward";
 import { serializeCanonicalEvent, type CanonicalEvent } from "../domain/events";
 import {
   assertPreregisteredStudy,
@@ -269,16 +269,8 @@ export async function runEngine(
       ? { status: "known" as const, score: completion.score }
       : { status: "unavailable" as const, reason: "completion score unavailable" };
     const usageScore = scores.find((score) => score.evaluatorId === "deterministic-token-usage");
-    const reward = computeReward({
-      rewardVersion: "1",
-      rewardId: input.spec.rewardScalarization.rewardId,
-      qualityWeight: 1,
-      tokenCostWeight: 0.1,
-      latencyWeight: 0.1,
-      failurePenalty: 1,
-      variancePenalty: 0,
-      monetaryWeight: 0,
-    }, {
+    // The executed objective is the preregistered scalarizer, nothing else.
+    const reward = computeReward(resolveScalarizer(input.spec.rewardScalarization), {
       quality,
       tokensUsedFraction: usageScore?.status === "known" ? 1 - usageScore.score : 0,
       latencyFraction: 0,

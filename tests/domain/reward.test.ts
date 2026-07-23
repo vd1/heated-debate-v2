@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { definePricingSnapshot } from "../../src/domain/pricing";
-import { computeReward, type RewardWeights } from "../../src/domain/reward";
+import { computeReward, resolveScalarizer, type RewardWeights } from "../../src/domain/reward";
 
 const WEIGHTS: RewardWeights = {
   rewardVersion: "1",
@@ -117,5 +117,80 @@ describe("reward function", () => {
     });
     if (result.status !== "known") throw new Error(result.status);
     expect(result.scalar).toBe(0.6);
+  });
+});
+
+describe("reward hardening", () => {
+  const inputs = {
+    quality: { status: "known" as const, score: 0.8 },
+    tokensUsedFraction: 0.2,
+    latencyFraction: 0.1,
+    failed: false,
+    variance: 0,
+  };
+
+  test("rejects undeclared reward versions and empty reward IDs at runtime", () => {
+    const forged = { ...WEIGHTS, rewardVersion: "999" } as unknown as RewardWeights;
+    expect(() => computeReward(forged, inputs)).toThrow("rewardVersion");
+    expect(() => computeReward({ ...WEIGHTS, rewardId: "" }, inputs)).toThrow("rewardId");
+  });
+
+  test("rejects non-finite or out-of-range measurements instead of returning NaN", () => {
+    expect(() => computeReward(WEIGHTS, {
+      ...inputs, quality: { status: "known", score: Number.NaN },
+    })).toThrow("quality");
+    expect(() => computeReward(WEIGHTS, {
+      ...inputs, quality: { status: "known", score: 1.5 },
+    })).toThrow("quality");
+    expect(() => computeReward(WEIGHTS, { ...inputs, tokensUsedFraction: Number.NaN }))
+      .toThrow("tokensUsedFraction");
+    expect(() => computeReward(WEIGHTS, { ...inputs, latencyFraction: -1 }))
+      .toThrow("latencyFraction");
+    expect(() => computeReward(WEIGHTS, { ...inputs, variance: Number.POSITIVE_INFINITY }))
+      .toThrow("variance");
+  });
+
+  test("treats missing monetary evidence under a positive weight as unavailable", () => {
+    const result = computeReward(WEIGHTS, inputs);
+    if (result.status !== "unavailable") throw new Error(result.status);
+    expect(result.reason).toContain("monetary");
+
+    // A zero monetary weight declares the component out of scope.
+    const unweighted = computeReward({ ...WEIGHTS, monetaryWeight: 0 }, inputs);
+    expect(unweighted.status).toBe("known");
+  });
+
+  test("carries the full scalarizer configuration hash and raw measurements", () => {
+    const result = computeReward({ ...WEIGHTS, monetaryWeight: 0 }, inputs);
+    if (result.status !== "known") throw new Error(result.status);
+    expect(result.configHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(result.measurements).toEqual({
+      quality: 0.8,
+      tokensUsedFraction: 0.2,
+      latencyFraction: 0.1,
+      failed: false,
+      variance: 0,
+      monetaryFraction: null,
+    });
+
+    // Different weights under the same ID/version are distinguishable.
+    const other = computeReward({ ...WEIGHTS, monetaryWeight: 0, qualityWeight: 2 }, inputs);
+    if (other.status !== "known") throw new Error(other.status);
+    expect(other.configHash).not.toBe(result.configHash);
+
+    const unavailable = computeReward(WEIGHTS, inputs);
+    if (unavailable.status !== "unavailable") throw new Error(unavailable.status);
+    expect(unavailable.configHash).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  test("resolves the preregistered scalarizer from the study declaration", () => {
+    const resolved = resolveScalarizer({ rewardId: "reward", rewardVersion: "1" });
+    expect(resolved.rewardId).toBe("reward");
+    expect(resolved.rewardVersion).toBe("1");
+    expect(Object.isFrozen(resolved)).toBe(true);
+    expect(() => resolveScalarizer({ rewardId: "nope", rewardVersion: "1" }))
+      .toThrow("no registered scalarizer");
+    expect(() => resolveScalarizer({ rewardId: "reward", rewardVersion: "2" }))
+      .toThrow("no registered scalarizer");
   });
 });

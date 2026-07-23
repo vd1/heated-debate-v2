@@ -181,6 +181,108 @@ describe("judge evaluator", () => {
     expect(records).toHaveLength(1);
   });
 
+  test("rejects a source artifact that is not a valid canonical sequence", async () => {
+    const events = await sourceEvents();
+    const { evaluator } = harness(JSON.stringify({
+      dimensions: {
+        specificity: { score: 4, evidence: "Use an LRU cache with TTL." },
+        verbosity: { score: 2 },
+      },
+    }));
+    const completed = events.find((event) => event.type === "turn.completed");
+    if (!completed) throw new Error("missing completed turn");
+    // A mismatched envelope run ID must fail, not produce a known score.
+    (completed as { runId: string }).runId = "someone-else";
+
+    let caught: unknown;
+    try {
+      await evaluator.evaluate(events);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeDefined();
+  });
+
+  test("snapshots options at construction so later mutation cannot desynchronize identity", async () => {
+    const events = await sourceEvents();
+    const controls = { model: { ...MODEL }, thinkingLevel: "high" as const };
+    const requests: TurnRequest[] = [];
+    const evaluator = createJudgeEvaluator({
+      rubric: RUBRIC,
+      controls,
+      createAgent: () => {
+        const agent = new ScriptedAgent([judgeReply(JSON.stringify({
+          dimensions: {
+            specificity: { score: 4, evidence: "Use an LRU cache with TTL." },
+            verbosity: { score: 2 },
+          },
+        }))]);
+        return Promise.resolve({
+          reply: (request: TurnRequest) => {
+            requests.push(structuredClone(request));
+            return agent.reply(request);
+          },
+          dispose: () => agent.dispose(),
+        });
+      },
+      persistRecord: () => Promise.resolve(),
+    });
+    // Mutation after construction must not leak into execution or identity.
+    controls.thinkingLevel = "low" as never;
+
+    const { result, record } = await evaluator.evaluate(events);
+
+    if (result.status !== "known") throw new Error(result.status);
+    expect(requests[0]?.controls.thinkingLevel).toBe("high");
+    expect(record.controls?.thinkingLevel).toBe("high");
+    // The configuration identity is a full canonical digest, not a prefix.
+    expect(result.configurationId).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  test("persists a sanitized failure record when agent acquisition fails", async () => {
+    const events = await sourceEvents();
+    const records: EvaluationRecord[] = [];
+    const evaluator = createJudgeEvaluator({
+      rubric: RUBRIC,
+      controls: { model: MODEL, thinkingLevel: "high" },
+      createAgent: () => Promise.reject(new Error("factory down secret-key-9")),
+      persistRecord: (record) => {
+        records.push(record);
+        return Promise.resolve();
+      },
+      secrets: ["secret-key-9"],
+    });
+
+    const { result, record } = await evaluator.evaluate(events);
+
+    expect(result.status).toBe("unavailable");
+    expect(records).toHaveLength(1);
+    expect(record.failure?.code).toBe("judge_failure");
+    expect(record.failure?.message).not.toContain("secret-key-9");
+  });
+
+  test("records the executed reply identity, control report, usage, and latency", async () => {
+    const events = await sourceEvents();
+    const { evaluator } = harness(JSON.stringify({
+      dimensions: {
+        specificity: { score: 4, evidence: "Use an LRU cache with TTL." },
+        verbosity: { score: 2 },
+      },
+    }));
+
+    const { record } = await evaluator.evaluate(events);
+
+    if (record.execution === null) throw new Error("missing execution evidence");
+    expect(record.execution.returnedModel).toEqual(MODEL);
+    expect(record.execution.controlReport.thinkingLevel).toEqual({
+      requested: "high",
+      forwarded: "high",
+    });
+    expect(record.execution.usage).toEqual({});
+    expect(record.execution.durationMs).toBe(1);
+    expect(record.execution.attempts).toEqual([]);
+  });
+
   test("rejects fabricated evidence through the derived outcome", async () => {
     const events = await sourceEvents();
     const { evaluator } = harness(JSON.stringify({

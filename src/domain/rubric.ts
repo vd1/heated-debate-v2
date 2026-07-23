@@ -1,7 +1,13 @@
 import { createHash } from "node:crypto";
 
 import type { ModelInputMessage } from "./context";
-import type { RequestedControls } from "./agent";
+import type {
+  AgentTrace,
+  ControlReport,
+  ModelIdentity,
+  NormalizedUsage,
+  RequestedControls,
+} from "./agent";
 import type { SanitizedFailure } from "./events";
 
 export interface RubricDimension {
@@ -181,6 +187,15 @@ export function parseJudgeOutput(
   };
 }
 
+/** Evidence of the executed judge request, from the reply actually returned. */
+export interface ExecutedJudgeEvidence {
+  returnedModel: ModelIdentity;
+  controlReport: ControlReport;
+  usage: NormalizedUsage;
+  attempts: AgentTrace["attempts"];
+  durationMs: number;
+}
+
 export interface EvaluationRecord {
   recordVersion: "1";
   rubric: { rubricId: string; rubricVersion: string; rubricHash: string };
@@ -191,6 +206,8 @@ export interface EvaluationRecord {
   /** The exact messages given to the judge. */
   messages: readonly ModelInputMessage[];
   controls: RequestedControls | null;
+  /** Returned model, control report, usage, and attempts for the executed request. */
+  execution: ExecutedJudgeEvidence | null;
   rawResponse: string | null;
   outcome: JudgeOutputOutcome | null;
   failure: SanitizedFailure | null;
@@ -210,6 +227,7 @@ export function createEvaluationRecord(input: {
   declaredInputs: readonly string[];
   messages: readonly ModelInputMessage[];
   controls?: RequestedControls;
+  execution?: ExecutedJudgeEvidence;
   rawResponse?: string;
   sourceText?: string;
   failure?: SanitizedFailure;
@@ -249,6 +267,16 @@ export function createEvaluationRecord(input: {
       throw new Error("controls.thinkingLevel is invalid");
     }
   }
+  if (input.execution !== undefined) {
+    nonEmpty(input.execution.returnedModel.providerId, "execution.returnedModel.providerId");
+    nonEmpty(input.execution.returnedModel.modelId, "execution.returnedModel.modelId");
+    if (!Number.isFinite(input.execution.durationMs) || input.execution.durationMs < 0) {
+      throw new Error("execution.durationMs must be a finite non-negative number");
+    }
+    if (input.rawResponse === undefined) {
+      throw new Error("execution evidence requires the returned raw response");
+    }
+  }
   if (input.failure !== undefined) {
     if (input.rawResponse !== undefined && input.rawResponse.length === 0) {
       throw new Error("rawResponse must be non-empty when present");
@@ -274,6 +302,7 @@ export function createEvaluationRecord(input: {
     declaredInputs: [...input.declaredInputs],
     messages: structuredClone(input.messages),
     controls: input.controls === undefined ? null : structuredClone(input.controls),
+    execution: input.execution === undefined ? null : structuredClone(input.execution),
     rawResponse: input.rawResponse ?? null,
     outcome,
     failure: input.failure === undefined ? null : structuredClone(input.failure),
