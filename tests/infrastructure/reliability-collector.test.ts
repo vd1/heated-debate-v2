@@ -360,4 +360,43 @@ describe("reliability collector", () => {
     expect(outcome.missingEvaluations).toHaveLength(2);
     expect(outcome.missingEvaluations[0]?.reason).toContain("budget");
   });
+
+  test("rejects non-finite token ceilings and bounds", async () => {
+    const events = await sourceEvents();
+    let dispatched = 0;
+    const attempt = async (budgets: { maxTotalTokens: number; maxSampleTokens: number }) => {
+      try {
+        await collectReliabilitySamples({
+          spec: parseStudySpec(structuredClone(SPEC_JSON)),
+          rubric: RUBRIC,
+          events,
+          judgeControls: { model: JUDGE_MODEL, thinkingLevel: "low" },
+          createAgent: () => {
+            dispatched += 1;
+            return Promise.resolve(new ScriptedAgent([judgeReply(VALID_RESPONSE)]));
+          },
+          persistRecord: () => Promise.resolve(),
+          sampleCount: 1,
+          budgets,
+        });
+        return undefined;
+      } catch (error) {
+        return error;
+      }
+    };
+
+    // Every NaN comparison is false, so without validation these ceilings
+    // admit dispatches and real spend.
+    expect(String(await attempt({ maxTotalTokens: Number.NaN, maxSampleTokens: Number.NaN })))
+      .toContain("maxTotalTokens");
+    expect(String(await attempt({ maxTotalTokens: 100, maxSampleTokens: Number.NaN })))
+      .toContain("maxSampleTokens");
+    expect(String(await attempt({
+      maxTotalTokens: Number.POSITIVE_INFINITY, maxSampleTokens: 10,
+    }))).toContain("maxTotalTokens");
+    expect(String(await attempt({ maxTotalTokens: 100, maxSampleTokens: -5 })))
+      .toContain("maxSampleTokens");
+    // Nothing was dispatched and nothing was spent under any invalid ceiling.
+    expect(dispatched).toBe(0);
+  });
 });

@@ -105,8 +105,17 @@ export async function collectReliabilitySamples(
   }
   const debaterModel = debaterModelOf(input.events);
   const orderings = presentationPlan(input.spec.samplerSeed, input.sampleCount);
-  const tokenCeiling = input.budgets?.maxTotalTokens ?? null;
-  const tokenBound = input.budgets?.maxSampleTokens ?? null;
+  // NaN compares false against everything, so an unvalidated ceiling would
+  // admit every dispatch; token limits must be non-negative safe integers.
+  const tokenLimit = (name: string, value: number | undefined): number | null => {
+    if (value === undefined) return null;
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw new Error(`budgets.${name} must be a non-negative safe integer`);
+    }
+    return value;
+  };
+  const tokenCeiling = tokenLimit("maxTotalTokens", input.budgets?.maxTotalTokens);
+  const tokenBound = tokenLimit("maxSampleTokens", input.budgets?.maxSampleTokens);
   if (tokenCeiling !== null && tokenBound === null) {
     throw new Error("a token ceiling requires a declared per-sample bound");
   }
