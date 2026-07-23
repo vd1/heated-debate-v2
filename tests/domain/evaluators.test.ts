@@ -203,9 +203,18 @@ describe("deterministic evaluators", () => {
       "deterministic-latency",
     ]);
     for (const item of scores) {
+      if (item.evaluatorId === "deterministic-repetition") {
+        // One round has no consecutive same-role pair; unavailable, not perfect.
+        expect(item.status).toBe("unavailable");
+        continue;
+      }
       const value = known(item);
       expect(value.score).toBeGreaterThanOrEqual(0);
       expect(value.score).toBeLessThanOrEqual(1);
+      expect(value.range).toEqual({ min: 0, max: 1 });
+      expect(value.direction).toBe("higher-is-better");
+      expect(value.configurationId).toMatch(/^[0-9a-f]{12}$/);
+      expect(value.evidence.eventSequences.length).toBeGreaterThan(0);
     }
   });
 });
@@ -249,5 +258,28 @@ describe("evaluator boundary cases", () => {
     const result = known(evaluateRepetition(events));
     expect(result.value).toBeLessThanOrEqual(1);
     expect(result.score).toBe(0);
+  });
+});
+
+describe("partial evidence and empty populations", () => {
+  test("partial attempt usage is unavailable, never an exact total", async () => {
+    const partial: ScriptedReply = {
+      ...reply("- text", 100, 0),
+      trace: {
+        attempts: [{
+          attempt: 1,
+          status: "succeeded",
+          httpStatus: 200,
+          usage: { inputTokens: 20 },
+          usageEvidence: { explicitlyReported: [], source: "test" },
+        }],
+      },
+    };
+    const events = await recordedRun([partial], [structuredClone(partial)], 1);
+    const result = evaluateTokenUsage(events, { tokenBudget: 100 });
+    expect(result.status).toBe("unavailable");
+    if (result.status === "unavailable") {
+      expect(result.reason).toContain("partial usage");
+    }
   });
 });

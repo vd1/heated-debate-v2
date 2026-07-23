@@ -55,11 +55,16 @@ export function generateExperimentMatrix(
     if (!byId.has(caseId)) throw new Error(`case ${caseId} is not defined`);
   }
 
-  const variants = spec.variedParameters.reduce<Record<string, unknown>[]>(
-    (accumulated, dimension) => accumulated.flatMap((variant) =>
-      dimension.values.map((value) => ({ ...variant, [dimension.dimensionId]: value }))),
-    [{}],
-  ).map((variant) => ({
+  // Final evaluation applies only the preregistered baseline point, so holdout
+  // artifacts cannot support variant comparison or reselection.
+  const points: Record<string, unknown>[] = purpose === "final-evaluation"
+    ? [finalEvaluationPoint(spec)]
+    : spec.variedParameters.reduce<Record<string, unknown>[]>(
+        (accumulated, dimension) => accumulated.flatMap((variant) =>
+          dimension.values.map((value) => ({ ...variant, [dimension.dimensionId]: value }))),
+        [{}],
+      );
+  const variants = points.map((variant) => ({
     variant,
     variantKey: Object.keys(variant).sort()
       .map((key) => `${key}=${canonicalParameterValue(variant[key])}`)
@@ -93,4 +98,18 @@ export function generateExperimentMatrix(
     }
   }
   return Object.freeze(runs);
+}
+
+function finalEvaluationPoint(spec: StudySpec): Record<string, unknown> {
+  const point: Record<string, unknown> = {};
+  for (const dimension of spec.variedParameters) {
+    const value = spec.baseline[dimension.dimensionId];
+    if (value === undefined) {
+      throw new Error(
+        `final evaluation requires a baseline value for ${dimension.dimensionId}`,
+      );
+    }
+    point[dimension.dimensionId] = structuredClone(value);
+  }
+  return point;
 }

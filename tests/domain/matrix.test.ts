@@ -35,7 +35,7 @@ const SPEC_JSON = {
   },
   samplerSeed: 7,
   caseOrderPolicy: "spec-order",
-  baseline: { thinkingLevel: "low" },
+  baseline: { thinkingLevel: "low", temperature: 0.2 },
   holdoutUsePolicy: "final-evaluation-only",
   failureHandling: "record-and-continue",
   unknownCostPolicy: "fail-closed",
@@ -65,9 +65,13 @@ describe("experiment matrix", () => {
     const finalEvaluation = generateExperimentMatrix(spec, FIXTURE_CASES, {
       purpose: "final-evaluation",
     });
-    expect(finalEvaluation).toHaveLength(8);
+    // Only the preregistered baseline point runs on the holdout set.
+    expect(finalEvaluation).toHaveLength(2);
     expect(finalEvaluation.every((run) => run.holdout && run.purpose === "final-evaluation"))
       .toBe(true);
+    expect(finalEvaluation.every(
+      (run) => run.parameters.thinkingLevel === "low" && run.parameters.temperature === 0.2,
+    )).toBe(true);
 
     const sample = first[0];
     if (!sample) throw new Error("empty matrix");

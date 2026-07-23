@@ -25,7 +25,7 @@ describe("matrix executor", () => {
   test("maps run IDs to deterministic artifact paths", () => {
     const path = artifactPathForRun(run(1));
     expect(path).toMatch(
-      /^study\/abc123def456\/case-1\/thinkingLevel=_low_\/rep0-[0-9a-f]{8}\.jsonl$/,
+      /^study\/abc123def456\/case-1\/thinkingLevel=_low_\/rep0-[0-9a-f]{64}\.jsonl$/,
     );
     // Sanitization is lossy, so distinct variant keys keep distinct paths.
     const slash = artifactPathForRun({

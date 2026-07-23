@@ -65,8 +65,12 @@ export interface ReplayCanonicalRunInput {
 
 export type ToolReplayGuarantee = "no-tool-calls" | "independent" | "reauthorization-only";
 
+export type ExperimentReplayGuarantee = "verified" | "unverified" | "legacy-absent";
+
 export interface ReplayResult {
   readonly requests: readonly DeepReadonly<TurnRequest>[];
+  /** Whether the recorded experiment identity was verified against an expectation. */
+  readonly experimentGuarantee: ExperimentReplayGuarantee;
   /**
    * Weakest tool-loop guarantee achieved across the run's turns.
    * "reauthorization-only" means recorded requests and final text were only
@@ -139,12 +143,18 @@ async function replayCanonicalRunInternal(input: ReplayCanonicalRunInput): Promi
     });
   }
 
+  let experimentGuarantee: ExperimentReplayGuarantee;
   if (configuration.experiment !== undefined) {
     assertNoDrift(trace.runId, trace.experiment, {
       configHash: configuration.experiment.configHash,
       caseId: configuration.experiment.caseId ?? null,
     }, "experiment");
-  } else if (trace.experiment !== null && configuration.allowUnverifiedExperiment !== true) {
+    experimentGuarantee = "verified";
+  } else if (trace.experiment === null) {
+    experimentGuarantee = "legacy-absent";
+  } else if (configuration.allowUnverifiedExperiment === true) {
+    experimentGuarantee = "unverified";
+  } else {
     throw new Error(
       "recorded experiment identity requires an expected identity or allowUnverifiedExperiment",
     );
@@ -183,6 +193,7 @@ async function replayCanonicalRunInternal(input: ReplayCanonicalRunInput): Promi
 
   return Object.freeze({
     requests: Object.freeze(reconstructed),
+    experimentGuarantee,
     toolReplayGuarantee: guarantee,
   });
 }

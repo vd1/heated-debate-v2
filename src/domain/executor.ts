@@ -4,11 +4,22 @@ import type { RunSpecification } from "./matrix";
 import { studySpecHash, type StudySpec } from "./study-spec";
 
 /** Deterministic artifact path for one run, derived from its run-ID segments. */
-export function artifactPathForRun(run: RunSpecification): string {
+export function artifactPathForRun(
+  run: RunSpecification,
+  digestFn: (input: string) => string = (input) =>
+    createHash("sha256").update(input).digest("hex"),
+): string {
+  // The run specification must describe the identity its run ID encodes.
+  if (!run.runId.includes(`:${run.caseId}:`)
+    || !run.runId.includes(`:${run.variantKey}:`)
+    || !run.runId.endsWith(`rep${String(run.repetition)}`)) {
+    throw new Error(`run specification fields do not match run ID ${run.runId}`);
+  }
   const safe = (segment: string): string => segment.replace(/[^A-Za-z0-9_.,=-]/g, "_");
   const [studyId, specHash] = run.runId.split(":", 2);
-  // Sanitization is lossy, so the full run ID digest keeps paths injective.
-  const digest = createHash("sha256").update(run.runId).digest("hex").slice(0, 8);
+  // Sanitization is lossy; the full canonical digest disambiguates. A truncated
+  // digest is not injective, so the complete digest is kept in the file name.
+  const digest = digestFn(run.runId);
   return [
     safe(studyId ?? "study"),
     safe(specHash ?? "spec"),
