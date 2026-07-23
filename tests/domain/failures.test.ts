@@ -500,6 +500,31 @@ describe("runDebate failure semantics", () => {
     expect(error).toBe("no pricing entry for test/unpriced");
   });
 
+
+  test("normalizes evidence-validation failures through the run failure path", async () => {
+    const duplicated: AgentReply = {
+      ...reply("Proposal"),
+      trace: {
+        attempts: [
+          { ...FAILED_ATTEMPT, status: "succeeded", turnSequence: 1 },
+          { ...FAILED_ATTEMPT, status: "succeeded", attempt: 2, turnSequence: 1 },
+        ],
+      },
+    };
+    const proposer = new ScenarioAgent(() => Promise.resolve(structuredClone(duplicated)));
+    const reviewer = new ScenarioAgent(() => Promise.resolve(reply("unused")));
+    const sink = new MemorySink();
+
+    const error = await debateError(debateInput(proposer, reviewer, sink));
+
+    expect(error.code).toBe("protocol_failure");
+    const types = sink.events.map((event) => event.type);
+    expect(types.filter((type) => type === "turn.failed")).toHaveLength(1);
+    expect(types.at(-1)).toBe("run.failed");
+    expect(types.filter((type) => type === "adapter.attempt")).toHaveLength(0);
+    expect(proposer.disposed).toBe(true);
+  });
+
   test("emits sequenced attempts and tool calls in shared order while recording", async () => {
     const annotatedReply: AgentReply = {
       ...reply("Proposal"),

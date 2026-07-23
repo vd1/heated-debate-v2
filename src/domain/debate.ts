@@ -179,7 +179,8 @@ export async function runDebate(input: RunDebateInput): Promise<DebateResult> {
     trace: AgentTrace,
     toolCalls: readonly ToolCallRecord[],
   ): Promise<void> => {
-    for (const evidence of orderedTurnEvidence(trace.attempts, toolCalls)) {
+    const ordered = orderedTurnEvidence(trace.attempts, toolCalls);
+    for (const evidence of ordered) {
       if (evidence.kind === "attempt") {
         if (input.recording) {
           await emit({
@@ -316,12 +317,16 @@ export async function runDebate(input: RunDebateInput): Promise<DebateResult> {
         input.signalFailureCode ?? "cancelled",
       ).catch(async (error: unknown) => {
         const normalized = normalizeDispatchFailure(error, turn.request.turnId, observedUsage);
-        await emitTurnEvidence(
-          turn.request.turnId,
-          turn.request.controls.model,
-          normalized.trace,
-          normalized.toolCalls,
-        );
+        try {
+          await emitTurnEvidence(
+            turn.request.turnId,
+            turn.request.controls.model,
+            normalized.trace,
+            normalized.toolCalls,
+          );
+        } catch {
+          // Contradictory evidence is dropped; the original failure still terminates the run.
+        }
         return endWithFailure(new DebateRunFailure({
           code: normalized.code,
           message: normalized.message,
@@ -333,12 +338,21 @@ export async function runDebate(input: RunDebateInput): Promise<DebateResult> {
       });
 
       // Successful evidence is priced by the identity the provider returned.
-      await emitTurnEvidence(
-        turn.request.turnId,
-        reply.model,
-        reply.trace,
-        reply.toolCalls,
-      );
+      try {
+        await emitTurnEvidence(
+          turn.request.turnId,
+          reply.model,
+          reply.trace,
+          reply.toolCalls,
+        );
+      } catch (error) {
+        await endWithFailure(new DebateRunFailure({
+          code: "protocol_failure",
+          message: toError(error).message,
+          turnId: turn.request.turnId,
+          observedUsage,
+        }));
+      }
       if (monetary && costIssue !== undefined && !monetary.permitTokenOnlyAccounting) {
         await endWithFailure(new DebateRunFailure({
           code: "cost_unknown",
