@@ -261,7 +261,9 @@ export async function executeStudy(input: ExecuteStudyInput): Promise<StudyExecu
         }
         try {
           await executeClaimedRun(input, run, casesById, expectedConfigHashes, (spent) => {
-            totalCostScaled += spent;
+            // Unknown partial spend under fail-closed accounting charges the
+            // full per-run reservation, never zero.
+            totalCostScaled += spent === "unknown" ? perRunScaled : spent;
           });
         } finally {
           await input.store.release(run.runId);
@@ -291,7 +293,7 @@ async function executeClaimedRun(
   run: RunSpecification,
   casesById: ReadonlyMap<string, BenchmarkCase>,
   expectedConfigHashes: ReadonlyMap<string, string>,
-  charge: (spentScaled: bigint) => void,
+  charge: (spentScaled: bigint | "unknown") => void,
 ): Promise<void> {
   const benchmarkCase = casesById.get(run.caseId);
   if (!benchmarkCase) throw new Error(`case ${run.caseId} is not defined`);
@@ -369,17 +371,19 @@ function flattenError(error: unknown): unknown {
   return new Error([error.message, ...parts].join(": "));
 }
 
-/** Best-effort priced spend from a partial stream that never reached a terminal. */
+/**
+ * Priced spend from a partial stream that never reached a valid terminal.
+ * When the trace is unpriceable under fail-closed accounting the amount is
+ * unknown, and the caller must charge its conservative reservation instead.
+ */
 function partialSpend(
   spec: StudySpec,
   run: RunSpecification,
   events: readonly CanonicalEvent[],
-): bigint {
+): bigint | "unknown" {
   try {
     return artifactSpend(spec, run, events);
   } catch {
-    // Unpriceable partial usage cannot fail the already-failing run; the
-    // reservation for this run has already bounded its worst case.
-    return 0n;
+    return "unknown";
   }
 }

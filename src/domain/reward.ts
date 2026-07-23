@@ -14,16 +14,27 @@ export interface RewardWeights {
   monetaryWeight: number;
 }
 
+/** A reward component that was measured or explicitly was not. */
+export type Measurement =
+  | { status: "known"; value: number }
+  | { status: "unavailable"; reason: string };
+
+/**
+ * Raw single-run reward inputs. Every component is an explicit measurement:
+ * an absent value is declared unavailable, never smuggled in as zero.
+ *
+ * Units and directions are fixed by this contract: quality is normalized to
+ * [0, 1], higher is better; tokensUsedFraction is retry-inclusive tokens over
+ * the declared budget, lower is better; latencyFraction is mean turn latency
+ * over the declared target, lower is better; variance is reward variance in
+ * squared score units, lower is better.
+ */
 export interface RewardInputs {
-  /** Normalized quality in [0, 1]; unavailable quality makes the reward unavailable. */
-  quality: { status: "known"; score: number } | { status: "unavailable"; reason: string };
-  /** Retry-inclusive observed tokens, normalized by the caller's budget. */
-  tokensUsedFraction: number;
-  /** Mean turn latency normalized by the caller's target. */
-  latencyFraction: number;
+  quality: Measurement;
+  tokensUsedFraction: Measurement;
+  latencyFraction: Measurement;
   failed: boolean;
-  /** Per-run reward variance scope; aggregation across runs happens downstream. */
-  variance: number;
+  variance: Measurement;
   /** Per-attempt usage priced only against the run's immutable snapshot. */
   monetary?: {
     snapshot: PricingSnapshot;
@@ -41,14 +52,21 @@ export interface RewardVector {
   monetaryTerm: number;
 }
 
-/** Raw measurements before weighting; null marks a component with no evidence. */
+/** Assembled raw measurements; null marks a declared-unavailable component. */
 export interface RewardMeasurements {
-  quality: number;
-  tokensUsedFraction: number;
-  latencyFraction: number;
+  /** The aggregate scope these measurements describe. */
+  scope: "single-run";
+  quality: number | null;
+  tokensUsedFraction: number | null;
+  latencyFraction: number | null;
   failed: boolean;
-  variance: number;
+  variance: number | null;
   monetaryFraction: number | null;
+}
+
+interface AssembledMeasurements extends RewardMeasurements {
+  /** Why each null component is missing, for unavailable results. */
+  reasons: Readonly<Record<string, string>>;
 }
 
 export type RewardResult =
@@ -102,28 +120,88 @@ export function resolveScalarizer(
   return resolved;
 }
 
-/** Full canonical digest over every scalarizer field, key-order independent. */
+const MEASUREMENT_CONTRACT = "single-run/1";
+
+/** Full canonical digest over every scalarizer field and the measurement contract. */
 export function scalarizerConfigHash(weights: RewardWeights): string {
-  const canonical = Object.keys(weights).sort().map((key) =>
-    `${JSON.stringify(key)}:${JSON.stringify(Reflect.get(weights, key))}`).join(",");
+  const source = { ...weights, measurementContract: MEASUREMENT_CONTRACT };
+  const canonical = Object.keys(source).sort().map((key) =>
+    `${JSON.stringify(key)}:${JSON.stringify(Reflect.get(source, key))}`).join(",");
   return createHash("sha256").update(`{${canonical}}`).digest("hex");
 }
 
-function assertMeasurement(name: string, value: number, maximum?: number): void {
+function measurementValue(
+  name: string,
+  measurement: Measurement,
+  maximum?: number,
+): number | null {
+  if (measurement.status === "unavailable") return null;
+  const value = measurement.value;
   if (!Number.isFinite(value) || value < 0 || (maximum !== undefined && value > maximum)) {
     throw new Error(`${name} must be a finite number in range`);
   }
+  return value;
 }
 
 /**
- * Pure, versioned reward: quality minus weighted token, latency, failure,
- * variance, and monetary penalties. Raw measurements are retained beside the
- * weighted vector and scalar under a full scalarizer configuration hash.
+ * Validates and assembles the raw measurement vector from single-run inputs.
  * Monetary cost derives only from recorded per-attempt usage and the run's
- * immutable pricing snapshot; a positively weighted component without
- * evidence makes the reward unavailable, never silently zero.
+ * immutable snapshot; unpriceable usage is an unavailable component.
  */
-export function computeReward(weights: RewardWeights, inputs: RewardInputs): RewardResult {
+export function assembleRewardMeasurements(inputs: RewardInputs): AssembledMeasurements {
+  const reasons: Record<string, string> = {};
+  const note = (name: string, measurement: Measurement): void => {
+    if (measurement.status === "unavailable") reasons[name] = measurement.reason;
+  };
+  note("quality", inputs.quality);
+  note("tokensUsedFraction", inputs.tokensUsedFraction);
+  note("latencyFraction", inputs.latencyFraction);
+  note("variance", inputs.variance);
+
+  let monetaryFraction: number | null = null;
+  if (inputs.monetary === undefined) {
+    reasons.monetaryFraction = "no monetary evidence was provided";
+  } else {
+    if (!Number.isFinite(inputs.monetary.maxAmount) || inputs.monetary.maxAmount <= 0) {
+      throw new Error("monetary.maxAmount must be a finite positive number");
+    }
+    let scaled: bigint | null = 0n;
+    for (const attempt of inputs.monetary.attempts) {
+      const cost = calculateUsageCost(
+        inputs.monetary.snapshot,
+        attempt.model,
+        attempt.usage,
+      );
+      if (cost.status === "unknown") {
+        reasons.monetaryFraction = `monetary cost is unknown: missing ${cost.missing.join(", ")}`;
+        scaled = null;
+        break;
+      }
+      scaled += cost.amountScaled;
+    }
+    if (scaled !== null) monetaryFraction = Number(scaled) / 1e12 / inputs.monetary.maxAmount;
+  }
+
+  return {
+    scope: "single-run",
+    quality: measurementValue("quality", inputs.quality, 1),
+    tokensUsedFraction: measurementValue("tokensUsedFraction", inputs.tokensUsedFraction),
+    latencyFraction: measurementValue("latencyFraction", inputs.latencyFraction),
+    failed: inputs.failed,
+    variance: measurementValue("variance", inputs.variance),
+    monetaryFraction,
+    reasons: Object.freeze(reasons),
+  };
+}
+
+/**
+ * Versioned scalarization over an assembled measurement vector. A positively
+ * weighted unavailable component makes the reward unavailable, never zero.
+ */
+export function scalarizeReward(
+  weights: RewardWeights,
+  assembled: AssembledMeasurements,
+): RewardResult {
   if ((weights.rewardVersion as string) !== "1") {
     throw new Error(`unsupported rewardVersion ${weights.rewardVersion as string}`);
   }
@@ -137,69 +215,59 @@ export function computeReward(weights: RewardWeights, inputs: RewardInputs): Rew
     }
   }
   const configHash = scalarizerConfigHash(weights);
-  const unavailable = (reason: string): RewardResult => ({
-    rewardVersion: "1",
-    rewardId: weights.rewardId,
-    configHash,
-    status: "unavailable",
-    reason,
-  });
-  if (inputs.quality.status === "known") {
-    assertMeasurement("quality.score", inputs.quality.score, 1);
-  }
-  assertMeasurement("tokensUsedFraction", inputs.tokensUsedFraction);
-  assertMeasurement("latencyFraction", inputs.latencyFraction);
-  assertMeasurement("variance", inputs.variance);
-  if (inputs.quality.status === "unavailable") {
-    return unavailable(`quality is unavailable: ${inputs.quality.reason}`);
-  }
-  let monetaryFraction: number | null = null;
-  if (inputs.monetary !== undefined) {
-    let scaled = 0n;
-    for (const attempt of inputs.monetary.attempts) {
-      const cost = calculateUsageCost(
-        inputs.monetary.snapshot,
-        attempt.model,
-        attempt.usage,
-      );
-      if (cost.status === "unknown") {
-        return unavailable(`monetary cost is unknown: missing ${cost.missing.join(", ")}`);
-      }
-      scaled += cost.amountScaled;
+  const required: readonly [string, number | null, number][] = [
+    ["quality", assembled.quality, weights.qualityWeight],
+    ["tokensUsedFraction", assembled.tokensUsedFraction, weights.tokenCostWeight],
+    ["latencyFraction", assembled.latencyFraction, weights.latencyWeight],
+    ["variance", assembled.variance, weights.variancePenalty],
+    ["monetaryFraction", assembled.monetaryFraction, weights.monetaryWeight],
+  ];
+  for (const [name, value, weight] of required) {
+    if (value === null && weight > 0) {
+      return {
+        rewardVersion: "1",
+        rewardId: weights.rewardId,
+        configHash,
+        status: "unavailable",
+        reason: `${name} is unavailable: ${assembled.reasons[name] ?? "no measurement"}`,
+      };
     }
-    if (inputs.monetary.maxAmount <= 0) {
-      throw new Error("monetary.maxAmount must be positive");
-    }
-    monetaryFraction = Number(scaled) / 1e12 / inputs.monetary.maxAmount;
-  } else if (weights.monetaryWeight > 0) {
-    return unavailable(
-      "monetary evidence is missing while the scalarizer weights monetary cost",
-    );
   }
   const vector: RewardVector = {
-    qualityTerm: weights.qualityWeight * inputs.quality.score,
-    tokenCostTerm: -weights.tokenCostWeight * inputs.tokensUsedFraction,
-    latencyTerm: -weights.latencyWeight * inputs.latencyFraction,
-    failureTerm: inputs.failed ? -weights.failurePenalty : 0,
-    varianceTerm: -weights.variancePenalty * inputs.variance,
-    monetaryTerm: -weights.monetaryWeight * (monetaryFraction ?? 0),
+    qualityTerm: weights.qualityWeight * (assembled.quality ?? 0),
+    tokenCostTerm: -weights.tokenCostWeight * (assembled.tokensUsedFraction ?? 0),
+    latencyTerm: -weights.latencyWeight * (assembled.latencyFraction ?? 0),
+    failureTerm: assembled.failed ? -weights.failurePenalty : 0,
+    varianceTerm: -weights.variancePenalty * (assembled.variance ?? 0),
+    monetaryTerm: -weights.monetaryWeight * (assembled.monetaryFraction ?? 0),
   };
   const scalar = vector.qualityTerm + vector.tokenCostTerm + vector.latencyTerm
     + vector.failureTerm + vector.varianceTerm + vector.monetaryTerm;
+  const { reasons, ...measurements } = assembled;
+  void reasons;
+  // Final backstop: nothing non-finite ever leaves as a known reward.
+  for (const [name, value] of [...Object.entries(vector), ["scalar", scalar] as const]) {
+    if (!Number.isFinite(value)) {
+      throw new Error(`reward ${name} is not a finite number`);
+    }
+  }
+  for (const [name, value] of Object.entries(measurements)) {
+    if (typeof value === "number" && !Number.isFinite(value)) {
+      throw new Error(`reward measurement ${name} is not a finite number`);
+    }
+  }
   return {
     rewardVersion: "1",
     rewardId: weights.rewardId,
     configHash,
     status: "known",
-    measurements: Object.freeze({
-      quality: inputs.quality.score,
-      tokensUsedFraction: inputs.tokensUsedFraction,
-      latencyFraction: inputs.latencyFraction,
-      failed: inputs.failed,
-      variance: inputs.variance,
-      monetaryFraction,
-    }),
+    measurements: Object.freeze(measurements),
     vector: Object.freeze(vector),
     scalar,
   };
+}
+
+/** Assembly composed with scalarization; see the two halves for the contract. */
+export function computeReward(weights: RewardWeights, inputs: RewardInputs): RewardResult {
+  return scalarizeReward(weights, assembleRewardMeasurements(inputs));
 }

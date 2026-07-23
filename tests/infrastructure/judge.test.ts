@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { ScriptedAgent, type ScriptedReply, type TurnRequest } from "../../src/domain/agent";
+import { AgentFailure, ScriptedAgent, type ScriptedReply, type TurnRequest } from "../../src/domain/agent";
 import { runDebate, type DebateEventSink } from "../../src/domain/debate";
 import type { CanonicalEvent } from "../../src/domain/events";
 import { PROPOSER_ROLE, REVIEWER_ROLE } from "../../src/domain/roles";
@@ -281,6 +281,102 @@ describe("judge evaluator", () => {
     expect(record.execution.usage).toEqual({});
     expect(record.execution.durationMs).toBe(1);
     expect(record.execution.attempts).toEqual([]);
+  });
+
+  test("rejects a source artifact without a terminal event", async () => {
+    const events = await sourceEvents();
+    const open = events.slice(0, -1);
+    const { evaluator, records } = harness(JSON.stringify({
+      dimensions: {
+        specificity: { score: 4, evidence: "Use an LRU cache with TTL." },
+        verbosity: { score: 2 },
+      },
+    }));
+
+    let caught: unknown;
+    try {
+      await evaluator.evaluate(open);
+    } catch (error) {
+      caught = error;
+    }
+    expect(String(caught)).toContain("terminal");
+    expect(records).toHaveLength(0);
+  });
+
+  test("persists the record even when agent cleanup fails", async () => {
+    const events = await sourceEvents();
+    const records: EvaluationRecord[] = [];
+    const evaluator = createJudgeEvaluator({
+      rubric: RUBRIC,
+      controls: { model: MODEL, thinkingLevel: "high" },
+      createAgent: () => {
+        const agent = new ScriptedAgent([judgeReply(JSON.stringify({
+          dimensions: {
+            specificity: { score: 4, evidence: "Use an LRU cache with TTL." },
+            verbosity: { score: 2 },
+          },
+        }))]);
+        return Promise.resolve({
+          reply: (request: TurnRequest) => agent.reply(request),
+          dispose: () => Promise.reject(new Error("session teardown failed")),
+        });
+      },
+      persistRecord: (record) => {
+        records.push(record);
+        return Promise.resolve();
+      },
+    });
+
+    let caught: unknown;
+    try {
+      await evaluator.evaluate(events);
+    } catch (error) {
+      caught = error;
+    }
+    // The cleanup failure is reported, but the evaluation evidence survives.
+    expect(String(caught)).toContain("teardown");
+    expect(records).toHaveLength(1);
+    expect(records[0]?.outcome?.status).toBe("valid");
+  });
+
+  test("references the executed configuration and keeps failure attempt traces", async () => {
+    const events = await sourceEvents();
+    const { evaluator, records } = harness(JSON.stringify({
+      dimensions: {
+        specificity: { score: 4, evidence: "Use an LRU cache with TTL." },
+        verbosity: { score: 2 },
+      },
+    }));
+    const { result, record } = await evaluator.evaluate(events);
+    // The record references the complete executed configuration digest.
+    expect(record.judge.configurationId).toBe(result.configurationId);
+    expect(record.judge.configurationId).toMatch(/^[0-9a-f]{64}$/);
+    expect(records).toHaveLength(1);
+
+    const failing = createJudgeEvaluator({
+      rubric: RUBRIC,
+      controls: { model: MODEL, thinkingLevel: "high" },
+      createAgent: () => Promise.resolve({
+        reply: () => Promise.reject(new AgentFailure({
+          code: "provider_failure",
+          message: "backend exploded",
+          trace: {
+            attempts: [{
+              attempt: 1,
+              status: "failed",
+              httpStatus: 500,
+              usage: { inputTokens: 77, outputTokens: 0 },
+              usageEvidence: { explicitlyReported: [], source: "test" },
+            }],
+          },
+        })),
+        dispose: () => Promise.resolve(),
+      }),
+      persistRecord: () => Promise.resolve(),
+    });
+    const failed = await failing.evaluate(events);
+    // Paid attempts inside a failure are evidence, not garbage.
+    expect(failed.record.failureAttempts?.[0]?.usage.inputTokens).toBe(77);
   });
 
   test("permutes presentation order without touching canonical chronology", async () => {

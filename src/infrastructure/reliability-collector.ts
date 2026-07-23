@@ -103,18 +103,31 @@ export async function collectReliabilitySamples(
   const missingEvaluations: { sampleId: string; reason: string }[] = [];
   let totalTokens = 0;
   let totalCostScaled = 0n;
+  // Conservative per-sample bounds observed so far: repeated evaluations of
+  // the same artifact under the same controls; the most expensive sample seen
+  // bounds the next one. The first dispatch has no observation and is the
+  // documented allowed overage.
+  let maxSampleTokens = 0;
+  let maxSampleCostScaled = 0n;
 
   for (const [index, ordering] of orderings.entries()) {
     const start = input.events[0];
     const runId = start?.runId ?? "unknown";
     const sampleId = `${runId}:rel-${String(index)}`;
     if (input.budgets?.maxTotalTokens !== undefined
-      && totalTokens >= input.budgets.maxTotalTokens) {
-      missingEvaluations.push({ sampleId, reason: "token budget exhausted before dispatch" });
+      && totalTokens + maxSampleTokens > input.budgets.maxTotalTokens) {
+      missingEvaluations.push({
+        sampleId,
+        reason: "token budget cannot cover the sample's conservative bound",
+      });
       continue;
     }
-    if (maxAmountScaled !== null && totalCostScaled >= maxAmountScaled) {
-      missingEvaluations.push({ sampleId, reason: "monetary budget exhausted before dispatch" });
+    if (maxAmountScaled !== null
+      && totalCostScaled + maxSampleCostScaled > maxAmountScaled) {
+      missingEvaluations.push({
+        sampleId,
+        reason: "monetary budget cannot cover the sample's conservative bound",
+      });
       continue;
     }
     const evaluator = createJudgeEvaluator({
@@ -126,22 +139,38 @@ export async function collectReliabilitySamples(
       ...(input.secrets === undefined ? {} : { secrets: input.secrets }),
     });
     const { result, record } = await evaluator.evaluate(input.events);
-    // Attempt-inclusive accounting from the executed evidence.
+    // Attempt-inclusive accounting from the executed evidence, including
+    // attempts recovered from failed calls; their spend is just as real.
     const returnedModel = record.execution?.returnedModel ?? input.judgeControls.model;
-    for (const attempt of record.execution?.attempts ?? []) {
+    let sampleTokens = 0;
+    let sampleCostScaled = 0n;
+    const attempts = [
+      ...(record.execution?.attempts ?? []),
+      ...(record.failureAttempts ?? []),
+    ];
+    for (const attempt of attempts) {
       const usage = attempt.usage;
-      totalTokens += (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0)
-        + (usage.cacheReadTokens ?? 0) + (usage.cacheWriteTokens ?? 0)
-        + (usage.reasoningTokens ?? 0);
+      // Reasoning is a subset of output under the domain budget rule; it is
+      // never counted a second time.
+      sampleTokens += (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0)
+        + (usage.cacheReadTokens ?? 0) + (usage.cacheWriteTokens ?? 0);
       const cost = calculateUsageCost(input.spec.pricingSnapshot, returnedModel, usage);
       if (cost.status === "known") {
-        totalCostScaled += cost.amountScaled;
-      } else if (maxAmountScaled !== null && input.spec.unknownCostPolicy === "fail-closed") {
+        sampleCostScaled += cost.amountScaled;
+      } else if (input.spec.unknownCostPolicy === "fail-closed") {
+        // Unknown price is rejected regardless of which optional budget
+        // arguments were supplied; paid usage never becomes zero spend.
         throw new Error(
           `judge sample ${sampleId} has unpriceable usage under fail-closed accounting`,
         );
       }
     }
+    totalTokens += sampleTokens;
+    totalCostScaled += sampleCostScaled;
+    maxSampleTokens = Math.max(maxSampleTokens, sampleTokens);
+    maxSampleCostScaled = sampleCostScaled > maxSampleCostScaled
+      ? sampleCostScaled
+      : maxSampleCostScaled;
     if (result.status !== "known") {
       missingEvaluations.push({ sampleId, reason: result.reason });
       continue;

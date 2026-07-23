@@ -225,4 +225,78 @@ describe("reliability collector", () => {
     }
     expect(String(caught)).toContain("debater");
   });
+
+  test("rejects unpriceable judge usage under fail-closed accounting without any ceiling", async () => {
+    const events = await sourceEvents();
+    // The snapshot prices only the judge model; strip it so pricing fails.
+    const specJson = structuredClone(SPEC_JSON);
+    const entry = specJson.pricingSnapshot.entries[0];
+    if (!entry) throw new Error("missing snapshot entry");
+    entry.model = { providerId: "test", modelId: "other" };
+
+    let caught: unknown;
+    try {
+      await collectReliabilitySamples({
+        spec: parseStudySpec(specJson),
+        rubric: RUBRIC,
+        events,
+        judgeControls: { model: JUDGE_MODEL, thinkingLevel: "low" },
+        createAgent: () => Promise.resolve(new ScriptedAgent([judgeReply(VALID_RESPONSE)])),
+        persistRecord: () => Promise.resolve(),
+        sampleCount: 2,
+      });
+    } catch (error) {
+      caught = error;
+    }
+    expect(String(caught)).toMatch(/unpriceable|no pricing entry/);
+  });
+
+  test("counts reasoning as part of output, never twice", async () => {
+    const events = await sourceEvents();
+    const reasoningReply = (): ScriptedReply => ({
+      ...judgeReply(VALID_RESPONSE),
+      trace: {
+        attempts: [{
+          attempt: 1,
+          status: "succeeded",
+          httpStatus: 200,
+          usage: { inputTokens: 100, outputTokens: 50, reasoningTokens: 40 },
+          usageEvidence: { explicitlyReported: [], source: "test" },
+        }],
+      },
+    });
+    const outcome = await collectReliabilitySamples({
+      spec: parseStudySpec(structuredClone(SPEC_JSON)),
+      rubric: RUBRIC,
+      events,
+      judgeControls: { model: JUDGE_MODEL, thinkingLevel: "low" },
+      createAgent: () => Promise.resolve(new ScriptedAgent([reasoningReply()])),
+      persistRecord: () => Promise.resolve(),
+      sampleCount: 1,
+    });
+    // Reasoning is a subset of output under the domain budget rule.
+    expect(outcome.totalTokens).toBe(150);
+  });
+
+  test("does not dispatch a sample whose conservative bound exceeds the budget", async () => {
+    const events = await sourceEvents();
+    const outcome = await collectReliabilitySamples({
+      spec: parseStudySpec(structuredClone(SPEC_JSON)),
+      rubric: RUBRIC,
+      events,
+      judgeControls: { model: JUDGE_MODEL, thinkingLevel: "low" },
+      createAgent: () => Promise.resolve(new ScriptedAgent([judgeReply(VALID_RESPONSE)])),
+      persistRecord: () => Promise.resolve(),
+      sampleCount: 4,
+      budgets: { maxTotalTokens: 400 },
+    });
+
+    // Each sample costs 150 tokens. After two samples (300), the observed
+    // conservative bound (150) no longer fits the remaining 100, so the third
+    // sample must not dispatch and the ceiling is never crossed.
+    expect(outcome.samples).toHaveLength(2);
+    expect(outcome.totalTokens).toBe(300);
+    expect(outcome.missingEvaluations).toHaveLength(2);
+    expect(outcome.missingEvaluations[0]?.reason).toContain("budget");
+  });
 });

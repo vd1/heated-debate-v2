@@ -18,7 +18,7 @@ import {
 } from "../domain/experiment-config";
 import { runDeterministicEvaluators } from "../domain/evaluators";
 import type { RunSpecification } from "../domain/matrix";
-import { computeReward, resolveScalarizer } from "../domain/reward";
+import { computeReward, resolveScalarizer, type Measurement } from "../domain/reward";
 import { serializeCanonicalEvent, type CanonicalEvent } from "../domain/events";
 import {
   assertPreregisteredStudy,
@@ -264,18 +264,30 @@ export async function runEngine(
       tokenBudget: input.spec.budgets.perRun.maxTokens,
       latencyTargetMs: 60_000,
     });
-    const completion = scores.find((score) => score.evaluatorId === "deterministic-completion");
-    const quality = completion?.status === "known"
-      ? { status: "known" as const, score: completion.score }
-      : { status: "unavailable" as const, reason: "completion score unavailable" };
-    const usageScore = scores.find((score) => score.evaluatorId === "deterministic-token-usage");
+    // Every measurement carries its evidence state; a missing score reaches
+    // the scalarizer as unavailable, never as a manufactured zero.
+    const measurement = (evaluatorId: string, invert: boolean): Measurement => {
+      const found = scores.find((score) => score.evaluatorId === evaluatorId);
+      if (found?.status !== "known") {
+        return {
+          status: "unavailable",
+          reason: found?.status === "unavailable"
+            ? found.reason
+            : `${evaluatorId} produced no score`,
+        };
+      }
+      return { status: "known", value: invert ? 1 - found.score : found.score };
+    };
     // The executed objective is the preregistered scalarizer, nothing else.
     const reward = computeReward(resolveScalarizer(input.spec.rewardScalarization), {
-      quality,
-      tokensUsedFraction: usageScore?.status === "known" ? 1 - usageScore.score : 0,
-      latencyFraction: 0,
+      quality: measurement("deterministic-completion", false),
+      tokensUsedFraction: measurement("deterministic-token-usage", true),
+      latencyFraction: measurement("deterministic-latency", true),
       failed: false,
-      variance: 0,
+      variance: {
+        status: "unavailable",
+        reason: "a single run carries no reward-variance sample",
+      },
     });
     emit(serializeEngineOutput({
       schemaVersion: ENGINE_SCHEMA_VERSION,

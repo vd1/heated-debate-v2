@@ -220,7 +220,7 @@ export interface EvaluationRecord {
   recordVersion: "1";
   rubric: { rubricId: string; rubricVersion: string; rubricHash: string };
   sourceArtifact: { runId: string; artifactHash: string };
-  judge: { evaluatorId: string; evaluatorVersion: string };
+  judge: { evaluatorId: string; evaluatorVersion: string; configurationId?: string };
   /** Artifact references declared as judge inputs. */
   declaredInputs: readonly string[];
   /** The exact messages given to the judge. */
@@ -228,6 +228,8 @@ export interface EvaluationRecord {
   controls: RequestedControls | null;
   /** Returned model, control report, usage, and attempts for the executed request. */
   execution: ExecutedJudgeEvidence | null;
+  /** Attempt evidence recovered from a failed judge call; spend is real. */
+  failureAttempts: AgentTrace["attempts"] | null;
   rawResponse: string | null;
   outcome: JudgeOutputOutcome | null;
   failure: SanitizedFailure | null;
@@ -241,11 +243,12 @@ export interface EvaluationRecord {
 export function createEvaluationRecord(input: {
   rubric: Rubric;
   sourceArtifact: { runId: string; artifactHash: string };
-  judge: { evaluatorId: string; evaluatorVersion: string };
+  judge: { evaluatorId: string; evaluatorVersion: string; configurationId?: string };
   declaredInputs: readonly string[];
   messages: readonly ModelInputMessage[];
   controls?: RequestedControls;
   execution?: ExecutedJudgeEvidence;
+  failureAttempts?: AgentTrace["attempts"];
   rawResponse?: string;
   sourceText?: string;
   failure?: SanitizedFailure;
@@ -257,6 +260,10 @@ export function createEvaluationRecord(input: {
   }
   nonEmpty(input.judge.evaluatorId, "judge.evaluatorId");
   nonEmpty(input.judge.evaluatorVersion, "judge.evaluatorVersion");
+  if (input.judge.configurationId !== undefined
+    && !/^[0-9a-f]{64}$/.test(input.judge.configurationId)) {
+    throw new Error("judge.configurationId must be a sha256 hex digest");
+  }
   if (input.declaredInputs.length === 0) {
     throw new Error("declaredInputs must reference at least one artifact");
   }
@@ -328,6 +335,9 @@ export function createEvaluationRecord(input: {
     messages: structuredClone(input.messages),
     controls: input.controls === undefined ? null : structuredClone(input.controls),
     execution: input.execution === undefined ? null : structuredClone(input.execution),
+    failureAttempts: input.failureAttempts === undefined
+      ? null
+      : structuredClone(input.failureAttempts),
     rawResponse: input.rawResponse ?? null,
     outcome,
     failure: input.failure === undefined ? null : structuredClone(input.failure),

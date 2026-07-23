@@ -29,9 +29,13 @@ function leaseName(runId: string): string {
 }
 
 /**
- * The real study artifact store: deterministic bounded locators, exclusive
- * worker leases with stale-lease recovery, temporary output with fsync before
- * an atomic rename, and read-back through the canonical JSONL parser.
+ * The v2 study artifact store: deterministic locators, per-process leases,
+ * temporary output with fsync before an atomic rename, and read-back through
+ * the canonical JSONL parser.
+ *
+ * SCOPE: this store is SINGLE-WORKER. Stale-lease recovery only unblocks a
+ * crashed local process; it is not a distributed coordination protocol, and
+ * concurrent workers on shared storage are not supported.
  */
 export class FilesystemStudyArtifactStore implements StudyArtifactStore {
   private readonly staleLeaseMs: number;

@@ -1,7 +1,13 @@
 import { describe, expect, test } from "bun:test";
 
 import { definePricingSnapshot } from "../../src/domain/pricing";
-import { computeReward, resolveScalarizer, type RewardWeights } from "../../src/domain/reward";
+import {
+  assembleRewardMeasurements,
+  computeReward,
+  resolveScalarizer,
+  scalarizeReward,
+  type RewardWeights,
+} from "../../src/domain/reward";
 
 const WEIGHTS: RewardWeights = {
   rewardVersion: "1",
@@ -33,11 +39,11 @@ const SNAPSHOT = definePricingSnapshot({
 describe("reward function", () => {
   test("computes every term and retains the vector", () => {
     const result = computeReward(WEIGHTS, {
-      quality: { status: "known", score: 0.8 },
-      tokensUsedFraction: 0.5,
-      latencyFraction: 0.4,
+      quality: { status: "known", value: 0.8 },
+      tokensUsedFraction: { status: "known", value: 0.5 },
+      latencyFraction: { status: "known", value: 0.4 },
       failed: true,
-      variance: 0.1,
+      variance: { status: "known", value: 0.1 },
       monetary: {
         snapshot: SNAPSHOT,
         attempts: [{
@@ -64,19 +70,19 @@ describe("reward function", () => {
   test("is unavailable when quality or monetary evidence is unavailable", () => {
     const noQuality = computeReward(WEIGHTS, {
       quality: { status: "unavailable", reason: "judge output partial" },
-      tokensUsedFraction: 0,
-      latencyFraction: 0,
+      tokensUsedFraction: { status: "known", value: 0 },
+      latencyFraction: { status: "known", value: 0 },
       failed: false,
-      variance: 0,
+      variance: { status: "known", value: 0 },
     });
     expect(noQuality.status).toBe("unavailable");
 
     const unknownCost = computeReward(WEIGHTS, {
-      quality: { status: "known", score: 1 },
-      tokensUsedFraction: 0,
-      latencyFraction: 0,
+      quality: { status: "known", value: 1 },
+      tokensUsedFraction: { status: "known", value: 0 },
+      latencyFraction: { status: "known", value: 0 },
       failed: false,
-      variance: 0,
+      variance: { status: "known", value: 0 },
       monetary: {
         snapshot: SNAPSHOT,
         attempts: [{
@@ -92,11 +98,11 @@ describe("reward function", () => {
 
   test("rejects invalid weights", () => {
     expect(() => computeReward({ ...WEIGHTS, latencyWeight: -1 }, {
-      quality: { status: "known", score: 1 },
-      tokensUsedFraction: 0,
-      latencyFraction: 0,
+      quality: { status: "known", value: 1 },
+      tokensUsedFraction: { status: "known", value: 0 },
+      latencyFraction: { status: "known", value: 0 },
       failed: false,
-      variance: 0,
+      variance: { status: "known", value: 0 },
     })).toThrow("latencyWeight must be a finite non-negative number");
   });
 
@@ -109,11 +115,11 @@ describe("reward function", () => {
       variancePenalty: 0,
       monetaryWeight: 0,
     }, {
-      quality: { status: "known", score: 0.6 },
-      tokensUsedFraction: 1,
-      latencyFraction: 1,
+      quality: { status: "known", value: 0.6 },
+      tokensUsedFraction: { status: "known", value: 1 },
+      latencyFraction: { status: "known", value: 1 },
       failed: true,
-      variance: 1,
+      variance: { status: "known", value: 1 },
     });
     if (result.status !== "known") throw new Error(result.status);
     expect(result.scalar).toBe(0.6);
@@ -122,11 +128,11 @@ describe("reward function", () => {
 
 describe("reward hardening", () => {
   const inputs = {
-    quality: { status: "known" as const, score: 0.8 },
-    tokensUsedFraction: 0.2,
-    latencyFraction: 0.1,
+    quality: { status: "known" as const, value: 0.8 },
+    tokensUsedFraction: { status: "known" as const, value: 0.2 },
+    latencyFraction: { status: "known" as const, value: 0.1 },
     failed: false,
-    variance: 0,
+    variance: { status: "known" as const, value: 0 },
   };
 
   test("rejects undeclared reward versions and empty reward IDs at runtime", () => {
@@ -137,17 +143,20 @@ describe("reward hardening", () => {
 
   test("rejects non-finite or out-of-range measurements instead of returning NaN", () => {
     expect(() => computeReward(WEIGHTS, {
-      ...inputs, quality: { status: "known", score: Number.NaN },
+      ...inputs, quality: { status: "known", value: Number.NaN },
     })).toThrow("quality");
     expect(() => computeReward(WEIGHTS, {
-      ...inputs, quality: { status: "known", score: 1.5 },
+      ...inputs, quality: { status: "known", value: 1.5 },
     })).toThrow("quality");
-    expect(() => computeReward(WEIGHTS, { ...inputs, tokensUsedFraction: Number.NaN }))
-      .toThrow("tokensUsedFraction");
-    expect(() => computeReward(WEIGHTS, { ...inputs, latencyFraction: -1 }))
-      .toThrow("latencyFraction");
-    expect(() => computeReward(WEIGHTS, { ...inputs, variance: Number.POSITIVE_INFINITY }))
-      .toThrow("variance");
+    expect(() => computeReward(WEIGHTS, {
+      ...inputs, tokensUsedFraction: { status: "known", value: Number.NaN },
+    })).toThrow("tokensUsedFraction");
+    expect(() => computeReward(WEIGHTS, {
+      ...inputs, latencyFraction: { status: "known", value: -1 },
+    })).toThrow("latencyFraction");
+    expect(() => computeReward(WEIGHTS, {
+      ...inputs, variance: { status: "known", value: Number.POSITIVE_INFINITY },
+    })).toThrow("variance");
   });
 
   test("treats missing monetary evidence under a positive weight as unavailable", () => {
@@ -165,6 +174,7 @@ describe("reward hardening", () => {
     if (result.status !== "known") throw new Error(result.status);
     expect(result.configHash).toMatch(/^[0-9a-f]{64}$/);
     expect(result.measurements).toEqual({
+      scope: "single-run",
       quality: 0.8,
       tokensUsedFraction: 0.2,
       latencyFraction: 0.1,
@@ -192,5 +202,62 @@ describe("reward hardening", () => {
       .toThrow("no registered scalarizer");
     expect(() => resolveScalarizer({ rewardId: "reward", rewardVersion: "2" }))
       .toThrow("no registered scalarizer");
+  });
+});
+
+describe("reward measurement states and separation", () => {
+  const known = (value: number) => ({ status: "known" as const, value });
+
+  test("rejects a non-finite monetary normalization ceiling", () => {
+    expect(() => computeReward(WEIGHTS, {
+      quality: known(0.8),
+      tokensUsedFraction: known(0.2),
+      latencyFraction: known(0.1),
+      failed: false,
+      variance: known(0),
+      monetary: { snapshot: SNAPSHOT, attempts: [], maxAmount: Number.NaN },
+    })).toThrow("maxAmount");
+  });
+
+  test("never substitutes zero for a positively weighted missing measurement", () => {
+    const result = computeReward({ ...WEIGHTS, monetaryWeight: 0 }, {
+      quality: known(0.8),
+      tokensUsedFraction: { status: "unavailable", reason: "usage was never reported" },
+      latencyFraction: known(0.1),
+      failed: false,
+      variance: known(0),
+    });
+    if (result.status !== "unavailable") throw new Error(result.status);
+    expect(result.reason).toContain("tokensUsedFraction");
+
+    // A zero weight declares the component out of scope; the gap is recorded.
+    const unweighted = computeReward(
+      { ...WEIGHTS, monetaryWeight: 0, tokenCostWeight: 0 },
+      {
+        quality: known(0.8),
+        tokensUsedFraction: { status: "unavailable", reason: "usage was never reported" },
+        latencyFraction: known(0.1),
+        failed: false,
+        variance: known(0),
+      },
+    );
+    if (unweighted.status !== "known") throw new Error(unweighted.status);
+    expect(unweighted.measurements.tokensUsedFraction).toBeNull();
+    expect(unweighted.measurements.scope).toBe("single-run");
+  });
+
+  test("separates raw measurement assembly from versioned scalarization", () => {
+    const inputs = {
+      quality: known(0.8),
+      tokensUsedFraction: known(0.2),
+      latencyFraction: known(0.1),
+      failed: false,
+      variance: known(0),
+    };
+    const assembled = assembleRewardMeasurements(inputs);
+    expect(assembled.quality).toBe(0.8);
+    const scalarized = scalarizeReward({ ...WEIGHTS, monetaryWeight: 0 }, assembled);
+    const composed = computeReward({ ...WEIGHTS, monetaryWeight: 0 }, inputs);
+    expect(scalarized).toEqual(composed);
   });
 });

@@ -477,4 +477,44 @@ describe("study runner", () => {
     });
     expect(resumed.totalCostScaled).toBe(600_000_000_000n);
   });
+
+  test("charges the full reservation when partial failure spend is unpriceable", async () => {
+    const { spec, runs, store, attestation } = fixture({
+      budgets: {
+        perRun: { maxTurns: 4, maxTokens: 1_000_000, maxAmount: 1 },
+        maxTotalAmount: 10,
+      },
+    });
+    // The attempt reports no usage at all: the run fails closed and the exact
+    // spend cannot be priced. The reservation is charged conservatively
+    // instead of converting unknown spend to zero.
+    const blindReply = (text: string): ScriptedReply => ({
+      ...reply(text),
+      trace: {
+        attempts: [{
+          attempt: 1,
+          status: "succeeded",
+          httpStatus: 200,
+          usage: {},
+          usageEvidence: { explicitlyReported: [], source: "test" },
+        }],
+      },
+    });
+
+    const outcome = await executeStudy({
+      spec,
+      attestation,
+      runs: runs.slice(0, 1),
+      cases: FIXTURE_CASES,
+      createAgents: () => Promise.resolve({
+        proposer: new ScriptedAgent([blindReply("Proposal")]),
+        reviewer: new ScriptedAgent([blindReply("Review")]),
+      }),
+      store,
+    });
+
+    expect(outcome.failed).toHaveLength(1);
+    // 1 USD per-run reservation charged in 1e-12 units.
+    expect(outcome.totalCostScaled).toBe(1_000_000_000_000n);
+  });
 });

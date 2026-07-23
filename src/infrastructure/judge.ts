@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import type { AgentPort, RequestedControls } from "../domain/agent";
+import { AgentFailure, type AgentPort, type RequestedControls } from "../domain/agent";
 import { sanitizeFailure, validateCanonicalSequence, type CanonicalEvent } from "../domain/events";
 import type { EvaluationResult, EvaluatorPort } from "../domain/evaluators";
 import {
@@ -139,6 +139,10 @@ export function createJudgeEvaluator(
     if (start?.type !== "run.started") {
       throw new Error("judge evaluation requires an initial run.started event");
     }
+    const terminal = events.at(-1);
+    if (terminal?.type !== "run.completed" && terminal?.type !== "run.failed") {
+      throw new Error("judge evaluation requires a terminal run.completed or run.failed event");
+    }
     const runId = start.runId;
     const sourceText = renderJudgeSource(events, presentation);
     const messages = [{ role: "user" as const, content: judgePrompt(rubric, sourceText) }];
@@ -146,7 +150,11 @@ export function createJudgeEvaluator(
     const base = {
       rubric,
       sourceArtifact,
-      judge: { evaluatorId: JUDGE_EVALUATOR_ID, evaluatorVersion: JUDGE_EVALUATOR_VERSION },
+      judge: {
+        evaluatorId: JUDGE_EVALUATOR_ID,
+        evaluatorVersion: JUDGE_EVALUATOR_VERSION,
+        configurationId,
+      },
       declaredInputs: [runId],
       messages,
       controls,
@@ -187,15 +195,31 @@ export function createJudgeEvaluator(
     } catch (error) {
       record = createEvaluationRecord({
         ...base,
+        // Attempts inside a failed call carry real spend; keep them.
+        ...(error instanceof AgentFailure && error.trace.attempts.length > 0
+          ? { failureAttempts: error.trace.attempts }
+          : {}),
         failure: sanitizeFailure(error, {
           code: "judge_failure",
           secrets: options.secrets ?? [],
         }),
       });
-    } finally {
-      if (agent !== undefined) await agent.dispose();
+    }
+    // The record persists even when cleanup fails; the cleanup failure is
+    // still reported afterwards rather than silently swallowed.
+    let cleanupError: unknown;
+    if (agent !== undefined) {
+      try {
+        await agent.dispose();
+      } catch (error) {
+        cleanupError = error;
+      }
     }
     await options.persistRecord(record);
+    if (cleanupError !== undefined) {
+      const message = cleanupError instanceof Error ? cleanupError.message : JSON.stringify(cleanupError);
+      throw new Error(`judge agent cleanup failed: ${message}`);
+    }
 
     return { result: toResult(rubric, configurationId, runId, completedSequences, record), record };
   }

@@ -103,6 +103,7 @@ describe("engine schema", () => {
         configHash: "a".repeat(64),
         status: "known",
         measurements: {
+          scope: "single-run" as const,
           quality: 0.8,
           tokensUsedFraction: 0.1,
           latencyFraction: 0,
