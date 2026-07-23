@@ -41,6 +41,7 @@ export function definePricingSnapshot(snapshot: PricingSnapshot): PricingSnapsho
   if (!/^\d{4}-\d{2}-\d{2}$/.test(snapshot.effectiveDate)) {
     throw new Error("effectiveDate must be an ISO date (YYYY-MM-DD)");
   }
+  assertCalendarDate(snapshot.effectiveDate);
   assertNonEmpty(snapshot.provenance, "provenance");
 
   const seen = new Set<string>();
@@ -52,6 +53,12 @@ export function definePricingSnapshot(snapshot: PricingSnapshot): PricingSnapsho
     seen.add(key);
     for (const field of RATE_FIELDS) {
       assertRate(entry[field], field);
+    }
+    if (entry.reasoningBilling.mode === "separate-rate") {
+      assertRateScale(entry.reasoningBilling.ratePerMillionTokens, "reasoning ratePerMillionTokens");
+    }
+    for (const field of RATE_FIELDS) {
+      assertRateScale(entry[field], field);
     }
     const billingMode: string = entry.reasoningBilling.mode;
     if (billingMode !== "included-in-output" && billingMode !== "unbilled"
@@ -84,8 +91,27 @@ export function findPricingEntry(
 }
 
 export type MonetaryCost =
-  | { status: "known"; amount: number; currency: string }
+  | {
+      status: "known";
+      /** Display value; derived from amountScaled and subject to binary rounding. */
+      amount: number;
+      /** Exact amount in 1e-12 currency units; use this for comparisons. */
+      amountScaled: bigint;
+      currency: string;
+    }
   | { status: "unknown"; missing: readonly UsageKind[] };
+
+/** Exact scaled value of a currency amount with at most 6 decimal places, in 1e-12 units. */
+export function scaledCurrencyAmount(amount: number, field: string): bigint {
+  if (!Number.isFinite(amount) || amount < 0) {
+    throw new Error(`${field} must be a finite non-negative number`);
+  }
+  const micros = Math.round(amount * 1_000_000);
+  if (Math.abs(micros - amount * 1_000_000) > 1e-6) {
+    throw new Error(`${field} must have at most 6 decimal places`);
+  }
+  return BigInt(micros) * 1_000_000n;
+}
 
 /**
  * Prices normalized usage against one snapshot entry. A token kind whose rate
@@ -102,14 +128,14 @@ export function calculateUsageCost(
   if (!entry) throw new Error(`no pricing entry for ${model.providerId}/${model.modelId}`);
 
   const missing: UsageKind[] = [];
-  let numerator = 0;
+  let numerator = 0n;
 
-  const priceKind = (kind: UsageKind, rate: number, tokens: number | undefined): number => {
+  const priceKind = (kind: UsageKind, rate: number, tokens: number | undefined): bigint => {
     if (tokens === undefined) {
       if (rate > 0) missing.push(kind);
-      return 0;
+      return 0n;
     }
-    return tokens * rate;
+    return BigInt(tokens) * rateMicros(rate);
   };
 
   numerator += priceKind("inputTokens", entry.inputRatePerMillionTokens, usage.inputTokens);
@@ -117,6 +143,10 @@ export function calculateUsageCost(
   const billing = entry.reasoningBilling;
   const outputRate = entry.outputRatePerMillionTokens;
   if (billing.mode === "included-in-output") {
+    if (usage.reasoningTokens !== undefined && usage.outputTokens !== undefined
+      && usage.reasoningTokens > usage.outputTokens) {
+      throw new Error("reasoningTokens cannot exceed outputTokens");
+    }
     numerator += priceKind("outputTokens", outputRate, usage.outputTokens);
   } else {
     const reasoningRate = billing.mode === "separate-rate" ? billing.ratePerMillionTokens : 0;
@@ -137,7 +167,7 @@ export function calculateUsageCost(
       );
     } else {
       numerator += priceKind("outputTokens", outputRate, usage.outputTokens);
-      numerator += usage.reasoningTokens * reasoningRate;
+      numerator += BigInt(usage.reasoningTokens) * rateMicros(reasoningRate);
     }
   }
 
@@ -153,7 +183,36 @@ export function calculateUsageCost(
   );
 
   if (missing.length > 0) return { status: "unknown", missing };
-  return { status: "known", amount: numerator / 1_000_000, currency: snapshot.currency };
+  // numerator is token-count times micro-rate: exactly 1e-12 currency units.
+  return {
+    status: "known",
+    amount: Number(numerator) / 1e12,
+    amountScaled: numerator,
+    currency: snapshot.currency,
+  };
+}
+
+function rateMicros(rate: number): bigint {
+  return BigInt(Math.round(rate * 1_000_000));
+}
+
+function assertRateScale(value: number, field: string): void {
+  if (Math.abs(Math.round(value * 1_000_000) - value * 1_000_000) > 1e-6) {
+    throw new Error(`${field} must have at most 6 decimal places`);
+  }
+}
+
+function assertCalendarDate(value: string): void {
+  const [year, month, day] = value.split("-").map(Number);
+  if (year === undefined || month === undefined || day === undefined) {
+    throw new Error("effectiveDate must be a real calendar date");
+  }
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (date.getUTCFullYear() !== year
+    || date.getUTCMonth() !== month - 1
+    || date.getUTCDate() !== day) {
+    throw new Error("effectiveDate must be a real calendar date");
+  }
 }
 
 function canonicalJson(value: unknown): string {

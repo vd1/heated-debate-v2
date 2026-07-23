@@ -144,6 +144,7 @@ describe("usage-to-cost calculation", () => {
     expect(calculateUsageCost(SNAPSHOT, CODEX, usage)).toEqual({
       status: "known",
       amount: 2.335,
+      amountScaled: 2_335_000_000_000n,
       currency: "USD",
     });
   });
@@ -157,7 +158,7 @@ describe("usage-to-cost calculation", () => {
       cacheReadTokens: 0,
       cacheWriteTokens: 0,
       reasoningTokens: 40_000,
-    })).toEqual({ status: "known", amount: 1.85, currency: "USD" });
+    })).toEqual({ status: "known", amount: 1.85, amountScaled: 1_850_000_000_000n, currency: "USD" });
   });
 
   test("bills separate-rate reasoning as disjoint from output", () => {
@@ -169,7 +170,7 @@ describe("usage-to-cost calculation", () => {
       cacheReadTokens: 0,
       cacheWriteTokens: 0,
       reasoningTokens: 40_000,
-    })).toEqual({ status: "known", amount: 2.33, currency: "USD" });
+    })).toEqual({ status: "known", amount: 2.33, amountScaled: 2_330_000_000_000n, currency: "USD" });
   });
 
   test("returns unknown when reasoning affects price but is absent", () => {
@@ -197,6 +198,7 @@ describe("usage-to-cost calculation", () => {
     expect(calculateUsageCost(SNAPSHOT, LOCAL, {})).toEqual({
       status: "known",
       amount: 0,
+      amountScaled: 0n,
       currency: "USD",
     });
   });
@@ -215,5 +217,53 @@ describe("usage-to-cost calculation", () => {
     expect(() => calculateUsageCost(SNAPSHOT, { providerId: "x", modelId: "y" }, {})).toThrow(
       "no pricing entry for x/y",
     );
+  });
+});
+
+describe("exact monetary arithmetic and stricter validation", () => {
+  test("rejects rates and dates that cannot be represented exactly", () => {
+    const base = snapshot();
+    const [first, second] = base.entries;
+    if (!first || !second) throw new Error("bad fixture");
+    expect(() => definePricingSnapshot({
+      ...base,
+      entries: [{ ...first, inputRatePerMillionTokens: 0.1234567 }, second],
+    })).toThrow("inputRatePerMillionTokens must have at most 6 decimal places");
+    for (const date of ["2026-02-31", "2026-99-99", "2025-02-29"]) {
+      expect(() => definePricingSnapshot(snapshot({ effectiveDate: date }))).toThrow(
+        "effectiveDate must be a real calendar date",
+      );
+    }
+    expect(definePricingSnapshot(snapshot({ effectiveDate: "2024-02-29" })).effectiveDate)
+      .toBe("2024-02-29");
+  });
+
+  test("returns an exact scaled amount alongside the display amount", () => {
+    const cost = calculateUsageCost(definePricingSnapshot(snapshot()), {
+      providerId: "openai-codex",
+      modelId: "gpt-5.6-sol",
+    }, {
+      inputTokens: 100_000,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+    });
+    if (cost.status !== "known") throw new Error("expected known cost");
+    // 100k tokens at 1.25 per million: 0.125 currency units, exact in 1e-12 scale.
+    expect(cost.amountScaled).toBe(125_000_000_000n);
+    expect(cost.amount).toBe(0.125);
+  });
+
+  test("rejects reasoning exceeding output under included-in-output billing", () => {
+    expect(() => calculateUsageCost(definePricingSnapshot(snapshot()), {
+      providerId: "openai-codex",
+      modelId: "gpt-5.6-sol",
+    }, {
+      inputTokens: 0,
+      outputTokens: 10,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      reasoningTokens: 20,
+    })).toThrow("reasoningTokens cannot exceed outputTokens");
   });
 });

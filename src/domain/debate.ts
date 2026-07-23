@@ -17,8 +17,10 @@ import type { ExchangeParticipant, ExchangeResult } from "./exchange";
 import { orderedTurnEvidence } from "./debate-events";
 import {
   calculateUsageCost,
+  definePricingSnapshot,
   findPricingEntry,
   pricingSnapshotHash,
+  scaledCurrencyAmount,
   type PricingSnapshot,
 } from "./pricing";
 import { DebateScheduler } from "./scheduler";
@@ -129,7 +131,28 @@ export async function runDebate(input: RunDebateInput): Promise<DebateResult> {
   validateLimits(input);
   const proposerAgent = input.proposer.agent;
   const reviewerAgent = input.reviewer.agent;
-  const runControls = canonicalRunControls(input);
+  const monetary = input.budget?.monetary === undefined
+    ? undefined
+    : Object.freeze({
+        maxAmountScaled: scaledCurrencyAmount(
+          input.budget.monetary.maxAmount,
+          "budget.monetary.maxAmount",
+        ),
+        snapshot: definePricingSnapshot(input.budget.monetary.snapshot),
+        permitTokenOnlyAccounting: input.budget.monetary.permitTokenOnlyAccounting === true,
+      });
+  let observedCostScaled = 0n;
+  let costIssue: string | undefined;
+  const runControls = canonicalRunControls(input, monetary === undefined
+    ? null
+    : Object.freeze({
+        maxAmount: input.budget?.monetary?.maxAmount ?? 0,
+        currency: monetary.snapshot.currency,
+        snapshotId: monetary.snapshot.snapshotId,
+        snapshotVersion: monetary.snapshot.snapshotVersion,
+        snapshotHash: pricingSnapshotHash(monetary.snapshot),
+        permitTokenOnlyAccounting: monetary.permitTokenOnlyAccounting,
+      }));
   const scheduler = new DebateScheduler({
     debateId: input.debateId,
     topic: input.topic,
@@ -141,9 +164,6 @@ export async function runDebate(input: RunDebateInput): Promise<DebateResult> {
   let terminalEmitted = false;
   let dispatchedTurns = 0;
   const observedUsage: BudgetObservedUsage = {};
-  const monetary = input.budget?.monetary;
-  let observedCost = 0;
-  let unpriceable: readonly string[] | undefined;
 
   const emit = async (event: CanonicalEvent, flush: boolean): Promise<void> => {
     if (!input.recording) return;
@@ -171,11 +191,15 @@ export async function runDebate(input: RunDebateInput): Promise<DebateResult> {
         }
         addObservedUsage(observedUsage, evidence.attempt.usage);
         if (monetary) {
-          const cost = calculateUsageCost(monetary.snapshot, model, evidence.attempt.usage);
-          if (cost.status === "known") {
-            observedCost += cost.amount;
-          } else if (unpriceable === undefined) {
-            unpriceable = cost.missing;
+          try {
+            const cost = calculateUsageCost(monetary.snapshot, model, evidence.attempt.usage);
+            if (cost.status === "known") {
+              observedCostScaled += cost.amountScaled;
+            } else {
+              costIssue ??= `missing ${cost.missing.join(", ")}`;
+            }
+          } catch (error) {
+            costIssue ??= toError(error).message;
           }
         }
       } else if (input.recording) {
@@ -254,7 +278,7 @@ export async function runDebate(input: RunDebateInput): Promise<DebateResult> {
           observedUsage,
         }));
       }
-      if (monetary && observedCost >= monetary.maxAmount) {
+      if (monetary && observedCostScaled >= monetary.maxAmountScaled) {
         await endWithFailure(new DebateRunFailure({
           code: "monetary_budget_exhausted",
           message: `monetary budget exhausted before dispatch ${String(dispatchedTurns + 1)}`,
@@ -307,23 +331,23 @@ export async function runDebate(input: RunDebateInput): Promise<DebateResult> {
         }));
       });
 
+      // Successful evidence is priced by the identity the provider returned.
       await emitTurnEvidence(
         turn.request.turnId,
-        turn.request.controls.model,
+        reply.model,
         reply.trace,
         reply.toolCalls,
       );
-      if (monetary && unpriceable !== undefined && monetary.permitTokenOnlyAccounting !== true) {
+      if (monetary && costIssue !== undefined && !monetary.permitTokenOnlyAccounting) {
         await endWithFailure(new DebateRunFailure({
           code: "cost_unknown",
-          message: `observed usage cannot be priced; missing ${unpriceable.join(", ")} `
-            + `for ${turn.request.turnId}`,
+          message: `observed usage cannot be priced (${costIssue}) for ${turn.request.turnId}`,
           turnId: turn.request.turnId,
           trace: reply.trace,
           observedUsage,
         }));
       }
-      if (monetary && observedCost > monetary.maxAmount) {
+      if (monetary && observedCostScaled > monetary.maxAmountScaled) {
         await endWithFailure(new DebateRunFailure({
           code: "monetary_budget_exhausted",
           message: `observed monetary budget exceeded after ${turn.request.turnId}`,
@@ -560,22 +584,13 @@ function observedTokenLowerBound(usage: BudgetObservedUsage): number {
 
 function canonicalRunControls(
   input: RunDebateInput,
+  monetary: Extract<CanonicalRunControls, { evidence: "recorded" }>["monetary"],
 ): Extract<CanonicalRunControls, { evidence: "recorded" }> {
   const budget = input.budget === undefined
     ? null
     : Object.freeze({
         maxTurns: input.budget.maxTurns,
         maxTokens: input.budget.maxTokens,
-      });
-  const monetary = input.budget?.monetary === undefined
-    ? null
-    : Object.freeze({
-        maxAmount: input.budget.monetary.maxAmount,
-        currency: input.budget.monetary.snapshot.currency,
-        snapshotId: input.budget.monetary.snapshot.snapshotId,
-        snapshotVersion: input.budget.monetary.snapshot.snapshotVersion,
-        snapshotHash: pricingSnapshotHash(input.budget.monetary.snapshot),
-        permitTokenOnlyAccounting: input.budget.monetary.permitTokenOnlyAccounting ?? false,
       });
   return Object.freeze({
     policyId: "run-controls",

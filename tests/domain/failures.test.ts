@@ -269,6 +269,127 @@ describe("runDebate failure semantics", () => {
     };
   }
 
+
+  test("completes exactly at the monetary limit and ignores later caller mutation", async () => {
+    // Two turns cost 0.1 + 0.2; a float sum would exceed a 0.3 budget spuriously.
+    const tenth: AgentReply = {
+      ...reply("Proposal"),
+      trace: {
+        attempts: [{
+          attempt: 1,
+          status: "succeeded",
+          httpStatus: 200,
+          usage: { inputTokens: 100_000, outputTokens: 0 },
+          usageEvidence: { explicitlyReported: ["outputTokens"], source: "test" },
+        }],
+      },
+    };
+    const fifth: AgentReply = {
+      ...reply("Review"),
+      trace: {
+        attempts: [{
+          attempt: 1,
+          status: "succeeded",
+          httpStatus: 200,
+          usage: { inputTokens: 200_000, outputTokens: 0 },
+          usageEvidence: { explicitlyReported: ["outputTokens"], source: "test" },
+        }],
+      },
+    };
+    const exactPricing = definePricingSnapshot({
+      snapshotId: "pricing-exact",
+      snapshotVersion: "1",
+      currency: "USD",
+      effectiveDate: "2026-07-01",
+      provenance: "test fixture",
+      entries: [{
+        model: { providerId: "test", modelId: "model" },
+        inputRatePerMillionTokens: 1,
+        outputRatePerMillionTokens: 0,
+        cacheReadRatePerMillionTokens: 0,
+        cacheWriteRatePerMillionTokens: 0,
+        reasoningBilling: { mode: "included-in-output" },
+      }],
+    });
+    const budget = {
+      maxTurns: 4,
+      maxTokens: 10_000_000,
+      monetary: { maxAmount: 0.3, snapshot: exactPricing },
+    };
+    const proposer = new ScenarioAgent(() => {
+      // Caller-side mutation after the run starts must not change enforcement.
+      budget.monetary.maxAmount = 999;
+      return Promise.resolve(structuredClone(tenth));
+    });
+    const reviewer = new ScenarioAgent(() => Promise.resolve(structuredClone(fifth)));
+    const sink = new MemorySink();
+
+    const result = await runDebate(debateInput(proposer, reviewer, sink, { budget }));
+
+    expect(result.rounds).toHaveLength(1);
+    const started = sink.events[0];
+    if (started?.type !== "run.started" || started.data.controls.evidence !== "recorded") {
+      throw new Error("missing run start");
+    }
+    expect(started.data.controls.monetary?.maxAmount).toBe(0.3);
+  });
+
+  test("prices successful turns by the returned model identity", async () => {
+    const routedPricing = definePricingSnapshot({
+      snapshotId: "pricing-routed",
+      snapshotVersion: "1",
+      currency: "USD",
+      effectiveDate: "2026-07-01",
+      provenance: "test fixture",
+      entries: [
+        {
+          model: { providerId: "test", modelId: "model" },
+          inputRatePerMillionTokens: 1,
+          outputRatePerMillionTokens: 0,
+          cacheReadRatePerMillionTokens: 0,
+          cacheWriteRatePerMillionTokens: 0,
+          reasoningBilling: { mode: "included-in-output" },
+        },
+        {
+          model: { providerId: "test", modelId: "model-routed" },
+          inputRatePerMillionTokens: 100,
+          outputRatePerMillionTokens: 0,
+          cacheReadRatePerMillionTokens: 0,
+          cacheWriteRatePerMillionTokens: 0,
+          reasoningBilling: { mode: "included-in-output" },
+        },
+      ],
+    });
+    const routedReply: AgentReply = {
+      ...reply("Proposal"),
+      model: { providerId: "test", modelId: "model-routed" },
+      trace: {
+        attempts: [{
+          attempt: 1,
+          status: "succeeded",
+          httpStatus: 200,
+          usage: { inputTokens: 100_000, outputTokens: 0 },
+          usageEvidence: { explicitlyReported: ["outputTokens"], source: "test" },
+        }],
+      },
+    };
+    const proposer = new ScenarioAgent(() => Promise.resolve(structuredClone(routedReply)));
+    const reviewer = new ScenarioAgent(() => Promise.resolve(reply("unused")));
+    const sink = new MemorySink();
+
+    const error = await debateError(debateInput(proposer, reviewer, sink, {
+      budget: {
+        maxTurns: 4,
+        maxTokens: 10_000_000,
+        // 100k tokens at the requested model cost 0.1; at the returned model 10.
+        monetary: { maxAmount: 5, snapshot: routedPricing },
+      },
+    }));
+
+    expect(error.code).toBe("monetary_budget_exhausted");
+    expect(reviewer.calls).toBe(0);
+  });
+
   test("records the monetary budget with its snapshot hash in run controls", async () => {
     const proposer = new ScenarioAgent(() => Promise.resolve(pricedReply("Proposal")));
     const reviewer = new ScenarioAgent(() => Promise.resolve(pricedReply("Review")));

@@ -1,13 +1,14 @@
 # Implementation concerns for Fable
 
 Status: C-TOOL-LOOP concerns 1-4, 6-9, and 11 are resolved. Concern 5 is partially resolved.
-Concerns 10, 12, and 13 remain open. C-WEB-SEARCH concerns 14 and 15 are open.
+Concerns 10, 12, and 13 remain open. C-WEB-SEARCH concerns 14 and 15 are open. D-PRICING
+concerns 16-20 are open.
 
-Updated on 2026-07-23 after reviewing through commit `ba1b03f`.
+Updated on 2026-07-23 after reviewing through commit `e8516c9`.
 
-Validation at `ba1b03f`:
+Validation at `e8516c9`:
 
-- `bun test`: 181 passed, 3 skipped, 0 failed.
+- `bun test`: 202 passed, 3 skipped, 0 failed.
 - `bun run typecheck`: passed.
 - `bun run lint`: passed.
 
@@ -137,6 +138,77 @@ Acceptance check: validate and normalize the request at the port boundary, with 
 empty or whitespace-only query and every invalid limit class. Keep the Pi schema aligned with the
 same named constraints so direct and tool-mediated calls behave identically.
 
+### 16. Monetary enforcement does not use the snapshot and limits pinned in run controls
+
+Severity: high
+
+`runDebate` builds immutable `runControls` first, including `maxAmount` and the pricing snapshot
+hash. It then assigns `monetary` directly from `input.budget.monetary` and uses that original object
+for every threshold and cost calculation. The input object and its `snapshot` are not cloned,
+frozen, or validated through `definePricingSnapshot` at the runner boundary.
+
+A caller can mutate `maxAmount`, a rate, or the snapshot metadata after `run.started` is emitted.
+The artifact keeps the original amount and hash while enforcement uses the changed values. Even a
+properly frozen snapshot does not protect the mutable surrounding monetary-budget object.
+
+Acceptance check: resolve one validated, deeply frozen monetary configuration at run start and use
+that same local value for validation, controls, hashing, replay identity, and all enforcement.
+Mutating the caller's budget or raw snapshot after the first dispatch must not affect cost or
+threshold behavior, and the artifact hash must identify the exact table actually used.
+
+### 17. Successful turns are priced by requested model identity instead of returned identity
+
+Severity: high
+
+After a successful reply, `runDebate` passes `turn.request.controls.model` into
+`emitTurnEvidence`. It does not use `reply.model`, even though the adapter records the actual
+response model there and canonical `turn.completed` persists that returned identity.
+
+Provider aliases and routed model versions can therefore be charged at the requested model's rate
+while the artifact says a different model produced the reply. Validation also checks only that the
+two requested participant models exist in the snapshot.
+
+Acceptance check: price successful evidence against `reply.model` and require that identity in the
+resolved snapshot. For failures where no returned identity exists, record and document the
+requested-identity fallback explicitly. Add a test whose requested and returned models have
+different rates and verify the returned model determines the charge.
+
+### 18. Floating-point accumulation can report an overage at an exact monetary limit
+
+Severity: high
+
+Costs and `observedCost` are JavaScript numbers. Two exactly intended attempt costs of `0.1` and
+`0.2` accumulate as `0.30000000000000004`; the post-turn comparison treats that as greater than a
+`0.3` budget. An exact-budget final turn can therefore fail depending on decimal representation
+rather than the declared rates and token counts.
+
+Acceptance check: calculate and accumulate money in an exact unit or rational decimal
+representation, converting only for display. Add a multi-attempt equality test using decimal rates
+whose mathematical sum equals the limit, plus a minimally greater case that must fail.
+
+### 19. Included reasoning is not validated as a subset of output
+
+Severity: medium
+
+The pricing contract says reasoning is a subset of output unless the rule is `separate-rate`.
+`calculateUsageCost` enforces `reasoningTokens <= outputTokens` only for `unbilled`. Under
+`included-in-output`, a usage record with 20 reasoning tokens and 10 output tokens is accepted and
+priced as known.
+
+Acceptance check: apply the subset invariant to both `included-in-output` and `unbilled`, while
+leaving the explicitly disjoint `separate-rate` mode unchanged. Test both invalid subset modes.
+
+### 20. Effective-date validation accepts impossible calendar dates
+
+Severity: medium
+
+`definePricingSnapshot` checks only the `YYYY-MM-DD` shape. Values such as `2026-02-31` and
+`2026-99-99` pass, are frozen, and receive a canonical hash even though they are not dates. The
+review describes the field as a validated ISO effective date.
+
+Acceptance check: parse the components and require a real Gregorian calendar date whose canonical
+round trip equals the input. Add leap-year, invalid-day, and invalid-month rows.
+
 ## Resolved concerns
 
 ### 1. Pi bypassed the dispatcher for unknown names and schema-invalid arguments
@@ -194,7 +266,10 @@ trace.
 ## Completion status
 
 Milestone C should not be declared complete while concerns 5, 10, 12, 13, 14, and 15 remain open.
+D-PRICING should not be declared complete while concerns 16-20 remain open.
 `plans/c-tool-loop-review.md` also retains stale descriptions of Pi wrappers, canonical schema v4,
 and limitations that the newer commits changed. `plans/c-web-search-review.md` claims the API key
 cannot reach errors and that secret-free run evidence was proved, but its tests do not cover the
-transport-error or canonical-artifact paths described in concern 14.
+transport-error or canonical-artifact paths described in concern 14. `plans/d-pricing-review.md`
+claims the run uses an immutable snapshot and exact budget semantics, which concerns 16 and 18
+contradict.
